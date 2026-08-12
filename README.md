@@ -3,15 +3,17 @@
 A config-driven local dev-stack launcher for multi-service monorepos.
 
 If your project is "N apps, each with a backend + frontend, plus a couple of
-docker dependencies" and you're tired of juggling `tmux` windows, forgetting
-which port is which, or watching a service spin forever because nobody told
-you it actually crashed — pitcrew gives you one command with a live
-dashboard, per-service RAM/CPU meters, an error radar over the logs, and fzf
-menus to start/stop/restart/inspect anything.
+docker dependencies" and you're tired of hunting down which port is which,
+or watching a service spin forever because nobody told you it actually
+crashed — pitcrew gives you one command with a live dashboard, per-service
+RAM/CPU meters, an error radar over the logs, and fzf menus to
+start/stop/restart/inspect anything.
 
-Everything runs inside a single tmux session, RAM-capped per service via
-`systemd-run --user --scope`, with logs captured to disk so nothing is lost
-when a pane closes.
+Every component is a plain background process — RAM-capped via
+`systemd-run --user --scope` where systemd is available — with its output
+captured to a log file and its pid tracked in a pidfile. No terminal
+multiplexer, no session to attach to, nothing to configure beyond your own
+project.
 
 ![status](https://img.shields.io/badge/status-early-yellow)
 
@@ -25,11 +27,27 @@ usually only want *some* of them running, want to see which are actually
 healthy (not just "the process didn't exit"), and want a RAM meter before
 your laptop falls over running six JVMs and six Node processes at once.
 
+## Platforms
+
+- **Linux** — primary target, fully supported. RAM caps + precise cgroup
+  meters when `systemd --user` is available (it usually is).
+- **macOS** — fully supported through portable equivalents: `lsof` instead
+  of `ss` for port lookups, `ps`-based process-tree RAM/CPU meters instead of
+  cgroups, `vm_stat`/`top` instead of `/proc` for the system-wide gauges.
+  There's no systemd on macOS, so hard RAM-cap *enforcement* isn't available
+  there — the meters still work, a runaway process just isn't auto-killed.
+- **Windows** — not supported natively (no bash, no `/dev/tcp`, no `systemd`,
+  different `ps`). Run pitcrew inside **WSL2**, where it sees a normal Linux
+  userland and needs nothing special — including real RAM caps, since modern
+  WSL2 distros run systemd by default.
+
 ## Install
 
-Requires `bash`, `tmux`, `docker` (only if you declare deps), and `systemd
---user` (for RAM caps/meters — the tool still runs without it, just without
-caps). `fzf` is optional but strongly recommended for the interactive menu.
+Requires `bash`, `docker` (only if you declare deps), and ideally `systemd
+--user` on Linux for RAM caps (the tool still runs without it, just without
+caps — this is the normal path on macOS). `lsof` is used for port lookups
+(falls back to `ss` on Linux if missing). `fzf` is optional but strongly
+recommended for the interactive menu.
 
 ```bash
 git clone https://github.com/<you>/pitcrew ~/.local/share/pitcrew
@@ -52,8 +70,9 @@ ln -s "$(pwd)/pitcrew/bin/pitcrew" ~/.local/bin/pitcrew
    config, like `git` does for `.git`) and run:
 
 ```bash
-pitcrew start          # bring everything up, with a live boot dashboard
-pitcrew                # live dashboard (also the default with no args)
+pitcrew                # THE command: brings up whatever isn't running yet,
+                        # then drops into the live dashboard. Nothing else
+                        # to remember for day-to-day use.
 pitcrew menu           # fzf menu for everything below
 pitcrew logs           # in-place log viewer, Tab/←→ to switch services
 pitcrew stop           # stop everything (deps stay up unless --deps)
@@ -62,26 +81,30 @@ pitcrew stop           # stop everything (deps stay up unless --deps)
 ## Commands
 
 ```
-pitcrew                  live dashboard (default) — l logs · s stop · g grid · m menu · q quit
-                          (in logs: Tab/←→ switch · x stop · r restart · Enter attach)
+pitcrew                  ensure everything is up, then the live dashboard
+                          (l logs · s stop · m menu · q quit)
+                          (in logs: Tab/←→ switch · x stop · r restart · Enter full log)
 pitcrew menu              interactive fzf menu
 pitcrew start [all|backends|frontends|deps|@profile|<app>...]
 pitcrew stop  [all|@profile|<app>...]     stops tool-managed AND external
 pitcrew stop --deps                       also stop non-protected deps
 pitcrew restart <app>...
 pitcrew status                    one-shot dashboard
-pitcrew watch                     live auto-refreshing dashboard
-pitcrew grid                      tiled tmux view of ALL service logs
+pitcrew watch                     live auto-refreshing dashboard (no auto-start)
 pitcrew logs [<component>]        in-place log viewer
 pitcrew stale [--restart]         apps whose code changed since they started
 pitcrew profile save <name> <targets...> | list | rm <name>
-pitcrew shell [<name>]            open a configured quick shell (PITCREW_SHELLS)
+pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
 pitcrew doctor                    check the local environment
-pitcrew attach | urls | help
+pitcrew urls | help
 ```
 
 A "target" is an app name (`sales`), a specific role (`be-sales`, `fe-sales`),
 a group (`all`, `backends`, `frontends`, `deps`), or a saved `@profile`.
+
+`pitcrew` with no arguments and `pitcrew watch` both show the same live
+dashboard — the difference is that bare `pitcrew` starts whatever's missing
+first, while `watch` just observes.
 
 ## Config
 
@@ -113,17 +136,22 @@ Env var overrides (higher precedence than the config file):
 
 ## How it works
 
-- Each backend/frontend runs in its own tmux window, wrapped in
+- Each backend/frontend is a plain background process — wrapped in
   `systemd-run --user --scope` for a live RAM/CPU cgroup and a hard memory
-  cap. Output is piped to `.pitcrew/logs/<component>.log` in your project
-  root (add that directory to `.gitignore`).
+  cap when systemd is available, a bare backgrounded process otherwise.
+  Output goes to `.pitcrew/logs/<component>.log`, its pid to
+  `.pitcrew/logs/<component>.pid`, both in your project root (add
+  `.pitcrew/` to `.gitignore`). RAM/CPU meters are read from that process's
+  whole tree via `ps`, so they work identically with or without systemd.
 - "Up" means: the port is open, and — if you configured a health path — the
-  health endpoint reports `"UP"`. Anything else is "starting". A dead tmux
-  pane is "crashed". A component with no start command configured for that
-  role is "n/a", not "down".
-- `pitcrew stop` stops both tool-managed processes (via the systemd scope /
-  tmux window) *and* anything else already listening on that port — so it
-  also cleans up a service you started by hand outside pitcrew.
+  health endpoint reports `"UP"`. Anything else is "starting" while the
+  pidfile's process is alive, or "crashed" if it died on its own (a leftover
+  pidfile pointing at a dead pid). A component with no start command
+  configured for that role is "n/a", not "down".
+- `pitcrew stop` stops both tool-managed processes (via the systemd scope, or
+  by killing the whole process tree) *and* anything else already listening
+  on that port — so it also cleans up a service you started by hand outside
+  pitcrew (shown as `ext` in the dashboard).
 
 ## Not (yet) supported
 

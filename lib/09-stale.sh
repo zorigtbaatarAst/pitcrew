@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# lib/08-stale.sh — flag (and optionally restart) running components whose
+# lib/09-stale.sh — flag (and optionally restart) running components whose
 # source changed after they started. A component opts into this by setting
 # PITCREW_WATCH_DIR[app-role] (or just PITCREW_WATCH_DIR[app] for both roles)
 # in the config — without it, staleness can't be determined and it's skipped.
+# The pidfile's own mtime IS the component's start time, so "-newer <pidfile>"
+# answers "did source change since it started" with no extra bookkeeping.
 
 watch_dirs_for() { # $1 comp → newline-separated dirs to check, or nothing
   local c=$1
@@ -12,14 +14,13 @@ watch_dirs_for() { # $1 comp → newline-separated dirs to check, or nothing
 }
 
 stale_comps() {
-  local c app ts epoch dirs
+  local c pf dirs
   while IFS= read -r c; do
-    ts=$(systemctl --user show "$SESSION-$c.scope" -p ActiveEnterTimestamp --value 2>/dev/null)
-    [ -n "$ts" ] && [ "$ts" != "n/a" ] || continue          # external / no scope → skip
-    epoch=$(date -d "$ts" +%s 2>/dev/null) || continue
+    pf="$LOG_DIR/$c.pid"
+    [ -f "$pf" ] || continue
     mapfile -t dirs < <(watch_dirs_for "$c")
     [ ${#dirs[@]} -eq 0 ] && continue                        # no watch dir configured → skip
-    if find "${dirs[@]}" -type f -newermt "@$epoch" -print -quit 2>/dev/null | grep -q .; then
+    if find "${dirs[@]}" -type f -newer "$pf" -print -quit 2>/dev/null | grep -q .; then
       echo "$c"
     fi
   done < <(running_comps)

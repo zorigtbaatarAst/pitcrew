@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/12-menu.sh — interactive fzf menu, URL printing/opening.
+# lib/13-menu.sh — interactive fzf menu, URL printing/opening.
 
 print_urls() {
   say ""
@@ -20,11 +20,14 @@ print_urls() {
 
 cmd_urls() {
   print_urls
-  command -v xdg-open >/dev/null || return 0
+  local opener=""
+  if command -v xdg-open >/dev/null; then opener=xdg-open
+  elif command -v open >/dev/null; then opener=open   # macOS
+  else return 0; fi
   local app fe
   for app in "${PITCREW_APPS[@]}"; do
     fe="${PITCREW_FE_PORT[$app]:-}"
-    [ -n "$fe" ] && xdg-open "http://localhost:$fe" >/dev/null 2>&1 &
+    [ -n "$fe" ] && "$opener" "http://localhost:$fe" >/dev/null 2>&1 &
   done
 }
 
@@ -54,11 +57,9 @@ menu() {
       '⏹   stop all apps (keep deps running)' \
       '🛑  stop everything (apps + deps)' \
       '📡  live dashboard (watch mode)' \
-      '🧾  log grid — all services tiled in one screen' \
       '📜  view logs of one service…' \
       '🍃  open a configured shell…' \
       '🩺  doctor — check my environment' \
-      '🖥   attach to tmux session' \
       '🌐  open all frontend URLs' \
       '↻   refresh status' \
       '✖   quit' \
@@ -83,13 +84,11 @@ menu() {
       ⏹*)  cmd_stop all; sleep 1 ;;
       🛑*) cmd_stop all --deps; sleep 1 ;;
       📡*) cmd_watch ;;
-      🧾*) cmd_grid ;;
       📜*) cmd_logs ;;
       🍃*) if [ ${#PITCREW_SHELLS[@]} -eq 0 ]; then warn "no shells configured (set PITCREW_SHELLS)"; sleep 2; continue; fi
            local shname; shname=$(printf '%s\n' "${!PITCREW_SHELLS[@]}" | fzf --height=30% --border=rounded --prompt='shell ❯ ') || true
-           [ -n "${shname:-}" ] && cmd_shell "$shname" ;;
+           [ -n "${shname:-}" ] && { clear; cmd_shell "$shname"; read -rp "  press Enter…"; } ;;
       🩺*) cmd_doctor; read -rp "  press Enter…" ;;
-      🖥*)  tmux has-session -t "$SESSION" 2>/dev/null && attach_to "$SESSION" || { say "nothing running"; sleep 1; } ;;
       🌐*) cmd_urls; sleep 1 ;;
       ↻*)  : ;;
       ✖*)  break ;;

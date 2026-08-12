@@ -82,8 +82,9 @@ declare -A PITCREW_WATCH_DIR=(
 )
 
 # ── quick shells (optional) ─────────────────────────────────────────────────
-# `pitcrew shell <name>` opens a new tmux window running this command —
-# handy for a db shell, a REPL, whatever you reach for often.
+# `pitcrew shell <name>` runs this command in your current terminal (a real
+# foreground, interactive shell) — handy for a db shell, a REPL, whatever
+# you reach for often.
 declare -A PITCREW_SHELLS=(
   [db]="docker exec -it postgres psql -U postgres storefront_development"
   [redis]="docker exec -it redis redis-cli"

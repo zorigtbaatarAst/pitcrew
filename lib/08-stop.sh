@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# lib/07-stop.sh — stopping components, tool-managed AND externally-started.
+# lib/08-stop.sh — stopping components, tool-managed AND externally-started.
 
 stop_comp() {
-  local c=$1 stopped=0
-  systemctl --user stop "$SESSION-$c.scope" 2>/dev/null && stopped=1
-  if win_exists "$c"; then
-    tmux kill-window -t "$SESSION:$c" 2>/dev/null
+  local c=$1 stopped=0 pid
+  pid=$(read_pid "$c")
+  if [ "$HAS_SYSTEMD" = 1 ] && scope_exists "$c"; then
+    systemctl --user stop "$SESSION-$c.scope" 2>/dev/null && stopped=1
+  elif pid_alive "$pid"; then
+    kill_tree "$pid"
     stopped=1
   fi
+  rm -f "$LOG_DIR/$c.pid"
   [ $stopped -eq 1 ] && say "  ${GREY}■${RESET} stopped $c"
   # the same service may still be running from outside the tool — stop by port
   local port; port=$(comp_port "$c")
@@ -37,10 +40,6 @@ cmd_stop() {
       fi
       docker stop "$c" >/dev/null 2>&1 && say "  ${GREY}■${RESET} stopped container $c"
     done
-  fi
-  if tmux has-session -t "$SESSION" 2>/dev/null; then
-    [ "$(tmux list-windows -t "$SESSION" -F '#W' | grep -cv '^_')" -eq 0 ] \
-      && tmux kill-session -t "$SESSION" 2>/dev/null
   fi
   say "  ${GREEN}done${RESET}"
 }

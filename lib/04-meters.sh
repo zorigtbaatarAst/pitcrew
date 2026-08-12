@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# lib/03-meters.sh — RAM/CPU meters (read live from the service's systemd
-# cgroup) and the log error radar (tail of each service log).
+# lib/04-meters.sh — RAM/CPU meters (summed over each component's whole
+# process tree via `ps`, portable across Linux/macOS) and the log error
+# radar (tail of each service log).
 
 to_bytes() {
   local n=${1%[GgMm]}
@@ -23,11 +24,27 @@ bar() { # $1 pct, $2 width → colored block bar
   printf '%b' "$out$RESET"
 }
 
-mem_meter() {
-  local cur max
-  cur=$(systemctl --user show "$SESSION-$1.scope" -p MemoryCurrent --value 2>/dev/null)
+# fills MEM_CUR[comp] (bytes) / CPU_PCT[comp] ("NN%") for every configured
+# component — one `ps` call per live component, via its whole process tree.
+poll_all() {
+  declare -gA MEM_CUR CPU_PCT
+  local c pid
+  while IFS= read -r c; do
+    pid=$(read_pid "$c")
+    if pid_alive "$pid"; then
+      proc_tree_stats "$pid"
+      MEM_CUR[$c]=""; [ -n "$PSTREE_RSS_KB" ] && MEM_CUR[$c]=$((PSTREE_RSS_KB * 1024))
+      CPU_PCT[$c]=""; [ -n "$PSTREE_CPU_PCT" ] && CPU_PCT[$c]="${PSTREE_CPU_PCT}%"
+    else
+      MEM_CUR[$c]=""; CPU_PCT[$c]=""
+    fi
+  done < <(all_components)
+}
+
+mem_meter() { # $1 comp — one aligned "bar RAM" cell, or a dim "—" if not running
+  local cur=${MEM_CUR[$1]:-}
   [[ "$cur" =~ ^[0-9]+$ ]] || { printf '%b' "${GREY}      —${RESET}"; return; }
-  max=$(to_bytes "$(comp_max "$1")")
+  local max; max=$(to_bytes "$(comp_max "$1")")
   local idx=$((cur * 7 / max)); [ $idx -gt 7 ] && idx=7
   local pct=$((cur * 100 / max)) color=$GREEN
   [ $pct -ge 60 ] && color=$YELLOW

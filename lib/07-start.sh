@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# lib/06-start.sh — bringing components up, and the live wait-dashboard shown
-# while they boot.
+# lib/07-start.sh — bringing components up, and the live wait-dashboard shown
+# while they boot. Every component is a plain background process (wrapped in
+# `systemd-run --user --scope` for a RAM cap when systemd is available, a
+# bare backgrounded `bash -c` otherwise) with its own log file and pidfile —
+# no terminal multiplexer involved.
 
 start_deps() {
   [ ${#PITCREW_DEPS[@]} -eq 0 ] && return
@@ -18,31 +21,33 @@ start_deps() {
   [ -n "$PITCREW_DEPS_READY_CMD" ] && bash -c "$PITCREW_DEPS_READY_CMD" >/dev/null 2>&1
 }
 
-launch_window() {
-  ensure_session
+launch_process() { # $1 comp $2 full command (env prefix already folded in)
+  local c=$1 full_cmd=$2
   mkdir -p "$LOG_DIR"
-  if win_exists "$1"; then
-    # a live pane alone is not proof of life — after a failed build the shell
-    # sits at a prompt; only an active scope or an open port means "running"
-    if ! win_dead "$1" && { scope_exists "$1" || port_open "$(comp_port "$1")"; }; then
-      say "  ${GREEN}●${RESET} $1 already running"; return
-    fi
-    tmux kill-window -t "$SESSION:$1" 2>/dev/null
+  : > "$LOG_DIR/$c.log"
+  rm -f "$LOG_DIR/$c.pid"
+  if [ "$HAS_SYSTEMD" = 1 ]; then
+    systemctl --user reset-failed "$SESSION-$c.scope" 2>/dev/null || true
+    ( exec systemd-run --user --scope --collect --unit "$SESSION-$c" \
+        -p MemoryMax="$(comp_max "$c")" -p MemorySwapMax=2G \
+        bash -c "$full_cmd" ) >>"$LOG_DIR/$c.log" 2>&1 &
+  else
+    ( exec bash -c "$full_cmd" ) >>"$LOG_DIR/$c.log" 2>&1 &
   fi
-  systemctl --user reset-failed "$SESSION-$1.scope" 2>/dev/null || true
-  : > "$LOG_DIR/$1.log"
-  tmux new-window -d -t "$SESSION" -n "$1" -c "$ROOT"
-  tmux pipe-pane -o -t "$SESSION:$1" "cat >> '$LOG_DIR/$1.log'"
-  tmux send-keys -t "$SESSION:$1" "$2" C-m
-  say "  ${YELLOW}▶${RESET} launched ${BOLD}$1${RESET}"
+  echo $! > "$LOG_DIR/$c.pid"
+  disown 2>/dev/null || true
+  say "  ${YELLOW}▶${RESET} launched ${BOLD}$c${RESET}"
 }
 
 start_comp() {
-  local c=$1 cmd env max
+  local c=$1 cmd
   cmd=$(comp_cmd "$c")
   if [ -z "$cmd" ]; then warn "$c has no start command configured — skipping"; return; fi
-  env=$(comp_env "$c"); max=$(comp_max "$c")
-  launch_window "$c" "$env systemd-run --user --scope --collect --unit $SESSION-$c -p MemoryMax=$max -p MemorySwapMax=2G $cmd"
+  local pid; pid=$(read_pid "$c")
+  if pid_alive "$pid" || port_open "$(comp_port "$c")"; then
+    say "  ${GREEN}●${RESET} $c already running"; return
+  fi
+  launch_process "$c" "$(comp_env "$c") $cmd"
 }
 
 fail_marker() { # $1 comp — succeeds if its log shows a fatal startup failure
@@ -118,7 +123,7 @@ wait_dashboard() {
     echo
   done
   if [ "$pending" -gt 0 ]; then
-    say "  ${YELLOW}⚠ still waiting on some services — they keep starting in tmux.${RESET}"
+    say "  ${YELLOW}⚠ still waiting on some services — they keep starting in the background.${RESET}"
     say "  ${GREY}check progress with:${RESET} pitcrew ${GREY}(dashboard) ·${RESET} pitcrew logs"
   elif [ "$any" -eq 1 ]; then
     say "  ${GREY}fix the error and retry:${RESET} pitcrew restart <app>"
@@ -141,4 +146,31 @@ cmd_start() {
   say "${BOLD}③ waiting for services${RESET} ${GREY}(Ctrl+C to stop waiting — they keep running)${RESET}"
   wait_dashboard "${comps[@]}"
   print_urls
+}
+
+# `pitcrew` with no subcommand: bring up whatever isn't already running, then
+# drop straight into the live dashboard — one command, nothing to remember.
+cmd_up() {
+  local comps; mapfile -t comps < <(resolve_targets all)
+  local c missing=()
+  for c in "${comps[@]}"; do
+    local st; st=$(comp_state "$c")
+    [ "$st" = up ] || [ "$st" = starting ] || missing+=("$c")
+  done
+  if [ ${#missing[@]} -gt 0 ] || [ ${#PITCREW_DEPS[@]} -gt 0 ]; then
+    banner
+    say "${BOLD}① deps${RESET}"
+    start_deps
+    [ ${#PITCREW_DEPS[@]} -eq 0 ] && ok "no deps configured"
+    echo
+    if [ ${#missing[@]} -gt 0 ]; then
+      say "${BOLD}② services${RESET} ${GREY}(starting what isn't already up)${RESET}"
+      for c in "${missing[@]}"; do start_comp "$c"; done
+      say ""
+      say "${BOLD}③ waiting for services${RESET} ${GREY}(Ctrl+C to stop waiting — they keep running)${RESET}"
+      wait_dashboard "${missing[@]}"
+      print_urls
+    fi
+  fi
+  cmd_watch
 }

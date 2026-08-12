@@ -2,17 +2,22 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  pitcrew — interactive local dev-stack launcher for multi-service monorepos
 #
-#  Starts docker deps, backend + frontend processes (each RAM-capped via
-#  systemd-run) inside one tmux session, with a live dashboard, per-service
-#  RAM meters, error radar and fzf menus with log previews.
+#  Starts docker deps and backend/frontend processes as plain background
+#  processes (RAM-capped via systemd-run --user --scope when systemd is
+#  available), with a live dashboard, per-service RAM/CPU meters, an error
+#  radar over the logs, and fzf menus. No terminal multiplexer required.
 #
 #  Config-driven: run it from inside a project that has a pitcrew.config.sh
 #  (walked up from $PWD, or point PITCREW_CONFIG at one). See
 #  examples/pitcrew.config.example.sh for the schema.
+#
+#  Linux is the primary target. macOS works the same way through portable
+#  (ps/lsof/vm_stat) equivalents of the Linux-only bits. On Windows, run
+#  inside WSL2 — there pitcrew just sees a normal Linux userland.
 # ─────────────────────────────────────────────────────────────────────────────
 set -u
 
-SELF=$(readlink -f "${BASH_SOURCE[0]}")
+SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || greadlink -f "${BASH_SOURCE[0]}")
 LIB_DIR="$(cd "$(dirname "$SELF")/../lib" && pwd)"
 for f in "$LIB_DIR"/*.sh; do
   # shellcheck source=/dev/null
@@ -24,23 +29,23 @@ usage() {
 pitcrew — local dev-stack launcher
 
 Usage:
-  pitcrew                  live dashboard (default) — l logs · s stop · g grid · m menu · q quit
-                            (in logs: Tab/←→ switch · x stop · r restart · Enter attach)
+  pitcrew                  ensure everything is up, then the live dashboard
+                            (l logs · s stop · m menu · q quit)
+                            (in logs: Tab/←→ switch · x stop · r restart · Enter full log)
   pitcrew menu              interactive fzf menu
   pitcrew start [all|backends|frontends|deps|@profile|<app>...]
   pitcrew stop  [all|@profile|<app>...]     stops tool-managed AND external
   pitcrew stop --deps                       also stop non-protected deps
   pitcrew restart <app>...
   pitcrew status                    one-shot dashboard
-  pitcrew watch                     live auto-refreshing dashboard
-  pitcrew grid                      tiled tmux view of ALL service logs
-  pitcrew logs [<component>]        in-place log viewer (Tab/←→ switch · Enter attach)
+  pitcrew watch                     live auto-refreshing dashboard (no auto-start)
+  pitcrew logs [<component>]        in-place log viewer
   pitcrew stale [--restart]         apps whose code changed since they started
                                      (needs PITCREW_WATCH_DIR set per app in config)
   pitcrew profile save <name> <targets...> | list | rm <name>
-  pitcrew shell [<name>]            open a configured quick shell (PITCREW_SHELLS)
+  pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
   pitcrew doctor                    check the local environment
-  pitcrew attach | urls | help
+  pitcrew urls | help
 
 Config discovery: pitcrew.config.sh, walked up from $PWD, or $PITCREW_CONFIG.
 Env overrides: PITCREW_CONFIG, PITCREW_ROOT, PITCREW_FE_MAX, PITCREW_BE_MAX, PITCREW_WAIT.
@@ -52,7 +57,7 @@ case "${1:-}" in
 esac
 
 # Config is sourced here, at the script's top level (not inside a function) —
-# see the note atop lib/01-config.sh for why that matters.
+# see the note atop lib/02-config.sh for why that matters.
 PITCREW_CFG=$(find_config) || die "no pitcrew.config.sh found in $PWD or any parent directory.
 Point PITCREW_CONFIG at one, or copy examples/pitcrew.config.example.sh into your project root."
 config_defaults
@@ -62,20 +67,19 @@ source "$PITCREW_CFG"
 config_finalize "$PITCREW_CFG"
 cd "$ROOT" 2>/dev/null || die "project root not found at $ROOT"
 
-case "${1:-watch}" in
+case "${1:-up}" in
+  up)              cmd_up ;;
   menu)            menu ;;
   start)   shift;  cmd_start "$@" ;;
   stop)    shift;  cmd_stop "$@" ;;
   restart) shift;  [ $# -ge 1 ] || die "restart needs app names"; cmd_stop "$@"; cmd_start "$@" ;;
   status)          cmd_status ;;
   watch)           cmd_watch ;;
-  grid)            cmd_grid ;;
   logs)    shift;  cmd_logs "$@" ;;
   stale)   shift;  cmd_stale "$@" ;;
   profile) shift;  cmd_profile "$@" ;;
   shell)   shift;  cmd_shell "$@" ;;
   doctor)          cmd_doctor ;;
-  attach)          tmux has-session -t "$SESSION" 2>/dev/null && attach_to "$SESSION" || die "nothing is running" ;;
   urls)            cmd_urls ;;
   *)               die "unknown command '${1}' — try: pitcrew help" ;;
 esac
