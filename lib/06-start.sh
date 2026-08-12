@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# lib/06-start.sh — bringing components up, and the live wait-dashboard shown
+# while they boot.
+
+start_deps() {
+  [ ${#PITCREW_DEPS[@]} -eq 0 ] && return
+  command -v docker >/dev/null || die "docker not found"
+  docker info >/dev/null 2>&1 || die "docker daemon is not running"
+  local dep
+  for dep in "${PITCREW_DEPS[@]}"; do
+    if container_running "$dep"; then
+      say "  ${GREEN}●${RESET} $dep already running"
+    else
+      say "  ${YELLOW}▶${RESET} starting container ${BOLD}$dep${RESET}"
+      docker start "$dep" >/dev/null || say "  ${RED}✗ could not start $dep${RESET}"
+    fi
+  done
+  [ -n "$PITCREW_DEPS_READY_CMD" ] && bash -c "$PITCREW_DEPS_READY_CMD" >/dev/null 2>&1
+}
+
+launch_window() {
+  ensure_session
+  mkdir -p "$LOG_DIR"
+  if win_exists "$1"; then
+    # a live pane alone is not proof of life — after a failed build the shell
+    # sits at a prompt; only an active scope or an open port means "running"
+    if ! win_dead "$1" && { scope_exists "$1" || port_open "$(comp_port "$1")"; }; then
+      say "  ${GREEN}●${RESET} $1 already running"; return
+    fi
+    tmux kill-window -t "$SESSION:$1" 2>/dev/null
+  fi
+  systemctl --user reset-failed "$SESSION-$1.scope" 2>/dev/null || true
+  : > "$LOG_DIR/$1.log"
+  tmux new-window -d -t "$SESSION" -n "$1" -c "$ROOT"
+  tmux pipe-pane -o -t "$SESSION:$1" "cat >> '$LOG_DIR/$1.log'"
+  tmux send-keys -t "$SESSION:$1" "$2" C-m
+  say "  ${YELLOW}▶${RESET} launched ${BOLD}$1${RESET}"
+}
+
+start_comp() {
+  local c=$1 cmd env max
+  cmd=$(comp_cmd "$c")
+  if [ -z "$cmd" ]; then warn "$c has no start command configured — skipping"; return; fi
+  env=$(comp_env "$c"); max=$(comp_max "$c")
+  launch_window "$c" "$env systemd-run --user --scope --collect --unit $SESSION-$c -p MemoryMax=$max -p MemorySwapMax=2G $cmd"
+}
+
+fail_marker() { # $1 comp — succeeds if its log shows a fatal startup failure
+  local f="$LOG_DIR/$1.log"
+  [ -f "$f" ] || return 1
+  tail -n 80 "$f" 2>/dev/null | strip_ansi \
+    | grep -qE 'BUILD FAILED|APPLICATION FAILED TO START|npm ERR!|EADDRINUSE|error Command failed'
+}
+
+fail_tail() { # $1 comp — last meaningful log lines, cleaned and indented
+  tail -n 150 "$LOG_DIR/$1.log" 2>/dev/null | strip_ansi | grep -vE '^\s*$' | tail -20 | sed 's/^/      /'
+}
+
+wait_dashboard() {
+  local comps=("$@") t=0 i=0 c st pending=1 drawn=0 frame nl focus line W w
+  [ ${#comps[@]} -eq 0 ] && return
+  local -A failed=()
+  say ""
+  tput civis 2>/dev/null
+  trap 'printf "\033[?7h"; tput cnorm 2>/dev/null; echo; return 0' INT
+  while [ $t -lt "$PITCREW_WAIT_SECS" ]; do
+    printf '\033[?7l'   # no auto-wrap: a too-wide line must never break the repaint line count
+    W=$(tput cols 2>/dev/null); [ -n "$W" ] || W=100; w=$((W - 8))
+    pending=0; focus=""; frame=""
+    printf -v line '  %b%s%b %bwaiting%b %b(%ss · Ctrl+C stops waiting — services keep starting)%b' \
+      "$MAGENTA" "${SPIN[i % 10]}" "$RESET" "$BOLD" "$RESET" "$GREY" "$t" "$RESET"
+    frame+="$line"$'\e[K\n\e[K\n'
+    for c in "${comps[@]}"; do
+      st=$(comp_state "$c")
+      if [ "$st" != up ]; then
+        if [ "$st" = crashed ] || fail_marker "$c"; then
+          st=crashed; failed[$c]=1
+        else
+          pending=$((pending + 1))
+        fi
+        [ -z "$focus" ] && focus=$c
+      fi
+      printf -v line '    %b %-14s %b%s%b' "$(state_icon "$st")" "$c" "$GREY" "$st" "$RESET"
+      frame+="$line"$'\e[K\n'
+    done
+    # live tail of the first not-yet-up service, so a slow or dying start is never a black box
+    if [ -n "$focus" ] && [ -f "$LOG_DIR/$focus.log" ]; then
+      frame+=$'\e[K\n'
+      printf -v line '  %b── %s · live log ────────────────────────────────%b' "$GREY" "$focus" "$RESET"
+      frame+="$line"$'\e[K\n'
+      while IFS= read -r line; do
+        frame+="    ${DIM}${line}${RESET}"$'\e[K\n'
+      done < <(tail -n 80 "$LOG_DIR/$focus.log" 2>/dev/null | strip_ansi | grep -vE '^\s*$' \
+               | tail -10 | expand -t 4 | awk -v w="$w" '{ print substr($0, 1, w) }')
+    fi
+    nl=${frame//[^$'\n']/}
+    [ "$drawn" -gt 0 ] && printf '\033[%dF' "$drawn"
+    printf '%b\033[0J' "$frame"
+    drawn=${#nl}
+    [ "$pending" -eq 0 ] && break
+    sleep 1; t=$((t + 1)); i=$((i + 1))
+  done
+  trap - INT
+  printf '\033[?7h'; tput cnorm 2>/dev/null
+  echo
+  if [ ${#failed[@]} -eq 0 ] && [ "$pending" -eq 0 ]; then
+    say "  ${GREEN}${BOLD}✔ everything is up!${RESET}"
+    command -v notify-send >/dev/null && notify-send -i utilities-terminal "$PITCREW_PROJECT_NAME" "All services are up" 2>/dev/null
+    return
+  fi
+  local any=0
+  for c in "${comps[@]}"; do
+    [ -n "${failed[$c]:-}" ] || continue
+    any=1
+    say "  ${RED}${BOLD}✗ $c failed to start${RESET} ${GREY}— last log lines:${RESET}"
+    fail_tail "$c"
+    say "  ${GREY}full log:${RESET} pitcrew logs $c"
+    echo
+  done
+  if [ "$pending" -gt 0 ]; then
+    say "  ${YELLOW}⚠ still waiting on some services — they keep starting in tmux.${RESET}"
+    say "  ${GREY}check progress with:${RESET} pitcrew ${GREY}(dashboard) ·${RESET} pitcrew logs"
+  elif [ "$any" -eq 1 ]; then
+    say "  ${GREY}fix the error and retry:${RESET} pitcrew restart <app>"
+  fi
+}
+
+cmd_start() {
+  banner
+  local words; mapfile -t words < <(expand_profiles "${@:-all}")
+  say "${BOLD}① deps${RESET}"
+  start_deps
+  [ ${#PITCREW_DEPS[@]} -eq 0 ] && ok "no deps configured"
+  if [ "${words[*]}" = "deps" ]; then echo; return; fi
+  echo
+  say "${BOLD}② services${RESET}"
+  local comps; mapfile -t comps < <(resolve_targets "${words[@]}")
+  local c
+  for c in "${comps[@]}"; do start_comp "$c"; done
+  say ""
+  say "${BOLD}③ waiting for services${RESET} ${GREY}(Ctrl+C to stop waiting — they keep running)${RESET}"
+  wait_dashboard "${comps[@]}"
+  print_urls
+}
