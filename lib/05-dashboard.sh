@@ -143,18 +143,15 @@ cmd_watch() {
       q|Q) break ;;
       l|L) log_view ;;   # same alt screen — switch logs in place, q comes back here
       s|S) if command -v fzf >/dev/null; then
-             printf '\033[?7h'; tput rmcup 2>/dev/null; tput cnorm 2>/dev/null
+             printf '\033[?7h'; tput cnorm 2>/dev/null
+             printf '\n\n%b── stop %b\n' "$GREY" "$RESET"
              pick=$(running_comps | fzf --multi --height=40% --border=rounded \
                --prompt='stop ❯ ' --pointer='▶' --marker='✔ ' \
                --header='TAB = select several · Enter = stop · Esc = cancel') || pick=""
              while IFS= read -r sc; do [ -n "$sc" ] && stop_comp "$sc"; done <<< "$pick"
-             tput smcup 2>/dev/null; tput civis 2>/dev/null
+             tput civis 2>/dev/null
            fi ;;
-      m|M) if command -v fzf >/dev/null; then
-             printf '\033[?7h'; tput rmcup 2>/dev/null; tput cnorm 2>/dev/null
-             menu
-             tput smcup 2>/dev/null; tput civis 2>/dev/null
-           fi ;;
+      m|M) watch_menu ;;
     esac
   done
   trap - INT
