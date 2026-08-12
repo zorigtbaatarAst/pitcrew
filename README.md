@@ -70,9 +70,9 @@ ln -s "$(pwd)/pitcrew/bin/pitcrew" ~/.local/bin/pitcrew
    config, like `git` does for `.git`) and run:
 
 ```bash
-pitcrew                # THE command: brings up whatever isn't running yet,
-                        # then drops into the live dashboard. Nothing else
-                        # to remember for day-to-day use.
+pitcrew start          # bring everything up, with a live boot dashboard
+pitcrew                # live dashboard (also the default with no args) — observes
+                        # only, starts nothing on its own
 pitcrew menu           # fzf menu for everything below
 pitcrew logs           # in-place log viewer, Tab/←→ to switch services
 pitcrew stop           # stop everything (deps stay up unless --deps)
@@ -81,16 +81,17 @@ pitcrew stop           # stop everything (deps stay up unless --deps)
 ## Commands
 
 ```
-pitcrew                  ensure everything is up, then the live dashboard
-                          (l logs · s stop · m menu · q quit)
+pitcrew                  live dashboard (default) — l logs · s stop · m menu · q quit
+                          observes only — nothing is started for you
                           (in logs: Tab/←→ switch · x stop · r restart · Enter full log)
 pitcrew menu              interactive fzf menu
 pitcrew start [all|backends|frontends|deps|@profile|<app>...]
+pitcrew up                 start whatever isn't already running, then the live dashboard
 pitcrew stop  [all|@profile|<app>...]     stops tool-managed AND external
 pitcrew stop --deps                       also stop non-protected deps
 pitcrew restart <app>...
 pitcrew status                    one-shot dashboard
-pitcrew watch                     live auto-refreshing dashboard (no auto-start)
+pitcrew watch                     same as bare `pitcrew` — live dashboard, no auto-start
 pitcrew logs [<component>]        in-place log viewer
 pitcrew stale [--restart]         apps whose code changed since they started
 pitcrew profile save <name> <targets...> | list | rm <name>
@@ -102,9 +103,10 @@ pitcrew urls | help
 A "target" is an app name (`sales`), a specific role (`be-sales`, `fe-sales`),
 a group (`all`, `backends`, `frontends`, `deps`), or a saved `@profile`.
 
-`pitcrew` with no arguments and `pitcrew watch` both show the same live
-dashboard — the difference is that bare `pitcrew` starts whatever's missing
-first, while `watch` just observes.
+`pitcrew` with no arguments and `pitcrew watch` are the same thing — a live
+dashboard that only observes. Nothing gets started unless you explicitly ask
+for it with `pitcrew start` or `pitcrew up` (the latter starts whatever's
+missing, then drops into the same dashboard — handy, but opt-in).
 
 ## Config
 

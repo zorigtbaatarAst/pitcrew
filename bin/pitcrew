@@ -29,16 +29,17 @@ usage() {
 pitcrew — local dev-stack launcher
 
 Usage:
-  pitcrew                  ensure everything is up, then the live dashboard
-                            (l logs · s stop · m menu · q quit)
+  pitcrew                  live dashboard (default) — l logs · s stop · m menu · q quit
+                            observes only — nothing is started for you
                             (in logs: Tab/←→ switch · x stop · r restart · Enter full log)
   pitcrew menu              interactive fzf menu
   pitcrew start [all|backends|frontends|deps|@profile|<app>...]
+  pitcrew up                 start whatever isn't already running, then the live dashboard
   pitcrew stop  [all|@profile|<app>...]     stops tool-managed AND external
   pitcrew stop --deps                       also stop non-protected deps
   pitcrew restart <app>...
   pitcrew status                    one-shot dashboard
-  pitcrew watch                     live auto-refreshing dashboard (no auto-start)
+  pitcrew watch                     same as bare `pitcrew` — live dashboard, no auto-start
   pitcrew logs [<component>]        in-place log viewer
   pitcrew stale [--restart]         apps whose code changed since they started
                                      (needs PITCREW_WATCH_DIR set per app in config)
@@ -67,7 +68,7 @@ source "$PITCREW_CFG"
 config_finalize "$PITCREW_CFG"
 cd "$ROOT" 2>/dev/null || die "project root not found at $ROOT"
 
-case "${1:-up}" in
+case "${1:-watch}" in
   up)              cmd_up ;;
   menu)            menu ;;
   start)   shift;  cmd_start "$@" ;;
