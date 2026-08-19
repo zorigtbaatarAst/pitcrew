@@ -70,6 +70,7 @@ menu_choices() { # $1 = "overlay" trims entries meaningless inside the watch ove
   items+=(
     $'logs\t📜  view logs of one service…'
     $'shell\t🍃  open a configured shell…'
+    $'switch\t🗂   switch project…'
     $'theme\t🌈  change theme…'
     $'doctor\t🩺  doctor — check my environment'
     $'urls\t🌐  open all frontend URLs'
@@ -186,9 +187,10 @@ dispatch_choice() {
     shell)         if [ ${#PITCREW_SHELLS[@]} -eq 0 ]; then warn "no shells configured (set PITCREW_SHELLS)"; sleep 2; return 0; fi
                    shname=$(printf '%s\n' "${!PITCREW_SHELLS[@]}" | fzf --height=30% --border=rounded --prompt='shell ❯ ') || true
                    [ -n "${shname:-}" ] && { clear; cmd_shell "$shname"; read -rp "  press Enter…"; } ;;
+    switch)        switch_project ;;
     theme)         th=$(theme_list | fzf --height=40% --border=rounded --ansi --prompt='theme ❯ ' \
                         --pointer='▶' --header='live preview · Enter applies and remembers · Esc cancels' \
-                        --preview "'$SELF' theme --swatch {}" --preview-window='down:3') || true
+                        --preview "'$SELF' theme --swatch {}" --preview-window='down:3' 2>/dev/null) || true
                    if [ -n "${th:-}" ]; then
                      theme_save "$th"
                      PITCREW_THEME_ENV=$th; theme_load

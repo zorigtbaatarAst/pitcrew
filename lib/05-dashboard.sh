@@ -415,7 +415,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # rather than as a line of shell output
     line=" "
     local kc cap lbl kvis=1 addw
-    for kc in "↑↓:select" "⏎:tree" "l:logs" "e:errors" "r:restart" "s:stop" "m:menu" "q:quit"; do
+    for kc in "↑↓:select" "⏎:tree" "l:logs" "e:errors" "r:restart" "s:stop" "p:project" "m:menu" "q:quit"; do
       cap=${kc%%:*}; lbl=${kc#*:}
       addw=$(( ${#cap} + 2 + 1 + ${#lbl} + 2 ))     # " cap " + " " + label + "  "
       [ $(( kvis + addw )) -gt "$W" ] && break
@@ -458,6 +458,7 @@ cmd_watch() {
                             stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1
                             toast "${YELLOW}↻${RESET} restarting ${BOLD}$c${RESET}"; } ;;
       s|S) watch_stop ;;
+      p|P) switch_project ;;
       m|M) watch_menu ;;
       mouse) watch_mouse ;;
     esac

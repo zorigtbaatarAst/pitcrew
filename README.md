@@ -81,6 +81,18 @@ pitcrew edit                    # open the current project's config in $EDITOR
 pitcrew forget some-repo        # unregister it; the checkout is untouched
 ```
 
+You can also switch without leaving the dashboard: press **`p`**, or pick
+**switch project…** from the `m` menu. The picker previews each project's
+root, app list and how many of its services are currently running.
+
+Switching re-executes pitcrew against the new project rather than reloading in
+place. That is deliberate: a config's bare `declare -A` is scoped to whatever
+*function* sources it, so re-sourcing from inside a running dashboard would
+silently discard the new project's arrays and leave you looking at one
+project's components with another's ports. Re-exec cannot leave half-updated
+state behind, and per-project history and error counters correctly start
+fresh.
+
 A project is found in this order — first hit wins:
 
 1. `-C <dir>` — an explicit directory
@@ -242,6 +254,7 @@ boot report, failure log tails and URL table.
 | Key | |
 |---|---|
 | `↑` `↓` | select a service (mouse click also selects, when enabled) |
+| `p` | switch to another registered project |
 | `⏎` | expand/collapse that service's process tree |
 | `e` | the error radar's actual matched log lines, not just the count |
 | `l` `r` `s` `m` `q` | logs · restart · stop · menu · quit |

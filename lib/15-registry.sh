@@ -72,7 +72,66 @@ project_running_count() { # $1 root → count
   printf '%d' "$n"
 }
 
+# Everything about one project, for the picker's preview pane. The app list
+# lives in the config, and for a pointer entry that config is the repository's
+# own — so load it rather than grepping. A $( ) subshell is safe here in a way
+# a function is not: a bare `declare -A` inside a sourced file is scoped to the
+# running FUNCTION, not to a subshell.
+project_info() { # $1 name
+  local f root apps n live
+  f=$(project_file "$1") || return 1
+  [ -f "$f" ] || return 1
+  root=$(config_declared_root "$f")
+  apps=$( ROOT=$root; config_defaults 2>/dev/null; source "$f" 2>/dev/null
+          printf '%s' "${PITCREW_APPS[*]:-}" )
+  n=$(printf '%s' "$apps" | wc -w)
+  live=$(project_running_count "$root")
+  printf '  %b%s%b\n' "$C_ACCENT$BOLD" "$1" "$RESET"
+  printf '  %b%s%b\n' "$C_MUTED" "$root" "$RESET"
+  [ -d "$root" ] || printf '  %b✗ that directory is gone%b\n' "$C_CRIT" "$RESET"
+  if [ "$live" -gt 0 ]; then
+    printf '  %b%s apps%b · %b%s running%b\n' "$C_SUBTLE" "$n" "$RESET" "$C_OK" "$live" "$RESET"
+  else
+    printf '  %b%s apps · idle%b\n' "$C_SUBTLE" "$n" "$RESET"
+  fi
+  printf '  %b%s%b\n' "$C_FAINT" "$apps" "$RESET"
+}
+
+project_pick() { # → the chosen project name on stdout, nothing if cancelled
+  command -v fzf >/dev/null 2>&1 || return 1
+  local n; n=$(project_list | wc -l)
+  [ "$n" -gt 0 ] || return 1
+  project_list | fzf --height=45% --border=rounded --ansi \
+    --prompt='project ❯ ' --pointer='▶' \
+    --header='switch project · Enter opens it · Esc cancels' \
+    --preview "'$SELF' projects --show {}" --preview-window='down:5' 2>/dev/null
+}
+
+# Switching project inside a running dashboard cannot be done by re-sourcing:
+# a config's bare `declare -A` would be scoped to whatever function did the
+# sourcing and silently discarded (see the note in lib/02-config.sh). Re-exec
+# instead — it is one line, it cannot leave half-updated state behind, and the
+# per-project history and error counters correctly start fresh.
+switch_project() {
+  local n
+  tui_pause
+  n=$(project_pick) || n=""
+  if [ -z "$n" ]; then
+    tui_resume
+    declare -F toast >/dev/null && toast "${C_MUTED}no other project selected${RESET}"
+    return 0
+  fi
+  project_set_current "$n"
+  tui_leave
+  exec "$SELF" -p "$n" "${PITCREW_CMD:-watch}"
+}
+
 cmd_projects() {
+  if [ "${1:-}" = --show ]; then
+    [ -n "${2:-}" ] || die "usage: pitcrew projects --show <name>"
+    project_info "$2"
+    return 0
+  fi
   local names; mapfile -t names < <(project_list)
   if [ ${#names[@]} -eq 0 ]; then
     say ""

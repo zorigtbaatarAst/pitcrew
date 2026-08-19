@@ -184,6 +184,39 @@ pitcrew_app only --be-cmd "true" --be-port 19999'
   cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
 }
 
+test_switching_project_re_execs_into_the_same_view() {
+  # It cannot be done by re-sourcing: a config's bare `declare -A` would be
+  # scoped to the function that sourced it and silently discarded, leaving the
+  # dashboard showing one project's components with another's ports.
+  ( SELF=/bin/echo
+    PITCREW_CMD=logs
+    printf 'PITCREW_ROOT=/tmp\n' > "$(project_file other)"
+    fzf() { echo other; }
+    local out; out=$(switch_project)
+    assert_match "$out" '\-p other logs' "re-execs into the picked project, same view"
+    assert_eq "$(project_current)" "other" "and the choice persists"
+    rm -f "$(project_file other)" )
+}
+
+test_cancelling_the_project_picker_switches_nothing() {
+  ( SELF=/bin/echo
+    printf 'PITCREW_ROOT=/tmp\n' > "$(project_file other)"
+    local before; before=$(project_current || echo none)
+    fzf() { return 1; }
+    local out; out=$(switch_project)
+    assert_not_match "$out" '\-p other' "no re-exec"
+    assert_eq "$(project_current || echo none)" "$before" "current project unchanged"
+    rm -f "$(project_file other)" )
+}
+
+test_the_picker_preview_describes_a_project() {
+  _init_repo
+  local info; info=$(plain "$(project_info fixrepo)")
+  assert_match "$info" 'fixrepo'  "names it"
+  assert_match "$info" "$ROOTFIX" "shows where it lives"
+  assert_match "$info" 'apps'     "and how many apps it has"
+}
+
 test_a_project_is_registered_and_becomes_current() {
   _init_repo
   assert_match "$(project_list | tr '\n' ' ')" 'fixrepo' "listed"

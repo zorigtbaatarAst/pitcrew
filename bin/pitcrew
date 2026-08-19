@@ -125,6 +125,10 @@ config_finalize "$PITCREW_CFG"
 config_validate
 cd "$ROOT" 2>/dev/null || die "project root not found at $ROOT"
 
+# Remembered so that switching project from inside the UI can re-exec into the
+# same view the user was already looking at.
+PITCREW_CMD=${1:-watch}
+
 case "${1:-watch}" in
   up)              cmd_up ;;
   menu)            menu ;;
