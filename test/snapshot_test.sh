@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# The collector: /proc parsing, pidfile trust, and the state machine those
+# feed. These are the functions where a wrong answer is silent rather than
+# loud — a mis-parsed field just shows a plausible number.
+set -u
+source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
+load_pitcrew
+source "$PITCREW_CFG"
+config_finalize "$PITCREW_CFG"
+
+test_local_address_recognition() {
+  # /proc/net/tcp writes each 32-bit word little-endian, so 127.0.0.1 is
+  # 0100007F. Matching only loopback-reachable binds is what keeps "up"
+  # meaning what /dev/tcp/127.0.0.1 used to mean.
+  assert_ok   _addr_is_local 00000000                          # 0.0.0.0
+  assert_ok   _addr_is_local 0100007F                          # 127.0.0.1
+  assert_ok   _addr_is_local 00000000000000000000000000000000  # ::
+  assert_ok   _addr_is_local 00000000000000000000000001000000  # ::1
+  assert_ok   _addr_is_local 0000000000000000FFFF00000100007F  # ::ffff:127.0.0.1
+  assert_fails _addr_is_local 0101A8C0                         # 192.168.1.1 — not loopback
+  assert_fails _addr_is_local DEADBEEF
+}
+
+test_pid_stat_matches_what_ps_reports() {
+  [ "$PITCREW_COLLECTOR" = proc ] || return 0     # /proc-only assertion
+  _pid_stat $$
+  local ps_rss; ps_rss=$(( $(ps -o rss= -p $$ | tr -d ' ') * 1024 ))
+  assert_eq "$_P_RSS" "$ps_rss" "RSS must agree with ps to the byte"
+  assert_match "$_P_JIFF" '^[0-9]+$' "jiffies is a number"
+  assert_match "$_P_CMD"  '^(bash|snapshot_test.sh)$' "comm"
+}
+
+test_pid_stat_survives_a_comm_containing_spaces_and_parens() {
+  [ "$PITCREW_COLLECTOR" = proc ] || return 0
+  # /proc/<pid>/stat field 2 can contain anything, so the parser splits on the
+  # LAST ") " — a naive whitespace split silently shifts every later field.
+  # comm comes from the executable's NAME, not argv[0], so `exec -a` will not
+  # do it — the binary itself has to be called something awkward.
+  local d; d=$(mktemp -d)
+  cp "$(command -v sleep)" "$d/we ) ird"
+  "$d/we ) ird" 30 & local p=$!
+  sleep 0.4
+  _pid_stat "$p"
+  assert_match "$_P_CMD"  'ird' "comm with spaces and parens is recovered"
+  assert_match "$_P_JIFF" '^[0-9]+$' "later fields did not shift"
+  assert_match "$_P_RSS"  '^[0-9]+$' "rss still parses"
+  kill "$p" 2>/dev/null; rm -rf "$d"
+}
+
+test_pidfile_from_a_previous_boot_is_not_trusted() {
+  # A pidfile that survived a reboot names a pid that is either gone or now
+  # belongs to something unrelated. Reporting it as "crashed" is wrong AND
+  # sticky — the file outlives every reboot.
+  [ -d /proc/1 ] || return 0
+  local d; d=$(mktemp -d); LOG_DIR=$d
+  echo 999999 > "$d/be-both.pid"
+
+  touch -d '2000-01-01' "$d/be-both.pid"
+  _read_pidfile be-both
+  assert_empty "$PIDF" "pre-boot pidfile is discarded"
+
+  touch "$d/be-both.pid"                 # now, i.e. after this boot
+  _read_pidfile be-both
+  assert_eq "$PIDF" "999999" "post-boot pidfile is kept even though the pid is dead"
+
+  # a LIVE pid is always trusted, whatever the file's mtime claims
+  echo $$ > "$d/be-both.pid"; touch -d '2000-01-01' "$d/be-both.pid"
+  _read_pidfile be-both
+  assert_eq "$PIDF" "$$" "a live pid is trusted regardless of mtime"
+  rm -rf "$d"
+}
+
+# ── the state machine, driven from a fabricated snapshot ────────────────────
+_state_of() { # $1 comp, $2 port-open?, $3 pid, $4 health
+  SNAP_PORT_OPEN=(); SNAP_PID=(); SNAP_HEALTH=(); SNAP_STATE=()
+  local app=${1#??-} role=${1:0:2} port
+  if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+  [ "$2" = open ] && SNAP_PORT_OPEN[$port]=1
+  SNAP_PID[$1]=$3
+  SNAP_HEALTH[$app]=$4
+  _snapshot_states
+  printf '%s' "${SNAP_STATE[$1]}"
+}
+
+test_state_machine() {
+  assert_eq "$(_state_of be-both open   $$      UP)"   up       "port open + healthy"
+  assert_eq "$(_state_of be-both open   $$      DOWN)" starting "port open, health not ready yet"
+  assert_eq "$(_state_of be-both closed $$      UP)"   starting "alive but not listening yet"
+  assert_eq "$(_state_of be-both closed 999999  UP)"   crashed  "pidfile recorded, process gone"
+  assert_eq "$(_state_of be-both closed ''      UP)"   down     "never started"
+  # the frontend has no health path, so an open port alone is enough
+  assert_eq "$(_state_of fe-both open   $$      DOWN)" up       "no health path means port-open is up"
+}
+
+test_unconfigured_role_is_n_a_not_down() {
+  SNAP_STATE=()
+  # beonly has no frontend at all — it must not be counted as something that
+  # is down and could be started
+  assert_eq "$(comp_state fe-beonly)" "n/a" "absent role"
+}
+
+run_tests

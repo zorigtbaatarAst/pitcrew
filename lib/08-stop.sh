@@ -24,14 +24,25 @@ stop_comp() {
 }
 
 cmd_stop() {
-  local stop_deps=0 raw=()
-  local w
-  for w in "$@"; do [ "$w" = "--deps" ] && stop_deps=1 || raw+=("$w"); done
-  [ ${#raw[@]} -eq 0 ] && raw=(all)
-  local words; mapfile -t words < <(expand_profiles "${raw[@]}")
-  local comps; mapfile -t comps < <(resolve_targets "${words[@]}")
+  # `--deps` means "everything, plus the containers"; a bare `deps` target
+  # means "just the containers". The latter used to resolve to no components
+  # and then stop nothing at all, exiting 0 — the command looked like it had
+  # worked.
+  local stop_deps=0 only_deps=0 raw=() w
+  for w in "$@"; do
+    case "$w" in
+      --deps) stop_deps=1 ;;
+      deps)   stop_deps=1; only_deps=1 ;;
+      *)      raw+=("$w") ;;
+    esac
+  done
+  [ ${#raw[@]} -eq 0 ] && [ $only_deps -eq 0 ] && raw=(all)
   local c
-  for c in "${comps[@]}"; do stop_comp "$c"; done
+  if [ ${#raw[@]} -gt 0 ]; then
+    local words; mapfile -t words < <(expand_profiles "${raw[@]}")
+    local comps; mapfile -t comps < <(resolve_targets "${words[@]}")
+    for c in "${comps[@]}"; do stop_comp "$c"; done
+  fi
   if [ $stop_deps -eq 1 ]; then
     for c in "${PITCREW_DEPS[@]}"; do
       if [[ " ${PITCREW_PROTECTED_DEPS[*]} " == *" $c "* ]]; then

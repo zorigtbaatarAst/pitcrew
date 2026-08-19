@@ -112,7 +112,8 @@ app_roles() { # $1 app → "be", "fe", "be fe", or "" (config error — caught e
   local app=$1 out=()
   app_has_role "$app" be && out+=(be)
   app_has_role "$app" fe && out+=(fe)
-  printf '%s\n' "${out[@]}"
+  [ ${#out[@]} -eq 0 ] && return 0      # an app with no roles must yield nothing,
+  printf '%s\n' "${out[@]}"            # not a blank line that becomes "-app"
 }
 
 comp_port() { local app=${1#??-}; [ "${1:0:2}" = be ] && echo "${PITCREW_BE_PORT[$app]:-}" || echo "${PITCREW_FE_PORT[$app]:-}"; }

@@ -43,7 +43,10 @@ your laptop falls over running six JVMs and six Node processes at once.
 
 ## Install
 
-Requires `bash`, `docker` (only if you declare deps), and ideally `systemd
+Requires **bash 5.0 or newer** (`$EPOCHREALTIME`, negative array indices and
+`declare -gA` are used throughout; `pitcrew` checks this up front and tells you
+rather than failing with a syntax error). macOS still ships bash 3.2, so
+there you need `brew install bash` first. Also requires `docker` (only if you declare deps), and ideally `systemd
 --user` on Linux for RAM caps (the tool still runs without it, just without
 caps — this is the normal path on macOS). `lsof` is used for port lookups
 (falls back to `ss` on Linux if missing). `fzf` is optional but strongly
@@ -240,6 +243,28 @@ project has services that don't fit that shape (a worker fleet, multiple
 backends per app, etc.), point the extra process at whichever role slot is
 free, or open an issue — the two-role model is a scope decision, not a hard
 architectural limit.
+
+## Development
+
+```bash
+make check      # lint + tests, the same thing CI runs
+make test       # tests only
+make test T=meters   # just the files matching "meters"
+make lint       # bash -n everything, then shellcheck if it is installed
+```
+
+The suite is plain bash — no bats, no npm, no submodule — because pitcrew
+installs with `ln -s` and has to stay runnable on a box where you cannot
+install anything. `test/harness.sh` is the whole framework.
+
+The most important test is `test/perf_test.sh`, which asserts that **a
+dashboard frame forks nothing at all**. That invariant is the reason
+sub-second refresh and per-service history are affordable, and it is easy to
+break by accident: a single `$(helper)` looks harmless and costs a subshell a
+dozen times per frame. It is measured with a SIGCHLD trap, which counts this
+shell's children exactly — `/proc/stat`'s counter is system-wide and far too
+noisy, and the `times` builtin misses a cheap subshell entirely because it
+burns no measurable CPU.
 
 ## License
 

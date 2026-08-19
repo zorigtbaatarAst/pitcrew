@@ -17,6 +17,23 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -u
 
+# pitcrew leans on bash 5 features throughout: $EPOCHREALTIME for fork-free
+# timing, negative array indices, `declare -gA`, `printf -v arr[i]`. Without
+# this guard an old bash fails with a syntax error from a random lib file,
+# which tells the user nothing. macOS still ships bash 3.2, so this is the
+# single most likely way someone meets this tool for the first time.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
+  printf 'pitcrew needs bash 5.0 or newer (found %s).
+' "${BASH_VERSION:-unknown}" >&2
+  case "$(uname -s)" in
+    Darwin) printf 'On macOS: brew install bash, then re-run pitcrew.
+' >&2 ;;
+    *)      printf 'Install a newer bash and make sure it is first on your PATH.
+' >&2 ;;
+  esac
+  exit 1
+fi
+
 SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || greadlink -f "${BASH_SOURCE[0]}")
 LIB_DIR="$(cd "$(dirname "$SELF")/../lib" && pwd)"
 for f in "$LIB_DIR"/*.sh; do

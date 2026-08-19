@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: lint
+        run: make lint
+      - name: test
+        run: make test
+      - name: the tool runs at all
+        run: |
+          ./bin/pitcrew -C test/fixture help
+          ./bin/pitcrew -C test/fixture status
+          ./bin/pitcrew -C test/fixture doctor
+
+  # macOS has no /proc, so this is the only thing that exercises the ps/lsof
+  # fallback collector — the path that is otherwise never run during
+  # development. It also catches anything that quietly assumed GNU coreutils.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install bash 5
+        run: brew install bash          # macOS ships bash 3.2; pitcrew needs 5
+      - name: test
+        run: /opt/homebrew/bin/bash test/run.sh
+      - name: the tool runs at all
+        run: |
+          /opt/homebrew/bin/bash ./bin/pitcrew -C test/fixture status
+          /opt/homebrew/bin/bash ./bin/pitcrew -C test/fixture doctor

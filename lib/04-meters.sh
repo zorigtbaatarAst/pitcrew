@@ -177,6 +177,12 @@ err_scan() {
   local mark="$LOG_DIR/.errmark"
   local -a NEW todo=()
 
+  # Nothing has ever been started in this project, so there is no log
+  # directory and nothing to scan. Without this the marker write below fails
+  # loudly on a clean checkout — `pitcrew status` greets a new user with an
+  # error about a file they have never heard of.
+  [ -d "$LOG_DIR" ] || return 0
+
   # Even an empty read costs ~0.5ms per file, so 12 idle logs would burn 7ms a
   # frame doing nothing. `-nt` is a builtin mtime comparison: only logs that
   # were actually written since the last scan get opened at all.
@@ -187,8 +193,16 @@ err_scan() {
   for c in "${PITCREW_COMPS[@]}"; do
     f="$LOG_DIR/$c.log"
     [ -r "$f" ] || continue
+    # Skip ONLY when the marker is strictly newer than the log, i.e. the log
+    # provably has not been touched since the last scan. Testing the other way
+    # round ("log is newer than marker") looks equivalent and is not: mtime
+    # granularity is coarser than the nanoseconds stat prints, so a log written
+    # in the same clock tick as the marker gets an IDENTICAL timestamp, `-nt`
+    # is false for a tie, and that log is skipped. A quiet-after-crash service
+    # could have its last lines — the interesting ones — missed indefinitely.
+    # Ties must favour reading.
     if [ -z "${ERR_FD[$c]:-}" ] || [ "${ERR_PID[$c]-__unset__}" != "${SNAP_PID[$c]:-}" ] \
-       || [ ! -e "$mark" ] || [ "$f" -nt "$mark" ]; then
+       || [ ! -e "$mark" ] || ! [ "$mark" -nt "$f" ]; then
       todo+=("$c")
     fi
   done
