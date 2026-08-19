@@ -70,39 +70,111 @@ menu_choices() { # $1 = "overlay" trims entries that are meaningless inside the 
   printf '%s\n' "${items[@]}"
 }
 
+# ── actions taken from inside the live dashboard ────────────────────────────
+# The frame owns the screen, so nothing here may print. Each one does the work
+# silently, leaves a toast, and closes the picker — cmd_watch then repaints and
+# you watch the components go ○ down → ◐ starting → ● up in the dashboard
+# itself, which is the whole point of having one.
+#
+# This is what used to break: cmd_start wrote a banner, a "launched X" list, a
+# whole boot dashboard and a URL table straight over the live frame, then
+# blocked on "press Enter", then reopened the picker — so the monitor was gone
+# and did not come back.
+
+ov_deps() { # start docker deps quietly; returns 1 only if docker really can't
+  [ ${#PITCREW_DEPS[@]} -gt 0 ] || return 0
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    toast "${RED}✗${RESET} docker is not available — deps not started"
+    return 1
+  fi
+  # start_deps can die() on its own; keep that inside a subshell so it can
+  # never take the dashboard down with it
+  ( start_deps ) >/dev/null 2>&1 || true
+  SNAP_DEP_AT=0                     # make the next frame re-check dep state
+  return 0
+}
+
+ov_start() { # $@ = targets
+  MENU_CLOSE=1
+  ov_deps || return 0
+  start_targets "$@" >/dev/null 2>&1
+  if [ ${#STARTED[@]} -eq 0 ]; then toast "${GREY}nothing to start${RESET}"; return 0; fi
+  toast "${YELLOW}▶${RESET} starting ${BOLD}${STARTED[*]}${RESET}"
+}
+
+ov_stop() { # $@ = targets, may include --deps
+  MENU_CLOSE=1
+  cmd_stop "$@" >/dev/null 2>&1
+  SNAP_DEP_AT=0
+  toast "${GREY}■${RESET} stopped ${BOLD}${*:-all}${RESET}"
+}
+
+ov_restart() { # $@ = targets
+  MENU_CLOSE=1
+  cmd_stop "$@" >/dev/null 2>&1
+  start_targets "$@" >/dev/null 2>&1
+  toast "${YELLOW}↻${RESET} restarting ${BOLD}${STARTED[*]}${RESET}"
+}
+
+ov_stale() {
+  MENU_CLOSE=1
+  local stale; mapfile -t stale < <(stale_comps)
+  if [ ${#stale[@]} -eq 0 ]; then toast "${GREEN}✔${RESET} everything is fresh"; return 0; fi
+  local c
+  for c in "${stale[@]}"; do stop_comp "$c" >/dev/null 2>&1; done
+  for c in "${stale[@]}"; do start_comp "$c" >/dev/null 2>&1; done
+  toast "${YELLOW}↻${RESET} restarted stale ${BOLD}${stale[*]}${RESET}"
+}
+
 # Runs one chosen action. Sets MENU_CLOSE=1 when the picker loop (either
 # menu() or watch_menu()) should stop reopening.
+#   $1 = the chosen line
+#   $2 = "overlay" when this came from the live dashboard
 dispatch_choice() {
-  local choice=$1
+  local choice=$1 mode=${2:-} sel prof running pname shname
   MENU_CLOSE=0
   case "$choice" in
-    🚀*) cmd_start all; read -rp "  press Enter…" ;;
-    ▶*)  local sel; sel=$(pick_apps) || true
-         [ -n "${sel:-}" ] && { cmd_start $sel; read -rp "  press Enter…"; } ;;
-    📦*) local prof; prof=$(pick_profile) || { warn "no profiles yet — save one first"; sleep 2; return; }
-         [ -n "${prof:-}" ] && { cmd_start "@$prof"; read -rp "  press Enter…"; } ;;
-    💾*) local running; running=$(running_comps | tr '\n' ' ')
-         if [ -z "$running" ]; then warn "nothing is running to save"; sleep 2; return; fi
+    🚀*) if [ "$mode" = overlay ]; then ov_start all
+         else cmd_start all; read -rp "  press Enter…"; fi ;;
+    ▶*)  sel=$(pick_apps) || true
+         [ -n "${sel:-}" ] || return 0
+         if [ "$mode" = overlay ]; then ov_start $sel
+         else cmd_start $sel; read -rp "  press Enter…"; fi ;;
+    📦*) prof=$(pick_profile) || { warn "no profiles yet — save one first"; sleep 2; return 0; }
+         [ -n "${prof:-}" ] || return 0
+         if [ "$mode" = overlay ]; then ov_start "@$prof"
+         else cmd_start "@$prof"; read -rp "  press Enter…"; fi ;;
+    💾*) running=$(running_comps | tr '\n' ' ')
+         if [ -z "$running" ]; then warn "nothing is running to save"; sleep 2; return 0; fi
          say "  running now: ${CYAN}$running${RESET}"
-         local pname; read -rp "  profile name: " pname
+         read -rp "  profile name: " pname
          [ -n "$pname" ] && { cmd_profile save "$pname" $running; sleep 1; } ;;
-    🧩*) cmd_start backends;  read -rp "  press Enter…" ;;
-    🎨*) cmd_start frontends; read -rp "  press Enter…" ;;
-    🔄*) local sel; sel=$(pick_apps) || true
-         [ -n "${sel:-}" ] && { cmd_stop $sel; cmd_start $sel; read -rp "  press Enter…"; } ;;
-    ♻*)  cmd_stale --restart; read -rp "  press Enter…" ;;
-    ⏹*)  cmd_stop all; sleep 1 ;;
-    🛑*) cmd_stop all --deps; sleep 1 ;;
+    🧩*) if [ "$mode" = overlay ]; then ov_start backends
+         else cmd_start backends; read -rp "  press Enter…"; fi ;;
+    🎨*) if [ "$mode" = overlay ]; then ov_start frontends
+         else cmd_start frontends; read -rp "  press Enter…"; fi ;;
+    🔄*) sel=$(pick_apps) || true
+         [ -n "${sel:-}" ] || return 0
+         if [ "$mode" = overlay ]; then ov_restart $sel
+         else cmd_stop $sel; cmd_start $sel; read -rp "  press Enter…"; fi ;;
+    ♻*)  if [ "$mode" = overlay ]; then ov_stale
+         else cmd_stale --restart; read -rp "  press Enter…"; fi ;;
+    ⏹*)  if [ "$mode" = overlay ]; then ov_stop all
+         else cmd_stop all; sleep 1; fi ;;
+    🛑*) if [ "$mode" = overlay ]; then ov_stop all --deps
+         else cmd_stop all --deps; sleep 1; fi ;;
     📡*) cmd_watch ;;
     📜*) cmd_logs ;;
-    🍃*) if [ ${#PITCREW_SHELLS[@]} -eq 0 ]; then warn "no shells configured (set PITCREW_SHELLS)"; sleep 2; return; fi
-         local shname; shname=$(printf '%s\n' "${!PITCREW_SHELLS[@]}" | fzf --height=30% --border=rounded --prompt='shell ❯ ') || true
+    🍃*) if [ ${#PITCREW_SHELLS[@]} -eq 0 ]; then warn "no shells configured (set PITCREW_SHELLS)"; sleep 2; return 0; fi
+         shname=$(printf '%s\n' "${!PITCREW_SHELLS[@]}" | fzf --height=30% --border=rounded --prompt='shell ❯ ') || true
          [ -n "${shname:-}" ] && { clear; cmd_shell "$shname"; read -rp "  press Enter…"; } ;;
     🩺*) cmd_doctor; read -rp "  press Enter…" ;;
-    🌐*) cmd_urls; sleep 1 ;;
+    🌐*) cmd_urls
+         if [ "$mode" = overlay ]; then toast "${BLUE}🌐${RESET} opened frontend URLs"; MENU_CLOSE=1; else sleep 1; fi ;;
     ↻*)  : ;;
     *)   MENU_CLOSE=1 ;;   # ✖ close menu, Esc/empty choice, or anything unrecognized
   esac
+  return 0
 }
 
 menu() {
@@ -132,7 +204,7 @@ watch_menu() {
   while true; do
     choice=$(menu_choices overlay | fzf --height=50% --border=rounded --ansi --prompt='pitcrew ❯ ' \
              --pointer='▶' --header='pick an action · Esc to close') || break
-    dispatch_choice "$choice"
+    dispatch_choice "$choice" overlay
     [ "$MENU_CLOSE" = 1 ] && break
   done
   tui_resume

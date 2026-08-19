@@ -16,11 +16,22 @@ PITCREW_MOUSE="${PITCREW_MOUSE:-0}"          # opt-in: click to select/expand, w
 TERM_DIRTY=1
 term_size() {
   [ "$TERM_DIRTY" = 1 ] || return 0
-  TERM_W=$(tput cols 2>/dev/null);  [ -n "$TERM_W" ] || TERM_W=100
-  TERM_H=$(tput lines 2>/dev/null); [ -n "$TERM_H" ] || TERM_H=30
+  # An explicit COLUMNS/LINES wins: it is the conventional way to pin a size,
+  # and it is the only way to get a real size when stdout is not a terminal
+  # (a piped run, a recorded session, a test harness) — tput just says 80.
+  TERM_W=${COLUMNS:-}; [ -n "$TERM_W" ] || TERM_W=$(tput cols 2>/dev/null)
+  [ -n "$TERM_W" ] || TERM_W=100
+  TERM_H=${LINES:-}; [ -n "$TERM_H" ] || TERM_H=$(tput lines 2>/dev/null)
+  [ -n "$TERM_H" ] || TERM_H=30
   TERM_DIRTY=0
   return 0
 }
+
+# A closed menu still has to say what it did, now that actions no longer print
+# anything. One line above the key hints, self-expiring.
+TOAST=""
+TOAST_AT=0
+toast() { TOAST=$1; TOAST_AT=${SNAP_NOW_S:-0}; }
 
 declare -gA EXPANDED=()                      # comp -> 1 when its process tree is open
 declare -gA ROW_COMP=()                      # screen row -> comp (for mouse hit-testing)
@@ -35,9 +46,9 @@ summary_line() { # → R
     esac
   done
   R="  ${GREEN}${up} up${RESET}"
-  [ $starting -gt 0 ] && R+="  ${YELLOW}${starting} starting${RESET}"
-  [ $crashed  -gt 0 ] && R+="  ${RED}${crashed} crashed${RESET}"
-  [ $down     -gt 0 ] && R+="  ${GREY}${down} down${RESET}"
+  [ $starting -gt 0 ] && R+="${GREY} · ${RESET}${YELLOW}${starting} starting${RESET}"
+  [ $crashed  -gt 0 ] && R+="${GREY} · ${RESET}${RED}${crashed} crashed${RESET}"
+  [ $down     -gt 0 ] && R+="${GREY} · ${GREY}${down} down${RESET}"
 }
 
 status_table() {
@@ -80,8 +91,24 @@ status_table() {
 
 cmd_status() { banner; status_table; echo; }
 
+# ── one service cell ────────────────────────────────────────────────────────
+# The field widths are constants because BOTH comp_cell and cell_header build
+# from them. The header used to be a hand-spaced literal, so its "ram"/"cpu"
+# labels drifted away from their columns the moment the graph width changed
+# with the terminal — which is every terminal that isn't the one it was
+# eyeballed on.
+CELL_PORT_W=7        # ":8082 " or "n/a    "
+CELL_FIXED_W=26      # icon(2) + port(7) + ram(7) + cpu(5) + err(5)
+ROW_PREFIX_W=15      # marker(2) + " " + app(11) + " "
+CELL_GAP_W=2         # between the backend and frontend cells
+
+cell_header() { # $1 graph width → R, exactly CELL_FIXED_W + $1 wide
+  printf -v R '%b%2s%-7s%-*s %6s %4s %-4s%b' \
+    "$BOLD$GREY" "" "port" "$1" "graph" "ram" "cpu" "" "$RESET"
+}
+
 comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
-  local c=$1 gw=$2 st port cur app role cell
+  local c=$1 gw=$2 st port cur app role cell pct half
   st=${SNAP_STATE[$c]:-n/a}
   app=${c#??-}; role=${c:0:2}
   if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
@@ -96,7 +123,12 @@ comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
   cell+="$R"
 
   if [[ "$cur" =~ ^[0-9]+$ ]] && [ "$cur" -gt 0 ]; then
-    spark "${HIST_MEM[$c]:-}" "$gw" "${COMP_MAX_B[$c]:-1}"
+    # Height auto-scales to this service's own recent range, so the shape is
+    # always readable. Colour still comes from how close it is to its
+    # configured RAM cap, so the headroom signal is not lost.
+    pct=$(( cur * 100 / ${COMP_MAX_B[$c]:-1} ))
+    pct_color "$pct"
+    spark "${HIST_MEM[$c]:-}" "$gw" 67108864 "$PCOL"      # 64M floor
     cell+="$R"
     human "$cur"
     printf -v R ' %6s %4s' "$HUMAN" "${SNAP_CPU[$c]:-0}%"
@@ -105,7 +137,8 @@ comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
     printf -v R '%b%*s%b %6s %4s' "$DIM$GREY" "$gw" "external" "$RESET" "—" "—"
     cell+="$R"
   else
-    printf -v R '%b%*s%b %6s %4s' "$DIM$GREY" "$gw" "" "$RESET" "" ""
+    half=$(( gw / 2 + 1 ))
+    printf -v R '%b%*s%-*s%b %6s %4s' "$DIM$GREY" "$half" "·" "$((gw - half))" "" "$RESET" "" ""
     cell+="$R"
   fi
 
@@ -133,7 +166,7 @@ _tree_sorted() { # $1 comp → TREE_SORTED array
 }
 
 cmd_watch() {
-  local W H bw frame line ts pick sc c app i n rule_len r
+  local W H bw sw frame line ts pick sc c app i n rule_len r
   local ln avail
   tui_enter
   trap 'tui_leave; trap - INT; return 0' INT
@@ -142,13 +175,18 @@ cmd_watch() {
 
   while true; do
     term_size; W=$TERM_W; H=$TERM_H
-    bw=$(( (W - 70) / 2 )); [ $bw -lt 6 ] && bw=6; [ $bw -gt 24 ] && bw=24
+    # The graph gets whatever the terminal has left over after the fixed
+    # columns, so a wide window buys more history instead of dead space.
+    bw=$(( (W - ROW_PREFIX_W - CELL_GAP_W - 2 * CELL_FIXED_W) / 2 ))
+    [ $bw -lt 8 ] && bw=8; [ $bw -gt 40 ] && bw=40
+    sw=$(( W / 5 )); [ $sw -lt 12 ] && sw=12; [ $sw -gt 40 ] && sw=40
 
     snapshot
     err_scan
     for c in "${PITCREW_COMPS[@]}"; do
       hist_push "$c" "${SNAP_RSS[$c]:-0}" "${SNAP_CPU[$c]:-0}"
     done
+    hist_push_sys "${SYS_CPU_PCT:-0}" "${SYS_MEM_USED_KB:-0}"
 
     ROW_COMP=()
     frame=""; ln=0
@@ -160,38 +198,49 @@ cmd_watch() {
     r=""; while [ ${#r} -lt $rule_len ]; do r+="─"; done
     frame+="$line$r $ts ──$RESET"$'\e[K\n\e[K\n'; ln=$((ln + 2))
 
-    # ── system gauges ──
-    printf -v line '   %bCPU%b ' "$BOLD" "$RESET"
-    bar "${SYS_CPU_PCT:-0}" 20; frame+="$line$R"
-    printf -v line ' %3s%%      %bRAM%b ' "${SYS_CPU_PCT:-0}" "$BOLD" "$RESET"
-    if [ -n "$SYS_MEM_TOTAL_KB" ]; then
-      bar $((SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB)) 20; frame+="$line$R"
-      human $((SYS_MEM_USED_KB * 1024)); local used=$HUMAN
-      human $((SYS_MEM_TOTAL_KB * 1024))
-      printf -v line ' %s / %s' "$used" "$HUMAN"
+    # ── system gauges, as history rather than a single instant ──
+    # Scale floors of 100 and total-RAM make these absolute rather than
+    # auto-scaled: 4% CPU should look like 4%, not like a full bar.
+    pct_color "${SYS_CPU_PCT:-0}"
+    spark "$HIST_SYS_CPU" "$sw" 100 "$PCOL"
+    printf -v line '   %bCPU%b %s %3s%%' "$BOLD" "$RESET" "$R" "${SYS_CPU_PCT:-0}"
+    frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    if [ -n "$SYS_MEM_TOTAL_KB" ] && [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ]; then
+      local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB )) used
+      pct_color "$mpct"
+      spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$PCOL"
+      human $(( SYS_MEM_USED_KB * 1024 )); used=$HUMAN
+      human $(( SYS_MEM_TOTAL_KB * 1024 ))
+      printf -v line '   %bRAM%b %s %s / %s' "$BOLD" "$RESET" "$R" "$used" "$HUMAN"
     else
-      frame+="$line${GREY}unavailable on this OS${RESET}"; line=""
+      printf -v line '   %bRAM%b %bunavailable on this OS%b' "$BOLD" "$RESET" "$GREY" "$RESET"
     fi
     frame+="$line"$'\e[K\n\e[K\n'; ln=$((ln + 2))
 
-    # ── deps ──
+    # ── deps, folded onto their own rule line ──
     if [ ${#PITCREW_DEPS[@]} -gt 0 ]; then
-      local dep dline="   "
+      local dep dline
+      printf -v dline '%b── deps%b   ' "$BOLD$GREY" "$RESET"
       for dep in "${PITCREW_DEPS[@]}"; do
         state_icon "${SNAP_DEP[$dep]:-down}"
-        dline+="$R $dep   "
+        dline+="$R ${dep}   "
       done
-      frame+="${GREY}── deps ${RESET}"$'\e[K\n'"$dline"$'\e[K\n\e[K\n'; ln=$((ln + 3))
+      frame+="$dline"$'\e[K\n\e[K\n'; ln=$((ln + 2))
     fi
 
     # ── services ──
     summary_line
-    frame+="${GREY}── services${RESET}${R}"$'\e[K\n'; ln=$((ln + 1))
-    printf -v line '   %b%-11s %-*s %s%b' "$BOLD$GREY" "app" "$((bw + 26))" "backend    ram        cpu" "frontend    ram        cpu" "$RESET"
+    printf -v line '%b── services%b%s' "$BOLD$GREY" "$RESET" "$R"
+    frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    printf -v line '%b%-*s%-*s%*s%s%b' "$BOLD$GREY" \
+      "$ROW_PREFIX_W" "   app" "$((CELL_FIXED_W + bw))" "backend" "$CELL_GAP_W" "" "frontend" "$RESET"
+    frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    cell_header "$bw"; local chdr=$R
+    printf -v line '%*s%s%*s%s' "$ROW_PREFIX_W" "" "$chdr" "$CELL_GAP_W" "" "$chdr"
     frame+="$line"$'\e[K\n'; ln=$((ln + 1))
 
     # rows left for services + any expanded trees, keeping the legend/help visible
-    avail=$(( H - ln - 4 ))
+    avail=$(( H - ln - 5 ))
     for ((i = 0; i < ${#PITCREW_APPS[@]}; i++)); do
       [ $avail -le 0 ] && break
       app=${PITCREW_APPS[i]}
@@ -229,7 +278,13 @@ cmd_watch() {
     frame+=$'\e[K\n'
     printf -v line '   %b● up  ◐ starting  ✗ crashed  ○ down  · n/a  ⚡ log errors  %s%b' \
       "$DIM$GREY" "${PITCREW_COLLECTOR}·${PITCREW_REFRESH}s" "$RESET"
-    frame+="$line"$'\e[K\n\e[K\n'
+    frame+="$line"$'\e[K\n'
+    if [ -n "$TOAST" ] && [ $(( ${SNAP_NOW_S:-0} - TOAST_AT )) -lt 5 ]; then
+      printf -v line '   %s' "$TOAST"
+    else
+      TOAST=""; line=""
+    fi
+    frame+="$line"$'\e[K\n'
     printf -v line ' %b↑↓%b select  %b⏎%b tree  %bl%b logs  %be%b errors  %br%b restart  %bs%b stop  %bm%b menu  %bq%b quit' \
       "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" \
       "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET"
@@ -248,7 +303,8 @@ cmd_watch() {
       l|L) log_view "${PITCREW_COMPS[$SEL]:-}" ;;
       e|E) err_view ;;
       r|R) c=${PITCREW_COMPS[$SEL]:-}
-           [ -n "$c" ] && { stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1; } ;;
+           [ -n "$c" ] && { stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1
+                            toast "${YELLOW}↻${RESET} restarting ${BOLD}$c${RESET}"; } ;;
       s|S) watch_stop ;;
       m|M) watch_menu ;;
       mouse) watch_mouse ;;
@@ -295,8 +351,15 @@ watch_stop() {
   pick=$(running_comps | fzf --multi --height=40% --border=rounded \
     --prompt='stop ❯ ' --pointer='▶' --marker='✔ ' \
     --header='TAB = select several · Enter = stop · Esc = cancel') || pick=""
-  while IFS= read -r sc; do [ -n "$sc" ] && stop_comp "$sc"; done <<< "$pick"
+  local stopped=()
+  while IFS= read -r sc; do
+    [ -n "$sc" ] || continue
+    stop_comp "$sc" >/dev/null 2>&1
+    stopped+=("$sc")
+  done <<< "$pick"
   tui_resume
+  [ ${#stopped[@]} -gt 0 ] && toast "${GREY}■${RESET} stopped ${BOLD}${stopped[*]}${RESET}"
+  return 0
 }
 
 # The error radar keeps the lines it matched, not just a count — this is what

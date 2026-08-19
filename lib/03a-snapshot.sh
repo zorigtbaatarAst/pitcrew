@@ -53,6 +53,31 @@ _now_us() {
   SNAP_NOW_S=${er%.*}
 }
 
+# ── pidfiles ────────────────────────────────────────────────────────────────
+# A pidfile written before the current boot cannot describe a live process:
+# the pid it names either no longer exists or now belongs to something
+# unrelated. Reporting that as "crashed" is not just wrong, it is sticky — the
+# file survives reboots, so the component stays red forever.
+#
+# /proc/1's mtime IS the boot time (measured: btime + 1s), so `-nt` answers
+# "was this written during the current boot" with a builtin and no fork. On a
+# system with no /proc/1 (macOS) we keep trusting the file, which is the
+# behaviour that was there before.
+PITCREW_BOOT_MARKER=/proc/1
+
+_read_pidfile() { # $1 comp → PIDF ("" when absent, empty, or pre-boot)
+  local f="$LOG_DIR/$1.pid"
+  PIDF=""
+  [ -r "$f" ] || return 0
+  read -r PIDF < "$f" 2>/dev/null
+  [ -n "$PIDF" ] || return 0
+  kill -0 "$PIDF" 2>/dev/null && return 0          # alive → certainly ours
+  if [ -d "$PITCREW_BOOT_MARKER" ] && [ ! "$f" -nt "$PITCREW_BOOT_MARKER" ]; then
+    PIDF=""                                        # leftover from a previous boot
+  fi
+  return 0
+}
+
 # ── is this local address reachable as 127.0.0.1? ───────────────────────────
 # /proc/net/tcp writes each 32-bit word little-endian, so 127.0.0.1 is
 # 0100007F. The old check literally opened /dev/tcp/127.0.0.1/<port>, so
@@ -155,8 +180,7 @@ _snapshot_proc() {
 
   SNAP_PROC_RSS=(); SNAP_PROC_CPU=(); SNAP_PROC_CMD=()
   for c in "${PITCREW_COMPS[@]}"; do
-    pid=""
-    [ -r "$LOG_DIR/$c.pid" ] && read -r pid < "$LOG_DIR/$c.pid" 2>/dev/null
+    _read_pidfile "$c"; pid=$PIDF
     SNAP_PID[$c]=$pid
     SNAP_RSS[$c]=""; SNAP_CPU[$c]=""; SNAP_PIDS[$c]=""
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
@@ -238,8 +262,7 @@ _snapshot_ps() {
 
   local c p rss_sum cpu_sum
   for c in "${PITCREW_COMPS[@]}"; do
-    pid=""
-    [ -r "$LOG_DIR/$c.pid" ] && read -r pid < "$LOG_DIR/$c.pid" 2>/dev/null
+    _read_pidfile "$c"; pid=$PIDF
     SNAP_PID[$c]=$pid
     SNAP_RSS[$c]=""; SNAP_CPU[$c]=""; SNAP_PIDS[$c]=""
     [ -n "$pid" ] && [ -n "${rss[$pid]:-}" ] || continue

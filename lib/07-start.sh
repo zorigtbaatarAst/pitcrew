@@ -132,6 +132,22 @@ wait_dashboard() {
   fi
 }
 
+# Turn target words into components and start them. Shared by the CLI path
+# (cmd_start, which wraps this in a banner, a boot dashboard and a URL table)
+# and by the live dashboard, which needs exactly this work done with nothing
+# printed over the frame it is drawing. Fills STARTED with what it touched.
+start_targets() { # $@ = target words ("all" when empty)
+  local words comps c
+  mapfile -t words < <(expand_profiles "${@:-all}")
+  mapfile -t comps < <(resolve_targets "${words[@]}")
+  STARTED=()
+  for c in "${comps[@]}"; do
+    start_comp "$c"
+    STARTED+=("$c")
+  done
+  return 0
+}
+
 cmd_start() {
   banner
   local words; mapfile -t words < <(expand_profiles "${@:-all}")
@@ -141,9 +157,8 @@ cmd_start() {
   if [ "${words[*]}" = "deps" ]; then echo; return; fi
   echo
   say "${BOLD}② services${RESET}"
-  local comps; mapfile -t comps < <(resolve_targets "${words[@]}")
-  local c
-  for c in "${comps[@]}"; do start_comp "$c"; done
+  start_targets "${words[@]}"
+  local comps=("${STARTED[@]}")
   say ""
   say "${BOLD}③ waiting for services${RESET} ${GREY}(Ctrl+C to stop waiting — they keep running)${RESET}"
   wait_dashboard "${comps[@]}"

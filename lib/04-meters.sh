@@ -83,6 +83,19 @@ hist_push() { # $1 comp, $2 mem bytes (may be ""), $3 cpu pct (may be "")
   return 0
 }
 
+HIST_SYS_CPU=""
+HIST_SYS_MEM=""
+hist_push_sys() { # $1 cpu pct, $2 mem used kB
+  local -a a
+  a=(${HIST_SYS_CPU} "${1:-0}")
+  [ ${#a[@]} -gt "$PITCREW_HISTORY" ] && a=("${a[@]: -$PITCREW_HISTORY}")
+  HIST_SYS_CPU="${a[*]}"
+  a=(${HIST_SYS_MEM} "${2:-0}")
+  [ ${#a[@]} -gt "$PITCREW_HISTORY" ] && a=("${a[@]: -$PITCREW_HISTORY}")
+  HIST_SYS_MEM="${a[*]}"
+  return 0
+}
+
 # 2 samples per cell × 4 vertical levels — the same trick btop uses to get
 # more resolution out of one character cell. Table built once, on demand.
 _BRAILLE_LMASK=(0 64 68 70 71)
@@ -97,29 +110,42 @@ _braille_init() {
   return 0
 }
 
-spark() { # $1 history string, $2 width in cells, $3 max value → R
-  local hist=$1 w=$2 max=$3 i n start a b l r
+spark() { # $1 history, $2 width in cells, $3 scale floor, $4 color → R
+  #
+  # Auto-scaling: the graph is scaled to the maximum of exactly the window it
+  # draws, not to the component's configured RAM cap. Scaling to the cap is
+  # what made every graph a flat line — a backend using 1.0G of an 8G cap sits
+  # at 12%, so every sample lands on level 1 and renders as "▁▁▁▁…". Nobody
+  # runs near their cap, so that made the graphs useless for all services.
+  #
+  # The floor keeps an idle service from being amplified into noise, and it
+  # doubles as a fixed scale: pass a floor the data never exceeds (100 for a
+  # percentage, total RAM for the system gauge) and the graph is absolute.
+  #
+  # Colour is the caller's business — it still comes from value-vs-cap, so
+  # "how close am I to the limit" survives the change of scale.
+  local hist=$1 w=$2 mx=${3:-1} color=$4
   local -a s=($hist)
-  n=${#s[@]}
-  if [ $n -gt 0 ]; then _level "${s[n-1]}" "$max" 100; else LVL=0; fi
-  pct_color "$LVL"
-  R="$PCOL"
+  local n=${#s[@]} need start i a b l r v from
+  if [ "$PITCREW_GRAPH" = braille ]; then need=$((w * 2)); else need=$w; fi
+  start=$(( n - need ))
+  from=$start; [ $from -lt 0 ] && from=0
+  for ((i = from; i < n; i++)); do v=${s[i]}; [ "$v" -gt "$mx" ] && mx=$v; done
+
+  R="$color"
   if [ "$PITCREW_GRAPH" = braille ]; then
     _braille_init
-    local need=$((w * 2))
-    start=$(( n - need ))
     for ((i = 0; i < need; i += 2)); do
       a=$(( start + i )); b=$(( a + 1 ))
       # a negative index would silently mean "from the end" in bash — guard it
-      if [ $a -ge 0 ]; then _level "${s[a]}" "$max" 4; l=$LVL; else l=0; fi
-      if [ $b -ge 0 ]; then _level "${s[b]}" "$max" 4; r=$LVL; else r=0; fi
+      if [ $a -ge 0 ]; then _level "${s[a]}" "$mx" 4; l=$LVL; else l=0; fi
+      if [ $b -ge 0 ]; then _level "${s[b]}" "$mx" 4; r=$LVL; else r=0; fi
       R+="${BRAILLE[$(( _BRAILLE_LMASK[l] + _BRAILLE_RMASK[r] ))]}"
     done
   else
-    start=$(( n - w ))
     for ((i = 0; i < w; i++)); do
       a=$(( start + i ))
-      if [ $a -ge 0 ]; then _level "${s[a]}" "$max" 7; R+="${BARS[$LVL]}"; else R+=" "; fi
+      if [ $a -ge 0 ]; then _level "${s[a]}" "$mx" 7; R+="${BARS[$LVL]}"; else R+=" "; fi
     done
   fi
   R+="$RESET"
