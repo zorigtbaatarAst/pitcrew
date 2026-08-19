@@ -74,7 +74,7 @@ test_spark_run_in_is_a_baseline_not_blank_space() {
   # an empty gap reads as broken; a faint rule reads as an empty chart
   PITCREW_GRAPH=block
   spark "5" 6 1
-  assert_match "$(plain "$R")" '^─────' "run-in drawn as a baseline"
+  assert_match "$(plain "$R")" '^▁▁▁▁▁' "run-in drawn as a floor, not a mid-height rule"
 }
 
 test_spark_autoscales_so_shape_survives_the_absolute_value() {

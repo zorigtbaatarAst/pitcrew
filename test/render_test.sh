@@ -49,6 +49,33 @@ test_no_row_exceeds_the_terminal_width() {
   done
 }
 
+test_the_empty_state_has_no_table_header_over_it() {
+  # column headers above an empty table are pure noise, and they were the worst
+  # thing about the first screen a new user sees
+  local saved=$LOG_DIR
+  LOG_DIR=$(mktemp -d)
+  _render_at 150 40
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'nothing is running yet' "empty state shown"
+  assert_not_match "$body" 'port   graph'           "no column header over it"
+  rm -rf "$LOG_DIR"; LOG_DIR=$saved
+}
+
+test_the_empty_state_is_centred() {
+  local saved=$LOG_DIR
+  LOG_DIR=$(mktemp -d)
+  _render_at 150 40
+  local l lead
+  while IFS= read -r l; do
+    case "$l" in *"nothing is running yet"*) ;; *) continue ;; esac
+    lead=$(plain "${l//$'\e[K'/}"); lead=${lead%%[! ]*}
+    # 22 chars centred in 150 starts at 64
+    [ "${#lead}" -ge 62 ] && [ "${#lead}" -le 66 ] || \
+      _t_bad "empty-state line starts at column ${#lead}, expected ~64"
+  done <<< "$FRAME"
+  rm -rf "$LOG_DIR"; LOG_DIR=$saved
+}
+
 test_narrow_terminals_switch_to_one_component_per_row() {
   _render_at 80 40
   local narrow_body; narrow_body=$(plain "$FRAME")

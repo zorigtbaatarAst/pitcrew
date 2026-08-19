@@ -95,6 +95,11 @@ cmd_status() { banner; status_table; echo; }
 # The rail colour is the worst state across an app's roles: it is a
 # peripheral-vision signal, so it must report the thing that needs attention,
 # not an average.
+centre() { # $1 total width, $2 visible width of $3, $3 rendered text → R
+  local pad=$(( ($1 - $2) / 2 )); [ $pad -lt 0 ] && pad=0
+  printf -v R '%*s%s' "$pad" "" "$3"
+}
+
 rail_color() { # $1 app → RAILC
   local app=$1 s1=${SNAP_STATE[be-$app]:-n/a} s2=${SNAP_STATE[fe-$app]:-n/a} st
   RAILC=$C_FAINT
@@ -171,7 +176,7 @@ comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
     # a faint baseline, not a lone dot: the column reads as an empty chart
     # rather than as something broken
     local base=""
-    for ((i = 0; i < gw; i++)); do base+="─"; done
+    for ((i = 0; i < gw; i++)); do base+="▁"; done
     printf -v R '%b%s%b %6s %4s' "$C_FAINT" "$base" "$RESET" "" ""
     cell+="$R"
   fi
@@ -250,8 +255,12 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
 
     # ── title rule ──
     printf -v line '%b──%b %b%s%b %blive%b %b' "$C_FAINT" "$RESET" "$C_ACCENT$BOLD" "${PITCREW_PROJECT_NAME:-pitcrew}" "$RESET" "$C_MUTED" "$RESET" "$C_FAINT"
-    # visible chrome: "── " + name + " live " + rule + " " + ts + " ──"
-    rule_len=$((W - 13 - ${#PITCREW_PROJECT_NAME} - ${#ts})); [ $rule_len -lt 0 ] && rule_len=0
+    # visible chrome: "── " + name + " live " + rule + " " + ts + " ──", and
+    # one column short of the edge on purpose. Auto-wrap is off so a full-width
+    # line is legal, but a printable character in the very last cell is the
+    # classic place for a terminal (tmux especially) to disagree about whether
+    # the cursor wrapped — and a single wrong wrap scrolls the whole frame.
+    rule_len=$((W - 14 - ${#PITCREW_PROJECT_NAME} - ${#ts})); [ $rule_len -lt 0 ] && rule_len=0
     r=""; while [ ${#r} -lt $rule_len ]; do r+="─"; done
     frame+="$line$r $ts ──$RESET"$'\e[K\n\e[K\n'; ln=$((ln + 2))
 
@@ -290,8 +299,14 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     summary_line
     printf -v line '%b──%b %b%s%b%s' "$C_FAINT" "$RESET" "$C_TEXT$BOLD" "services" "$RESET" "$R"
     frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    # Column headers over an empty table are pure noise — they were the worst
+    # thing about the first screen anyone sees.
+    local empty=0
+    [ "${SUM_UP:-0}" -eq 0 ] && [ "${SUM_STARTING:-0}" -eq 0 ] && empty=1
+
     cell_header "$bw"; local chdr=$R
-    if [ $narrow = 1 ]; then
+    if [ $empty = 1 ]; then :
+    elif [ $narrow = 1 ]; then
       printf -v line '%b%-*s%s%b' "$C_MUTED" "$ROW_PREFIX_W" "   service" "$chdr" "$RESET"
       frame+="$line"$'\e[K\n'; ln=$((ln + 1))
     else
@@ -305,17 +320,19 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # rows left for services + any expanded trees, keeping the legend/help visible
     avail=$(( H - ln - 5 ))
 
-    # A first run shows twelve rows of nothing. Say what to do instead.
-    if [ "${SUM_UP:-0}" -eq 0 ] && [ "${SUM_STARTING:-0}" -eq 0 ]; then
-      local pad=$(( (W - 26) / 2 )); [ $pad -lt 3 ] && pad=3
-      frame+=$'\e[K\n'; ln=$((ln + 1))
-      printf -v line '%*s%b%s%b' "$pad" "" "$C_TEXT$BOLD" "nothing is running yet" "$RESET"
-      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
-      printf -v line '%*s%bpress%b %b m %b %bfor the menu, or run%b %b pitcrew start %b' \
-        "$((pad - 4))" "" "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$RESET" \
+    # A first run used to show twelve rows of dots under a table header. Say
+    # what to do instead, centred on its own width rather than a shared guess.
+    if [ $empty = 1 ]; then
+      local msg1 msg2
+      printf -v msg1 '%b%s%b' "$C_TEXT$BOLD" "nothing is running yet" "$RESET"
+      printf -v msg2 '%bpress%b %b m %b %bfor the menu, or run%b %b pitcrew start %b' \
+        "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$RESET" \
         "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$RESET"
-      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
-      avail=$(( avail - 3 ))
+      frame+=$'\e[K\n'; ln=$((ln + 1))
+      centre "$W" 22 "$msg1"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
+      frame+=$'\e[K\n'; ln=$((ln + 1))
+      centre "$W" 46 "$msg2"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
+      avail=$(( avail - 4 ))
     else
     for ((i = 0; i < ${#PITCREW_APPS[@]}; i++)); do
       [ $avail -le 0 ] && break

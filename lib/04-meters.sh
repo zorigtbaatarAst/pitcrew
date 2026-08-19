@@ -143,7 +143,7 @@ spark() { # $1 history, $2 width in cells, $3 scale floor → R
       # a negative index would silently mean "from the end" in bash — guard it
       if [ $a -ge 0 ]; then _level "${s[a]}" "$mx" 4; l=$LVL; else l=0; fi
       if [ $b -ge 0 ]; then _level "${s[b]}" "$mx" 4; r=$LVL; else r=0; fi
-      if [ $b -lt 0 ]; then R+="${C_FAINT}─"; continue; fi
+      if [ $b -lt 0 ]; then R+="${C_FAINT}▁"; continue; fi
       lvl=$l; [ $r -gt $lvl ] && lvl=$r
       R+="${GRAMP[$(( lvl * 4 / 5 ))]}"
       [ $(( i + 2 )) -ge "$need" ] && R+="$BOLD"
@@ -158,7 +158,7 @@ spark() { # $1 history, $2 width in cells, $3 scale floor → R
         [ $(( i + 1 )) -eq "$w" ] && R+="$BOLD"
         R+="${BARS[$LVL]}"
       else
-        R+="${C_FAINT}─"
+        R+="${C_FAINT}▁"
       fi
     done
   fi
