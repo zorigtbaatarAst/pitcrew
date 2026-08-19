@@ -306,6 +306,12 @@ FRAME_TAG="${PITCREW_COLLECTOR}·${PITCREW_REFRESH}s"
 
 build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
   local W H bw sw frame line ts c app i rule_len r ln avail
+  # Part of the frame, not of the caller: build_frame has to be self-contained
+  # or the performance test drives something the dashboard does not.
+  build_view
+  local nview=${#VIEW[@]}
+  [ "$nview" -gt 0 ] && [ "$SEL" -ge "$nview" ] && SEL=$((nview - 1))
+  [ "$SEL" -lt 0 ] && SEL=0
   # The graph gets whatever the terminal has left over after the fixed
   # columns, so a wide window buys more history instead of dead space.
   term_size; W=$TERM_W; H=$TERM_H
@@ -374,7 +380,13 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # Column headers over an empty table are pure noise — they were the worst
     # thing about the first screen anyone sees.
     local empty=0
-    [ "${SUM_UP:-0}" -eq 0 ] && [ "${SUM_STARTING:-0}" -eq 0 ] && [ "${SUM_EXTERNAL:-0}" -eq 0 ] && empty=1
+    # "nothing is running" is only the right thing to say on a resting
+    # dashboard. Once you are filtering or marking you are choosing what to
+    # start, and hiding the rows is exactly backwards.
+    local nmarked=0 _mc
+    for _mc in "${PITCREW_COMPS[@]}"; do [ -n "${MARKED[$_mc]:-}" ] && nmarked=$((nmarked + 1)); done
+    [ "${SUM_UP:-0}" -eq 0 ] && [ "${SUM_STARTING:-0}" -eq 0 ] && [ "${SUM_EXTERNAL:-0}" -eq 0 ] \
+      && [ -z "$FILTER" ] && [ "$nmarked" -eq 0 ] && empty=1
 
     cell_header "$bw"; local chdr=$R
     if [ $empty = 1 ]; then :
@@ -394,7 +406,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
 
     # A first run used to show twelve rows of dots under a table header. Say
     # what to do instead, centred on its own width rather than a shared guess.
-    if [ ${#VIEW_APPS[@]} -eq 0 ]; then
+    if [ ${#VIEW_APPS[@]} -eq 0 ] && [ -n "$FILTER" ]; then
       local nomatch
       printf -v nomatch '%bnothing matches%b %b %s %b' "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$FILTER" "$RESET"
       frame+=$'\e[K\n'; ln=$((ln + 1))
@@ -525,11 +537,8 @@ cmd_watch() {
   while true; do
     collect_frame
     supervise
-    build_view
-    n=${#VIEW[@]}
-    [ "$n" -gt 0 ] && [ "$SEL" -ge "$n" ] && SEL=$((n - 1))
-    [ "$SEL" -lt 0 ] && SEL=0
     build_frame
+    n=${#VIEW[@]}
     frame=$FRAME
     printf '\033[H%b\033[0J' "$frame"
 
@@ -581,7 +590,7 @@ cmd_watch() {
 filter_prompt() {
   local saved=$FILTER
   while true; do
-    collect_frame; build_view; build_frame
+    collect_frame; build_frame
     local hint
     printf -v hint ' %b filter %b %b%s%b%b▏%b  %besc cancels · enter keeps%b' \
       "$C_CAP$C_TEXT" "$RESET" "$C_TEXT" "$FILTER" "$RESET" "$C_ACCENT" "$RESET" \

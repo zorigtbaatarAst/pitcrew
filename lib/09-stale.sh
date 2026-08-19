@@ -20,7 +20,11 @@ stale_comps() {
     [ -f "$pf" ] || continue
     mapfile -t dirs < <(watch_dirs_for "$c")
     [ ${#dirs[@]} -eq 0 ] && continue                        # no watch dir configured → skip
-    if find "${dirs[@]}" -type f -newer "$pf" -print -quit 2>/dev/null | grep -q .; then
+    # `head -1` rather than find's own -quit: -quit is a GNU/FreeBSD extension
+    # that not every find has, and a find that errors out prints nothing —
+    # which reads exactly like "nothing changed". Closing the pipe after the
+    # first hit stops the walk just the same, everywhere.
+    if [ -n "$(find "${dirs[@]}" -type f -newer "$pf" -print 2>/dev/null | head -1)" ]; then
       echo "$c"
     fi
   done < <(running_comps)

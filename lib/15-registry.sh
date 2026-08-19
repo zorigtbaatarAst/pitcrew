@@ -17,7 +17,10 @@ PROJECTS_DIR="$PITCREW_HOME/projects"
 CURRENT_FILE="$PITCREW_HOME/current"
 
 project_slug() { # $1 → a name that is safe as a filename and a systemd unit
-  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | tr 'A-Z' 'a-z' | sed -e 's/-\+/-/g' -e 's/^-//' -e 's/-$//'
+  # -E, not a BRE: BSD sed (macOS) does not understand \+ and would leave the
+  # run of dashes in place, changing the slug — and with it the file name and
+  # the systemd unit name — depending on which sed happened to be installed.
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | tr 'A-Z' 'a-z' | sed -E -e 's/-+/-/g' -e 's/^-//' -e 's/-$//'
 }
 
 project_file() { printf '%s/%s.sh' "$PROJECTS_DIR" "$1"; }

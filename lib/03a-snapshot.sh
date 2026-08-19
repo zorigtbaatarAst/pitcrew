@@ -11,8 +11,9 @@
 # was pinned at 2s.
 #
 # On Linux everything here is read straight out of /proc with the `read`
-# builtin: zero forks. macOS has no /proc, so it falls back to ONE `ps` and
-# ONE port listing per frame (~2 forks) instead of ~430.
+# builtin: zero forks. macOS has no /proc, so it uses ONE `ps` and ONE port
+# listing per frame (~2 forks) instead of ~430 — the same arrays, the same
+# meaning, the same per-interval CPU deltas.
 #
 # Contract: snapshot() fills the SNAP_* globals below. comp_state() and the
 # meters are then pure array lookups. Anything that loops over components must
@@ -39,9 +40,13 @@ declare -gA SNAP_HEALTH_AT=()          # app           -> epoch secs of last pro
 declare -gA SNAP_DEP=()                # dep container -> up|down
 declare -gA SNAP_EXIT=()               # comp -> exit status of the last run
 declare -gA SNAP_EXIT_AT=()            # comp -> epoch seconds it ended
-declare -gA _JIFF_PREV=()              # pid           -> utime+stime at previous sample
-declare -gA _JIFF_TREE_PREV=()         # comp          -> summed tree jiffies, previous sample
-declare -gA _JIFF_TREE_NOW=()          # comp          -> summed tree jiffies, this sample
+declare -gA _JIFF_PREV=()              # pid           -> CPU-time counter at previous sample
+declare -gA _JIFF_TREE_PREV=()         # comp          -> summed tree CPU time, previous sample
+declare -gA _JIFF_TREE_NOW=()          # comp          -> summed tree CPU time, this sample
+# The counter's UNIT depends on the collector — jiffies from /proc, centiseconds
+# from `ps -o time`. Only one collector runs per process, and every use is a
+# delta divided by a wall-clock figure in the same unit, so they never mix.
+_ALL_CS_PREV=0                         # every process's CPU time, previous sample (ps collector)
 declare -gA _PS_KIDS=()                # ppid          -> "pid pid" (fallback collector only)
 SNAP_AT_US=0
 SNAP_NOW_S=0
@@ -61,12 +66,11 @@ _now_us() {
 # unrelated. Reporting that as "crashed" is not just wrong, it is sticky — the
 # file survives reboots, so the component stays red forever.
 #
-# /proc/1's mtime IS the boot time (measured: btime + 1s), so `-nt` answers
-# "was this written during the current boot" with a builtin and no fork. On a
-# system with no /proc/1 (macOS) we keep trusting the file, which is the
+# lib/00-platform.sh provides a file whose mtime IS the boot instant (/proc/1
+# on Linux, one it stamps from kern.boottime on macOS), so `-nt` answers "was
+# this written during the current boot" with a builtin and no fork. Where no
+# such marker could be established the pidfile is trusted, which is the
 # behaviour that was there before.
-PITCREW_BOOT_MARKER=/proc/1
-
 _read_pidfile() { # $1 comp → PIDF ("" when absent, empty, or pre-boot)
   local f="$LOG_DIR/$1.pid"
   PIDF=""
@@ -74,7 +78,8 @@ _read_pidfile() { # $1 comp → PIDF ("" when absent, empty, or pre-boot)
   read -r PIDF < "$f" 2>/dev/null
   [ -n "$PIDF" ] || return 0
   kill -0 "$PIDF" 2>/dev/null && return 0          # alive → certainly ours
-  if [ -d "$PITCREW_BOOT_MARKER" ] && [ ! "$f" -nt "$PITCREW_BOOT_MARKER" ]; then
+  if [ -n "$PITCREW_BOOT_MARKER" ] && [ -e "$PITCREW_BOOT_MARKER" ] \
+     && [ ! "$f" -nt "$PITCREW_BOOT_MARKER" ]; then
     PIDF=""                                        # leftover from a previous boot
   fi
   return 0
@@ -231,38 +236,96 @@ _snapshot_proc() {
   sys_gauges
 }
 
-# ── portable fallback (macOS, or Linux without a readable /proc) ────────────
-# Same output arrays, built from ONE ps and ONE port listing per frame.
+# ── portable collector (macOS, BSD, or Linux without a readable /proc) ──────
+# Same output arrays, built from ONE ps and ONE port listing per frame. This is
+# not a degraded mode: it is what every macOS run uses, so it owes the user the
+# same numbers the /proc path gives, not rougher ones.
+
+# Is this listening address reachable as 127.0.0.1? The /proc path only counts
+# loopback-reachable binds, and "up" has to mean the same thing on both — a
+# service bound to the LAN address alone does not serve http://localhost.
+_ps_addr_is_local() { # $1 = lsof/ss local-address field
+  case "$1" in
+    \*:*|0.0.0.0:*|127.*:*|\[::\]:*|\[::1\]:*|\[::ffff:127.*)  return 0 ;;
+  esac
+  return 1
+}
+
+# POSIX ps reports cumulative CPU time as "[[DD-]HH:]MM:SS[.cc]" — and the
+# spelling differs per platform (macOS "0:01.23", Linux "00:00:01"). Parsed to
+# centiseconds it becomes the same counter /proc/<pid>/stat gives in jiffies,
+# which is what makes a REAL per-interval CPU% possible here. `ps -o pcpu` is
+# a lifetime average: a JVM that pegged a core during startup and has been idle
+# for an hour still reads high, and a service that starts spinning now barely
+# moves the number. That is the wrong answer on the one screen whose whole job
+# is telling you what is happening right now.
+_cputime_cs() { # $1 time field → _CS (centiseconds)
+  local t=$1 d=0 h=0 m=0 s=0 fr=""
+  _CS=0
+  case "$t" in *-*) d=${t%%-*}; t=${t#*-} ;; esac
+  case "$t" in *.*) fr=${t##*.}; t=${t%.*} ;; esac
+  case "$t" in
+    *:*:*) h=${t%%:*}; t=${t#*:}; m=${t%%:*}; s=${t#*:} ;;
+    *:*)   m=${t%%:*}; s=${t#*:} ;;
+    *)     s=$t ;;
+  esac
+  fr="${fr}00"; fr=${fr:0:2}
+  # A field we cannot parse must yield 0, not a fatal arithmetic error inside
+  # the dashboard's frame loop — an invalid integer constant is not a non-zero
+  # return, it terminates the shell.
+  #
+  # Default each field SEPARATELY before the digit check: concatenating first
+  # hides an empty one ("" + "0" is still all digits), and `10#` on its own is
+  # the exact token that kills the frame.
+  d=${d:-0}; h=${h:-0}; m=${m:-0}; s=${s:-0}
+  case "$d$h$m$s$fr" in *[!0-9]*) return 0 ;; esac
+  _CS=$(( ((10#$d * 24 + 10#$h) * 3600 + 10#$m * 60 + 10#$s) * 100 + 10#$fr ))
+  return 0
+}
+
 _snapshot_ps() {
+  local prev_us=$SNAP_AT_US
   _now_us; SNAP_AT_US=$NOW_US
   SNAP_PORT_OPEN=()
   SNAP_PROC_RSS=(); SNAP_PROC_CPU=(); SNAP_PROC_CMD=()
 
-  local port
+  local addr port
   if command -v lsof >/dev/null 2>&1; then
-    while read -r port; do
-      port=${port##*:}
+    while read -r addr; do
+      _ps_addr_is_local "$addr" || continue
+      port=${addr##*:}
       [[ $port =~ ^[0-9]+$ ]] && SNAP_PORT_OPEN[$port]=1
     done < <(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $9}')
   elif command -v ss >/dev/null 2>&1; then
-    while read -r port; do
-      port=${port##*:}
+    while read -r addr; do
+      _ps_addr_is_local "$addr" || continue
+      port=${addr##*:}
       [[ $port =~ ^[0-9]+$ ]] && SNAP_PORT_OPEN[$port]=1
     done < <(ss -tlnH 2>/dev/null | awk '{print $4}')
   fi
 
-  local -A rss=() cpu=() comm=()
+  # Elapsed centiseconds — the denominator for every CPU% below. Zero on the
+  # first frame, which correctly yields 0% rather than a spike.
+  local wall_cs=0
+  [ "$prev_us" -gt 0 ] && wall_cs=$(( (SNAP_AT_US - prev_us) / 10000 ))
+
+  local -A rss=() cs=() comm=()
+  local -A cs_now=()
   _PS_KIDS=()
-  local pid ppid r pc cm
-  while read -r pid ppid r pc cm; do
+  local pid ppid r tm cm all_cs=0
+  while read -r pid ppid r tm cm; do
     [[ $pid =~ ^[0-9]+$ ]] || continue
     _PS_KIDS[$ppid]+="$pid "
     rss[$pid]=$(( r * 1024 ))
-    cpu[$pid]=${pc%.*}
-    comm[$pid]=$cm
-  done < <(ps -eo pid=,ppid=,rss=,pcpu=,comm= 2>/dev/null)
+    _cputime_cs "$tm"
+    cs[$pid]=$_CS
+    all_cs=$(( all_cs + _CS ))
+    # macOS prints comm as the full executable path; the dashboard has one
+    # narrow column for it, so show what the Linux path shows.
+    comm[$pid]=${cm##*/}
+  done < <("${PITCREW_PS[@]}" -e -o pid=,ppid=,rss=,time=,comm= 2>/dev/null)
 
-  local c p rss_sum cpu_sum
+  local c p rss_sum cs_sum d
   for c in "${PITCREW_COMPS[@]}"; do
     _read_pidfile "$c"; pid=$PIDF
     SNAP_PID[$c]=$pid
@@ -271,18 +334,53 @@ _snapshot_ps() {
 
     _TREE=(); _walk_ps_tree "$pid"
     SNAP_PIDS[$c]="${_TREE[*]}"
-    rss_sum=0; cpu_sum=0
+    rss_sum=0; cs_sum=0
     for p in "${_TREE[@]}"; do
       rss_sum=$(( rss_sum + ${rss[$p]:-0} ))
-      cpu_sum=$(( cpu_sum + ${cpu[$p]:-0} ))
+      cs_sum=$(( cs_sum + ${cs[$p]:-0} ))
       SNAP_PROC_RSS[$p]=${rss[$p]:-0}
-      SNAP_PROC_CPU[$p]=${cpu[$p]:-0}
       SNAP_PROC_CMD[$p]=${comm[$p]:-?}
+      cs_now[$p]=${cs[$p]:-0}
+      if [ "$wall_cs" -gt 0 ] && [ -n "${_JIFF_PREV[$p]:-}" ]; then
+        d=$(( (${cs[$p]:-0} - ${_JIFF_PREV[$p]}) * 100 / wall_cs ))
+        [ $d -lt 0 ] && d=0
+        SNAP_PROC_CPU[$p]=$d
+      else
+        SNAP_PROC_CPU[$p]=0
+      fi
     done
     SNAP_RSS[$c]=$rss_sum
-    SNAP_CPU[$c]=$cpu_sum
+
+    if [ "$wall_cs" -gt 0 ] && [ -n "${_JIFF_TREE_PREV[$c]:-}" ]; then
+      d=$(( (cs_sum - ${_JIFF_TREE_PREV[$c]}) * 100 / wall_cs ))
+      [ $d -lt 0 ] && d=0                     # a restarted tree can go backwards
+      SNAP_CPU[$c]=$d
+    else
+      SNAP_CPU[$c]=0
+    fi
+    _JIFF_TREE_NOW[$c]=$cs_sum
   done
+
+  # Rebuild rather than update, so pids from stopped components don't
+  # accumulate across a long session.
+  unset _JIFF_PREV; declare -gA _JIFF_PREV=()
+  for p in "${!cs_now[@]}"; do _JIFF_PREV[$p]=${cs_now[$p]}; done
+  unset _JIFF_TREE_PREV; declare -gA _JIFF_TREE_PREV=()
+  for c in "${!_JIFF_TREE_NOW[@]}"; do _JIFF_TREE_PREV[$c]=${_JIFF_TREE_NOW[$c]}; done
+  unset _JIFF_TREE_NOW; declare -gA _JIFF_TREE_NOW=()
+
   sys_gauges
+  # Where the platform layer cannot measure system CPU cheaply (macOS: only
+  # `top -l 1`, ~200ms a frame and wrong on its first sample), derive it from
+  # the CPU-time totals we just summed over EVERY process. Same ps output, no
+  # extra fork, and it is a true delta over the sampling window.
+  if [ "$PITCREW_SYS_CPU_SELF" = 0 ] && [ "$wall_cs" -gt 0 ] && [ "${_ALL_CS_PREV:-0}" -gt 0 ]; then
+    d=$(( (all_cs - _ALL_CS_PREV) * 100 / (wall_cs * PITCREW_NCPU) ))
+    [ $d -lt 0 ] && d=0
+    [ $d -gt 100 ] && d=100
+    SYS_CPU_PCT=$d
+  fi
+  _ALL_CS_PREV=$all_cs
 }
 
 # tree walk over the ps-derived children map (fallback path only)

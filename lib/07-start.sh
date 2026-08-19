@@ -94,7 +94,7 @@ fail_marker() { # $1 comp — succeeds if its log shows a fatal startup failure
 }
 
 fail_tail() { # $1 comp — last meaningful log lines, cleaned and indented
-  tail -n 150 "$LOG_DIR/$1.log" 2>/dev/null | strip_ansi | grep -vE '^\s*$' | tail -20 | sed 's/^/      /'
+  tail -n 150 "$LOG_DIR/$1.log" 2>/dev/null | strip_ansi | grep -vE '^[[:space:]]*$' | tail -20 | sed 's/^/      /'
 }
 
 wait_dashboard() {
@@ -133,7 +133,7 @@ wait_dashboard() {
       frame+="$line"$'\e[K\n'
       while IFS= read -r line; do
         frame+="    ${DIM}${line}${RESET}"$'\e[K\n'
-      done < <(tail -n 80 "$LOG_DIR/$focus.log" 2>/dev/null | strip_ansi | grep -vE '^\s*$' \
+      done < <(tail -n 80 "$LOG_DIR/$focus.log" 2>/dev/null | strip_ansi | grep -vE '^[[:space:]]*$' \
                | tail -10 | expand -t 4 | awk -v w="$w" '{ print substr($0, 1, w) }')
     fi
     nl=${frame//[^$'\n']/}

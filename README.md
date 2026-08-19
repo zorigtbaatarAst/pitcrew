@@ -29,28 +29,50 @@ your laptop falls over running six JVMs and six Node processes at once.
 
 ## Platforms
 
-- **Linux** — primary target, fully supported. RAM caps + precise cgroup
-  meters when `systemd --user` is available (it usually is).
-- **macOS** — fully supported through portable equivalents: `lsof` instead
-  of `ss` for port lookups, `ps`-based process-tree RAM/CPU meters instead of
-  cgroups, `vm_stat`/`top` instead of `/proc` for the system-wide gauges.
-  There's no systemd on macOS, so hard RAM-cap *enforcement* isn't available
-  there — the meters still work, a runaway process just isn't auto-killed.
-- **Windows** — not supported natively (no bash, no `/dev/tcp`, no `systemd`,
-  different `ps`). Run pitcrew inside **WSL2**, where it sees a normal Linux
-  userland and needs nothing special — including real RAM caps, since modern
-  WSL2 distros run systemd by default.
+Linux and macOS are both supported targets, tested on both in CI. Every
+OS-specific decision lives in one file, `lib/00-platform.sh` — nothing else in
+the tool knows what it is running on.
+
+- **Linux** — reads everything out of `/proc` with bash builtins, so a
+  dashboard frame forks *nothing*. With `systemd --user` (usually present)
+  RAM caps are real: each component runs in its own `systemd-run --user
+  --scope` with `MemoryMax`, enforced by the kernel.
+- **macOS** — same features, same numbers, different plumbing: `lsof` for
+  port lookups, one `ps` sweep per frame for process-tree RAM/CPU,
+  `vm_stat` + `hw.memsize` for the system gauges, `kern.boottime` for the
+  reboot check. A frame costs exactly two forks regardless of how many
+  services you run.
+
+  The one thing macOS cannot do is **enforce** a RAM cap — there is no cgroup
+  equivalent, and `ulimit -v` is not honoured there. `PITCREW_BE_MAX` /
+  `PITCREW_FE_MAX` remain budgets: the meters measure against them and
+  `pitcrew doctor` warns when the stack does not fit in the machine, but a
+  runaway process is not auto-killed. `doctor` says so plainly rather than
+  letting the identical-looking meters imply otherwise.
+- **Windows** — not supported natively, and not pretending to be: no bash 5,
+  no `/dev/tcp`, no POSIX `ps`. Run pitcrew inside **WSL2**, where it sees a
+  normal Linux userland and needs nothing special — including real RAM caps,
+  since modern WSL2 distros run systemd by default. Under Git Bash / MSYS,
+  `pitcrew doctor` tells you this instead of failing in pieces.
+
+The portable collector is not a fallback that rots: `PITCREW_FORCE_COLLECTOR=ps`
+runs it on Linux, and CI runs the whole suite that way on every push, so the
+path macOS depends on is exercised even by people who never touch a Mac.
 
 ## Install
 
 Requires **bash 5.0 or newer** (`$EPOCHREALTIME`, negative array indices and
 `declare -gA` are used throughout; `pitcrew` checks this up front and tells you
-rather than failing with a syntax error). macOS still ships bash 3.2, so
-there you need `brew install bash` first. Also requires `docker` (only if you declare deps), and ideally `systemd
---user` on Linux for RAM caps (the tool still runs without it, just without
-caps — this is the normal path on macOS). `lsof` is used for port lookups
-(falls back to `ss` on Linux if missing). `fzf` is optional but strongly
-recommended for the interactive menu.
+rather than failing with a syntax error). macOS still ships bash 3.2, so there
+you need `brew install bash` first — and make sure it is ahead of `/bin/bash`
+on your `$PATH`.
+
+Everything else is optional or already on the box. `docker` only if you
+declare deps. `systemd --user` only for enforced RAM caps on Linux. `lsof` for
+port lookups (present on macOS; falls back to `ss` on Linux). `fzf` is
+optional but strongly recommended for the interactive menu. Nothing here needs
+GNU coreutils — no `timeout`, no `readlink -f`, no GNU-only `sed`/`grep`
+flags — so a stock macOS has what it needs after the bash upgrade.
 
 ```bash
 git clone https://github.com/<you>/pitcrew ~/.local/share/pitcrew
@@ -229,6 +251,46 @@ Env var overrides (higher precedence than the config file):
 `PITCREW_CONFIG`, `PITCREW_ROOT`, `PITCREW_FE_MAX`, `PITCREW_BE_MAX`,
 `PITCREW_WAIT`.
 
+## Scripting it
+
+The dashboard is for looking at. For everything else:
+
+```bash
+pitcrew status --json     # the whole state, for a status line or a CI gate
+pitcrew wait sales --timeout 90   # block until it is up
+pitcrew ps                # everything running, across every registered project
+pitcrew ports             # every port every project claims, and any clashes
+```
+
+`wait` exits **0** when everything came up, **1** on timeout, **2** if something
+crashed on the way — so a script can branch on it. A port served by a process
+pitcrew did not start satisfies the wait by default *and says so*; `--strict`
+refuses it, which is what CI wants when the question is whether **this** build
+came up.
+
+```bash
+pitcrew status --json | jq -r '.summary | "\(.up) up, \(.crashed) crashed"'
+```
+
+Numbers that are not known come through as `null`, never `0` — a stopped
+service has no RSS, and a status line should not plot a zero for it.
+
+## Two projects, one machine
+
+pitcrew decides a component is up from its port. That is what lets it adopt a
+service you started by hand — and it is also how two projects that both use
+`8080` end up each reporting the other's services as their own. So:
+
+- a port that is open while **our** pid is not alive is `◇ external`, not
+  `● up`, and the summary counts it separately
+- `pitcrew ports` shows the whole map and flags every clash
+- `pitcrew doctor` fails the check if this project clashes with another
+  registered one
+
+`doctor` also checks that the RAM caps fit the machine. Sixteen backends at the
+8G default commit 128G on a 31G box, at which point no cap ever fires and the
+kernel's OOM killer picks the victim instead — better to be told.
+
 ## Dashboard
 
 The live dashboard keeps a rolling history per component and draws it as a
@@ -255,6 +317,10 @@ boot report, failure log tails and URL table.
 |---|---|
 | `↑` `↓` | select a service (mouse click also selects, when enabled) |
 | `p` | switch to another registered project |
+| `space` | mark a service; `a` `s` `r` then act on the marked set |
+| `/` | filter by name — the list narrows as you type |
+| `o` | cycle sort: name → state → ram → cpu |
+| `x` | clear marks, filter and sort |
 | `⏎` | expand/collapse that service's process tree |
 | `e` | the error radar's actual matched log lines, not just the count |
 | `l` `r` `s` `m` `q` | logs · restart · stop · menu · quit |

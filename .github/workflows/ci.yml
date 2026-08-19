@@ -16,24 +16,57 @@ jobs:
         run: make lint
       - name: test
         run: make test
+      # The portable collector is what macOS runs every day and what a Linux
+      # developer never runs by accident. Forcing it here means a regression in
+      # it fails on the fast job, minutes before the macOS one gets there.
+      - name: test again on the portable collector
+        run: PITCREW_FORCE_COLLECTOR=ps make test
       - name: the tool runs at all
         run: |
           ./bin/pitcrew -C test/fixture help
           ./bin/pitcrew -C test/fixture status
           ./bin/pitcrew -C test/fixture doctor
+          ./bin/pitcrew -C test/fixture status --json
 
-  # macOS has no /proc, so this is the only thing that exercises the ps/lsof
-  # fallback collector — the path that is otherwise never run during
-  # development. It also catches anything that quietly assumed GNU coreutils.
+  # macOS is a supported target, not a courtesy: it is the only job that runs
+  # the real ps/lsof/vm_stat/kern.boottime code against the real commands, and
+  # the only one that would notice a GNU coreutils assumption creeping back in.
   macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: install bash 5
         run: brew install bash          # macOS ships bash 3.2; pitcrew needs 5
+      # $(brew --prefix) rather than a hard-coded /opt/homebrew: that path is
+      # right on Apple silicon and wrong on the Intel runners (/usr/local).
+      - name: put bash 5 first on PATH
+        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+      - name: the bash we are testing with
+        run: bash --version | head -1
+      - name: lint
+        run: make lint
       - name: test
-        run: /opt/homebrew/bin/bash test/run.sh
+        run: make test
       - name: the tool runs at all
         run: |
-          /opt/homebrew/bin/bash ./bin/pitcrew -C test/fixture status
-          /opt/homebrew/bin/bash ./bin/pitcrew -C test/fixture doctor
+          ./bin/pitcrew -C test/fixture help
+          ./bin/pitcrew -C test/fixture status
+          ./bin/pitcrew -C test/fixture doctor
+          ./bin/pitcrew -C test/fixture status --json
+
+  # The bash-3.2 guard is a feature: it has to say what is wrong and how to fix
+  # it, not die with a syntax error out of a random lib file. /bin/bash on a
+  # macOS runner IS 3.2, so this is the real thing rather than a simulation.
+  macos-old-bash:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash 3.2 gets a usable message, not a syntax error
+        run: |
+          /bin/bash --version | head -1
+          out=$(/bin/bash ./bin/pitcrew help 2>&1) && { echo "expected a non-zero exit"; exit 1; }
+          echo "$out"
+          case "$out" in
+            *"needs bash 5"*"brew install bash"*) echo "ok" ;;
+            *) echo "unhelpful message on bash 3.2"; exit 1 ;;
+          esac

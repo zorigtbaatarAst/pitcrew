@@ -77,11 +77,24 @@ test_the_fixture_actually_exercises_the_live_path() {
 test_a_frame_forks_nothing() {
   _frame >/dev/null 2>&1                       # warm-up: first frame opens log fds
   _forks_over "$FRAMES"
-  # Zero is the real contract. The small allowance is only for a background
-  # health probe landing mid-run; one stray $( ) per component would be
-  # FRAMES × components. Before the collector rewrite a single frame was 431.
-  [ "$FORKS" -le 2 ] || _t_bad "$FORKS forks over $FRAMES frames (budget 2) — something in the frame path is forking"
-  printf '      \033[90m%d frames, %d forks\033[0m\n' "$FRAMES" "$FORKS"
+  # Zero is the real contract on /proc. The small allowance is only for a
+  # background health probe landing mid-run; one stray $( ) per component would
+  # be FRAMES × components. Before the collector rewrite a single frame was 431.
+  #
+  # The portable collector (what macOS runs, and what
+  # PITCREW_FORCE_COLLECTOR=ps exercises here) cannot be fork-free: there is no
+  # /proc to read, so it pays one `ps` and one port listing. Its contract is
+  # that the cost is CONSTANT — two forks a frame no matter how many components
+  # the project has. That is the number that has to hold; a per-component $( )
+  # would sail past a flat "≤ 2 total" budget on this path.
+  local budget=2 what="budget 2 total"
+  if [ "$PITCREW_COLLECTOR" != proc ]; then
+    budget=$(( FRAMES * 2 + 2 ))
+    what="budget 2 per frame — one ps, one port listing, independent of ${#PITCREW_COMPS[@]} components"
+  fi
+  [ "$FORKS" -le "$budget" ] \
+    || _t_bad "$FORKS forks over $FRAMES frames ($what) — something in the frame path is forking"
+  printf '      \033[90m%d frames, %d forks (%s collector)\033[0m\n' "$FRAMES" "$FORKS" "$PITCREW_COLLECTOR"
 }
 
 test_a_frame_is_fast_enough_for_a_sub_second_refresh() {

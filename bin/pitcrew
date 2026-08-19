@@ -22,6 +22,12 @@ set -u
 # this guard an old bash fails with a syntax error from a random lib file,
 # which tells the user nothing. macOS still ships bash 3.2, so this is the
 # single most likely way someone meets this tool for the first time.
+#
+# Which means THIS FILE must stay parseable by bash 3.2 — no `declare -A`, no
+# `mapfile`, no `${x^^}` anywhere in it. bash parses a script whole before it
+# runs a line of it, so one bash-5-only construct here and the guard below
+# never gets the chance to print anything. The lib/ files are sourced after
+# the guard and are under no such restriction. CI checks this on a real 3.2.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
   printf 'pitcrew needs bash 5.0 or newer (found %s).
 ' "${BASH_VERSION:-unknown}" >&2
@@ -34,8 +40,25 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
   exit 1
 fi
 
-SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || greadlink -f "${BASH_SOURCE[0]}")
-LIB_DIR="$(cd "$(dirname "$SELF")/../lib" && pwd)"
+# install.sh puts a symlink on $PATH, so this has to resolve to the real file
+# before it can find lib/. `readlink -f` is a GNU extension — macOS only grew
+# it in 12.3, and `greadlink` only exists if someone installed coreutils, so
+# neither can be relied on. Walking the links by hand needs no tool at all.
+# The hop limit is what a symlink loop hits instead of hanging forever.
+SELF="${BASH_SOURCE[0]}"
+for ((_hop = 0; _hop < 40; _hop++)); do
+  [ -L "$SELF" ] || break
+  _target=$(readlink "$SELF")            # plain readlink is POSIX; -f is not
+  case "$_target" in
+    /*) SELF=$_target ;;
+    *)  SELF="$(dirname "$SELF")/$_target" ;;
+  esac
+done
+LIB_DIR="$(cd "$(dirname "$SELF")/../lib" 2>/dev/null && pwd)" || true
+[ -n "$LIB_DIR" ] && [ -d "$LIB_DIR" ] || {
+  printf 'pitcrew: cannot locate its own lib/ from %s\n' "${BASH_SOURCE[0]}" >&2
+  exit 1
+}
 for f in "$LIB_DIR"/*.sh; do
   # shellcheck source=/dev/null
   source "$f"
@@ -55,7 +78,13 @@ Usage:
   pitcrew stop  [all|@profile|<app>...]     stops tool-managed AND external
   pitcrew stop --deps                       also stop non-protected deps
   pitcrew restart <app>...
-  pitcrew status                    one-shot dashboard
+  pitcrew status [--json]           one-shot dashboard, or machine-readable state
+  pitcrew wait [<target>...] [--timeout N] [--strict]
+                                     block until they are up
+                                     exit 0 up · 1 timed out · 2 crashed
+                                     --strict rejects ports served by anything
+                                     pitcrew did not start
+  pitcrew ps                        everything running, across all projects
   pitcrew watch                     same as bare `pitcrew` — live dashboard, no auto-start
   pitcrew logs [<component>]        in-place log viewer
   pitcrew stale [--restart]         apps whose code changed since they started
@@ -102,6 +131,7 @@ case "${1:-}" in
   theme)    shift; cmd_theme    "$@"; exit $? ;;
   projects|ls) shift; cmd_projects "$@"; exit $? ;;
   ports)    shift; cmd_ports    "$@"; exit $? ;;
+  ps)       shift; cmd_ps       "$@"; exit $? ;;
   use)      shift; cmd_use      "$@"; exit $? ;;
   forget)   shift; cmd_forget   "$@"; exit $? ;;
   edit)     shift; cmd_edit     "$@"; exit $? ;;
@@ -136,7 +166,9 @@ case "${1:-watch}" in
   start)   shift;  cmd_start "$@" ;;
   stop)    shift;  cmd_stop "$@" ;;
   restart) shift;  [ $# -ge 1 ] || die "restart needs app names"; cmd_stop "$@"; cmd_start "$@" ;;
-  status)          cmd_status ;;
+  status)  shift; if [ "${1:-}" = --json ]; then cmd_json; else cmd_status; fi ;;
+  json)            cmd_json ;;
+  wait)    shift;  cmd_wait "$@"; exit $? ;;
   watch)           cmd_watch ;;
   logs)    shift;  cmd_logs "$@" ;;
   stale)   shift;  cmd_stale "$@" ;;

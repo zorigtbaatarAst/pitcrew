@@ -64,7 +64,7 @@ test_pidfile_from_a_previous_boot_is_not_trusted() {
   local d; d=$(mktemp -d); LOG_DIR=$d
   echo 999999 > "$d/be-both.pid"
 
-  touch -d '2000-01-01' "$d/be-both.pid"
+  touch -t 200001010000 "$d/be-both.pid"
   _read_pidfile be-both
   assert_empty "$PIDF" "pre-boot pidfile is discarded"
 
@@ -73,7 +73,7 @@ test_pidfile_from_a_previous_boot_is_not_trusted() {
   assert_eq "$PIDF" "999999" "post-boot pidfile is kept even though the pid is dead"
 
   # a LIVE pid is always trusted, whatever the file's mtime claims
-  echo $$ > "$d/be-both.pid"; touch -d '2000-01-01' "$d/be-both.pid"
+  echo $$ > "$d/be-both.pid"; touch -t 200001010000 "$d/be-both.pid"
   _read_pidfile be-both
   assert_eq "$PIDF" "$$" "a live pid is trusted regardless of mtime"
   rm -rf "$d"

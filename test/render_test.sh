@@ -104,5 +104,58 @@ test_the_empty_state_replaces_a_screen_of_dots() {
   rm -rf "$LOG_DIR"; LOG_DIR=$saved
 }
 
+test_the_filter_narrows_the_list() {
+  FILTER=beonly
+  _render_at 150 40
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'beonly' "the matching app is shown"
+  assert_not_match "$body" 'feonly' "a non-matching app is not"
+  FILTER=nosuchthing
+  _render_at 150 40
+  assert_match "$(plain "$FRAME")" 'nothing matches' "and an empty result says so"
+  FILTER=""
+}
+
+test_a_filter_beats_the_empty_state() {
+  # once you are filtering you are choosing what to START — hiding the rows
+  # behind "nothing is running yet" is exactly backwards
+  local saved=$LOG_DIR
+  LOG_DIR=$(mktemp -d)
+  FILTER=both
+  _render_at 150 40
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'both'                   "rows are shown"
+  assert_not_match "$body" 'nothing is running yet' "empty state stands down"
+  FILTER=""
+  rm -rf "$LOG_DIR"; LOG_DIR=$saved
+}
+
+test_sorting_reorders_the_view() {
+  # collect ONCE, then re-render: _render_at re-collects, which would overwrite
+  # the RSS this test plants
+  _render_at 150 40
+  SORT=name; build_frame
+  local by_name="${VIEW_APPS[*]}"
+  SNAP_RSS[be-beonly]=999999999            # make one app the heaviest
+  SORT=ram;  build_frame
+  assert_eq "${VIEW_APPS[0]}" "beonly" "heaviest sorts first"
+  SORT=name; build_frame
+  assert_eq "${VIEW_APPS[*]}" "$by_name" "and name order is restored"
+  SORT=name
+}
+
+test_marks_drive_what_the_action_keys_act_on() {
+  SEL=0; MARKED=()
+  _render_at 150 40
+  target_set
+  assert_eq "${#TARGETS[@]}" 1 "with nothing marked it is the selection"
+  MARKED[be-both]=1; MARKED[be-beonly]=1
+  target_set
+  assert_eq "${#TARGETS[@]}" 2 "with marks it is the marked set"
+  assert_match "${TARGETS[*]}" 'be-both'   "…"
+  assert_match "${TARGETS[*]}" 'be-beonly' "…"
+  MARKED=()
+}
+
 trap 'err_close; for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$LOG_DIR"' EXIT
 run_tests

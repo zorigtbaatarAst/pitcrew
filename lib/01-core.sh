@@ -226,14 +226,15 @@ banner() {
 }
 
 # ── low-level checks ─────────────────────────────────────────────────────────
-port_open() { [ -n "${1:-}" ] || return 1; timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
+port_open() { [ -n "${1:-}" ] || return 1; pf_timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 
 kill_port() { # gracefully stop whatever listens on the port (external processes)
   local port=$1 pid pgid comm t=0
   pid=$(port_pid "$port"); [ -n "$pid" ] || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null)
+  comm=$("${PITCREW_PS[@]}" -o comm= -p "$pid" 2>/dev/null)
+  comm=${comm##*/}                           # macOS prints comm as a full path
   [ "$comm" = "docker-proxy" ] && return 1   # that's a container's port — not ours to kill
-  pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  pgid=$("${PITCREW_PS[@]}" -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
   kill -TERM -- "-${pgid:-$pid}" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
   while port_open "$port" && [ $t -lt 8 ]; do sleep 1; t=$((t + 1)); done
   if port_open "$port"; then

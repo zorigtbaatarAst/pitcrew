@@ -12,18 +12,31 @@ cmd_doctor() {
   command -v fzf  >/dev/null && ok "fzf    $(fzf --version | awk '{print $1}')" || warn "fzf missing — menus fall back to plain prompts"
   if [ "$PITCREW_COLLECTOR" = proc ]; then
     ok "meters /proc ${GREY}(fork-free collector · refresh ${PITCREW_REFRESH}s · graph ${PITCREW_GRAPH})${RESET}"
+  elif [ "$PITCREW_OS" = macos ] || [ "$PITCREW_OS" = bsd ]; then
+    ok "meters ps ${GREY}(the portable collector — one ps + one port listing per frame · refresh ${PITCREW_REFRESH}s · graph ${PITCREW_GRAPH})${RESET}"
+  elif [ "${PITCREW_FORCE_COLLECTOR:-}" = ps ]; then
+    # Say which it is. "/proc is unreadable" would be a plain lie here, and a
+    # lie in doctor is worse than no line at all.
+    ok "meters ps ${GREY}(forced by PITCREW_FORCE_COLLECTOR — this is the macOS path, running on ${PITCREW_OS})${RESET}"
   else
-    warn "meters ps fallback — no /proc, so each frame costs a ps + a port listing (refresh ${PITCREW_REFRESH}s)"
+    warn "meters ps fallback — /proc is unreadable here, so each frame costs a ps + a port listing (refresh ${PITCREW_REFRESH}s)"
   fi
   if [ "${PITCREW_RESTART:-0}" = 1 ]; then
     ok "restart auto-restart on ${GREY}(backoff ${PITCREW_RESTART_BACKOFF}s, up to ${PITCREW_RESTART_MAX} tries — only while the dashboard is open)${RESET}"
   else
     ok "restart off ${GREY}(set PITCREW_RESTART=1 to auto-restart crashed components)${RESET}"
   fi
+  # A cap you cannot enforce is worth saying out loud — the meters look
+  # identical either way, so nothing else on screen distinguishes the two.
   if [ "$HAS_SYSTEMD" = 1 ]; then
-    ok "systemd --user available — RAM caps (MemoryMax) are enforced"
+    ok "caps   systemd --user available — MemoryMax is enforced per component"
+  elif [ "$PITCREW_OS" = macos ]; then
+    warn "caps   not enforceable on macOS — there is no cgroup equivalent, so PITCREW_BE_MAX/FE_MAX are budgets the meters measure against, not limits the kernel applies"
   else
-    warn "no systemd --user — components run uncapped (RAM meters still work via ps)"
+    warn "caps   no systemd --user — components run uncapped (the RAM meters still work)"
+  fi
+  if [ "$PITCREW_OS" = windows ]; then
+    bad "windows  pitcrew is not supported natively here — run it inside WSL2, where it gets a normal Linux userland (and real RAM caps)"
   fi
   if [ ${#PITCREW_DEPS[@]} -gt 0 ]; then
     if command -v docker >/dev/null; then
@@ -67,9 +80,15 @@ cmd_doctor() {
   fi
   echo
 
+  # sys_gauges knows how to ask each OS — /proc/meminfo here, vm_stat there.
+  # This line used to be Linux-only, which left the one number that decides
+  # whether the stack fits blank on exactly the platform with no RAM caps.
+  sys_gauges
   local avail=""
-  if [ "$PITCREW_OS" = linux ]; then
-    avail=$(awk '/MemAvailable/{printf "%.1f", $2/1048576}' /proc/meminfo)
+  if [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ] && [ -n "${SYS_MEM_USED_KB:-}" ]; then
+    avail=$(( (SYS_MEM_TOTAL_KB - SYS_MEM_USED_KB) * 10 / 1048576 ))   # tenths of a GiB
+    [ "$avail" -lt 10 ] && avail="0$avail"                             # 7 → 0.7, not .7
+    avail="${avail%?}.${avail: -1}"
   fi
   [ -n "$avail" ] && say "  ${GREY}∙${RESET} ${avail}G RAM available · caps: backend $PITCREW_BE_MAX · frontend $PITCREW_FE_MAX"
   echo
