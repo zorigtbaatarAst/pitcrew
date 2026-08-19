@@ -48,7 +48,7 @@ summary_line() { # → R
   R="  ${GREEN}${up} up${RESET}"
   [ $starting -gt 0 ] && R+="${GREY} · ${RESET}${YELLOW}${starting} starting${RESET}"
   [ $crashed  -gt 0 ] && R+="${GREY} · ${RESET}${RED}${crashed} crashed${RESET}"
-  [ $down     -gt 0 ] && R+="${GREY} · ${GREY}${down} down${RESET}"
+  [ $down     -gt 0 ] && R+="${GREY} · ${RESET}${GREY}${down} down${RESET}"
 }
 
 status_table() {

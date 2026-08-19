@@ -167,6 +167,20 @@ instead of a number that happens to be large today. Selecting a service and
 pressing Enter expands its real process tree — the Gradle daemon, the `node`,
 the `esbuild` — each with its own RAM and CPU.
 
+Each graph is scaled to that service's own recent range, not to its RAM cap.
+Scaling to the cap is what makes this kind of graph useless in practice: a
+backend using 1.0G of an 8G cap sits at 12%, every sample lands on the bottom
+row, and you get a flat line for every service you own. The cap still drives
+the *colour* — the graph turns yellow then red as you approach it — so you
+lose nothing by scaling the height to something you can actually read.
+
+**Actions never leave the dashboard.** Starting, stopping or restarting from
+the menu (`m`) closes the picker and returns you to the live view, where you
+watch components go `○ down → ◐ starting → ● up` in place; a one-line toast
+says what was triggered. The dashboard is the only surface — nothing prints
+over it. `pitcrew start` on the command line is unchanged and still prints its
+boot report, failure log tails and URL table.
+
 | Key | |
 |---|---|
 | `↑` `↓` | select a service (mouse click also selects, when enabled) |
