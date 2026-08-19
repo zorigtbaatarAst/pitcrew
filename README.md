@@ -64,15 +64,69 @@ git clone https://github.com/<you>/pitcrew ~/.local/share/pitcrew
 ln -s "$(pwd)/pitcrew/bin/pitcrew" ~/.local/bin/pitcrew
 ```
 
+## Projects
+
+pitcrew keeps its own record of the projects it knows about, in
+`~/.config/pitcrew/projects/`. You do not have to add a file to a repository
+to use it — which matters for a repo you do not own, and for a config full of
+your local paths, ports and JDK that has no business in version control.
+
+```bash
+pitcrew init ~/work/some-repo   # look at it, write a config, remember it
+pitcrew projects                # what pitcrew knows about, and what is running
+pitcrew use some-repo           # make it the current project
+pitcrew                         # ...and just run, from anywhere
+pitcrew -p other-repo status    # one command against a different one
+pitcrew edit                    # open the current project's config in $EDITOR
+pitcrew forget some-repo        # unregister it; the checkout is untouched
+```
+
+A project is found in this order — first hit wins:
+
+1. `-C <dir>` — an explicit directory
+2. `-p <name>` — a registered project by name
+3. `$PITCREW_CONFIG`
+4. a `pitcrew.config.sh` walked up from `$PWD`
+5. a registered project whose root contains `$PWD`
+6. whatever `pitcrew use` last selected
+
+An **in-project `pitcrew.config.sh` outranks the registry**. A repo that ships
+one is stating how it wants to be run, and that should not be silently
+overridden by whatever happens to be registered on your machine. `pitcrew init
+--in-project` writes one, for a team that all use pitcrew.
+
+## What `init` works out for you
+
+`pitcrew init` reads the repository rather than writing placeholders. It
+finds apps in two shapes — `<app>/backend` + `<app>/frontend` at the top
+level, and grouping directories (`apis/`, `apps/`, `packages/`, `services/`,
+`modules/`) whose children are each an app — and skips the obvious noise
+(`node_modules`, `build`, `target`, `dist`, `vendor`, `shared`, …).
+
+For each component it works out:
+
+| | |
+|---|---|
+| **toolchain** | gradle, maven, npm/yarn/pnpm/bun, go, cargo, django, python, ruby |
+| **command** | the real one — `./gradlew :sales:backend:bootRun`, `npm run dev`, `go run ./...` |
+| **port** | Spring's `server.port`, a port pinned in a `dev` script, or a framework default; anything left over gets the next free port |
+| **role** | from the directory name, or from the framework (Next/Vite/Angular → frontend, everything else → backend) |
+| **health** | `/actuator/health` when it sees Spring Boot |
+| **watch dir** | the component's `src/`, for `pitcrew stale` |
+| **deps** | services named in a `docker-compose.yml`, written out commented for you to confirm |
+
+Run it against a six-app Gradle + Next monorepo and you get a config that
+starts it. It is still a guess: the header says so, and `pitcrew edit` opens it.
+
 ## Quick start
 
-1. Drop a `pitcrew.config.sh` at your project root — either run
-   `pitcrew init` inside the project (prompts for a name and app list, then
-   generates a starter file), or copy
-   [`examples/pitcrew.config.example.sh`](examples/pitcrew.config.example.sh)
-   by hand and edit it. See that file for the full annotated schema.
-2. `cd` anywhere inside your project (pitcrew walks up looking for the
-   config, like `git` does for `.git`) and run:
+1. Point pitcrew at a project once: `pitcrew init ~/work/your-repo`. It
+   inspects the repo and writes a working config into
+   `~/.config/pitcrew/projects/`. Correct anything it guessed wrong with
+   `pitcrew edit`; the full annotated schema is in
+   [`examples/pitcrew.config.example.sh`](examples/pitcrew.config.example.sh).
+2. From anywhere inside that project — or from anywhere at all, once
+   `pitcrew use <name>` has selected it — run:
 
 ```bash
 pitcrew start          # bring everything up, with a live boot dashboard

@@ -31,7 +31,11 @@ assert_not_match() { # $1 actual, $2 ERE, $3 label
   return 0
 }
 
-# NOTE: both run the command in a SUBSHELL. pitcrew reports fatal config and
+# NOTE: unlike the assertions above these take a COMMAND, not a value and a
+# label — `assert_ok test -d "$d" "some label"` runs `test` with three
+# arguments and fails for the wrong reason.
+#
+# Both also run the command in a SUBSHELL. pitcrew reports fatal config and
 # target errors through die(), which calls `exit 1` — run in the current shell
 # that would kill the test runner itself, and the suite would report a partial
 # pass with no summary. Isolation is not optional here.
@@ -74,6 +78,13 @@ run_tests() {
 # a bare `declare -A` in a sourced file is scoped to the running function.
 PITCREW_DIR=${PITCREW_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 LIB_DIR="$PITCREW_DIR/lib"
+
+# Tests must never read or write the developer's real pitcrew state. Without
+# this, a saved theme preference or a registered project on this machine would
+# quietly change what the assertions see — and the suite would pass or fail
+# depending on whose laptop it ran on.
+export PITCREW_HOME="${PITCREW_TEST_HOME:-$(mktemp -d)}"
+export PITCREW_THEME_FILE="$PITCREW_HOME/theme"
 
 load_pitcrew() { # $1 = project dir (defaults to the bundled fixture)
   local proj=${1:-$PITCREW_DIR/test/fixture}

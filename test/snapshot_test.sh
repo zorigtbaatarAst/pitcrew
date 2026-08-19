@@ -23,11 +23,20 @@ test_local_address_recognition() {
 
 test_pid_stat_matches_what_ps_reports() {
   [ "$PITCREW_COLLECTOR" = proc ] || return 0     # /proc-only assertion
-  _pid_stat $$
-  local ps_rss; ps_rss=$(( $(ps -o rss= -p $$ | tr -d ' ') * 1024 ))
+  # Measure a SLEEPING process, not this shell. Comparing $$ against ps is
+  # flaky by construction: the test shell allocates between the two reads, so
+  # an exact match fails intermittently for a reason that has nothing to do
+  # with the parser. A quiescent process's RSS does not move, which keeps the
+  # assertion exact — and exact is the point, since the bug this guards
+  # against (reading stat's rss instead of statm's) was only 0.6% off.
+  sleep 30 & local p=$!
+  sleep 0.3
+  _pid_stat "$p"
+  local ps_rss; ps_rss=$(( $(ps -o rss= -p "$p" | tr -d ' ') * 1024 ))
   assert_eq "$_P_RSS" "$ps_rss" "RSS must agree with ps to the byte"
   assert_match "$_P_JIFF" '^[0-9]+$' "jiffies is a number"
-  assert_match "$_P_CMD"  '^(bash|snapshot_test.sh)$' "comm"
+  assert_eq "$_P_CMD" "sleep" "comm"
+  kill "$p" 2>/dev/null
 }
 
 test_pid_stat_survives_a_comm_containing_spaces_and_parens() {

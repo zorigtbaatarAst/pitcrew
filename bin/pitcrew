@@ -69,8 +69,11 @@ Usage:
 Flags (must come before the subcommand):
   -C, --project <dir>       use this project instead of walking up from $PWD
                              <dir> may be a project root or the config file itself
+  -p, --name <name>         use a registered project by name
 
-Config discovery: pitcrew.config.sh, walked up from $PWD, or -C/--project, or $PITCREW_CONFIG.
+Config discovery, in order: -C/--project · -p/--name · $PITCREW_CONFIG ·
+a pitcrew.config.sh walked up from $PWD · a registered project containing $PWD ·
+whatever `pitcrew use` last selected.
 Env overrides: PITCREW_CONFIG, PITCREW_ROOT, PITCREW_FE_MAX, PITCREW_BE_MAX, PITCREW_WAIT.
 EOF
 }
@@ -83,22 +86,39 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --project=*) PITCREW_PROJECT_DIR="${1#*=}"; shift ;;
+    -p|--name)
+      [ $# -ge 2 ] || die "-p/--name needs a project name"
+      PITCREW_PROJECT_SEL=$2
+      shift 2
+      ;;
+    --name=*) PITCREW_PROJECT_SEL="${1#*=}"; shift ;;
     *) break ;;
   esac
 done
 
 case "${1:-}" in
   help|-h|--help) usage; exit 0 ;;
-  init)  shift; cmd_init  "$@"; exit $? ;;
-  theme) shift; cmd_theme "$@"; exit $? ;;
+  init)     shift; cmd_init     "$@"; exit $? ;;
+  theme)    shift; cmd_theme    "$@"; exit $? ;;
+  projects|ls) shift; cmd_projects "$@"; exit $? ;;
+  use)      shift; cmd_use      "$@"; exit $? ;;
+  forget)   shift; cmd_forget   "$@"; exit $? ;;
+  edit)     shift; cmd_edit     "$@"; exit $? ;;
 esac
 
 # Config is sourced here, at the script's top level (not inside a function) —
 # see the note atop lib/02-config.sh for why that matters.
-PITCREW_CFG=$(find_config) || die "no pitcrew.config.sh found in $PWD or any parent directory.
-Point PITCREW_CONFIG at one (or run with -C/--project), or run \`pitcrew init\` to generate one."
+PITCREW_CFG=$(find_config) || die "no project here, and none selected.
+
+  pitcrew init <dir>     look at a project and generate a config for it
+  pitcrew projects       what pitcrew already knows about
+  pitcrew use <name>     work on one of them
+  pitcrew -p <name> ...  one command against one of them"
 config_defaults
-ROOT=$(cd "$(dirname "$PITCREW_CFG")" && pwd)
+# ROOT must be known before the config is sourced — its start commands are
+# written in terms of $ROOT and expand as the file is read.
+ROOT=$(config_declared_root "$PITCREW_CFG")
+[ -n "$ROOT" ] || ROOT=$(cd "$(dirname "$PITCREW_CFG")" && pwd)
 # shellcheck source=/dev/null
 source "$PITCREW_CFG"
 config_finalize "$PITCREW_CFG"

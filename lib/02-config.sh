@@ -9,29 +9,67 @@
 # optional and keyed the same way. See examples/pitcrew.config.example.sh for
 # the full schema with comments.
 
-find_config() {
-  # -C/--project (bin/pitcrew sets PITCREW_PROJECT_DIR) wins over everything —
-  # it's an explicit ask, not a fallback.
-  if [ -n "${PITCREW_PROJECT_DIR:-}" ]; then
-    [ -f "$PITCREW_PROJECT_DIR" ] && { echo "$PITCREW_PROJECT_DIR"; return; }
-    [ -d "$PITCREW_PROJECT_DIR" ] || die "--project $PITCREW_PROJECT_DIR: no such file or directory"
-    local dir
-    dir=$(cd "$PITCREW_PROJECT_DIR" && pwd)
-    while [ "$dir" != "/" ]; do
-      if [ -f "$dir/pitcrew.config.sh" ]; then echo "$dir/pitcrew.config.sh"; return; fi
-      dir=$(dirname "$dir")
-    done
-    die "no pitcrew.config.sh found in $PITCREW_PROJECT_DIR or any parent directory"
-  fi
-  if [ -n "${PITCREW_CONFIG:-}" ]; then
-    [ -f "$PITCREW_CONFIG" ] && { echo "$PITCREW_CONFIG"; return; }
-    die "PITCREW_CONFIG=$PITCREW_CONFIG does not exist"
-  fi
-  local dir="$PWD"
-  while [ "$dir" != "/" ]; do
-    if [ -f "$dir/pitcrew.config.sh" ]; then echo "$dir/pitcrew.config.sh"; return; fi
-    dir=$(dirname "$dir")
+# A config's start commands are written in terms of $ROOT and expand the moment
+# the file is sourced — so ROOT has to be known BEFORE that. For an in-project
+# config that is just the file's directory; for one of pitcrew's own it is
+# whatever PITCREW_ROOT declares. Read it out textually rather than sourcing
+# the file twice.
+config_declared_root() { # $1 config file → declared PITCREW_ROOT, or nothing
+  [ -r "$1" ] || return 0
+  sed -n 's/^[[:space:]]*PITCREW_ROOT=//p' "$1" | head -1 \
+    | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+_walk_up_for_config() { # $1 start dir → the nearest in-project config
+  local d=$1
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    [ -f "$d/pitcrew.config.sh" ] && { printf '%s' "$d/pitcrew.config.sh"; return 0; }
+    d=$(dirname "$d")
   done
+  return 1
+}
+
+# Resolution order, most explicit first. An in-project pitcrew.config.sh always
+# beats the registry: a repo that ships one is stating how it wants to be run,
+# and that should not be silently overridden by whatever happens to be
+# registered on this particular machine.
+find_config() {
+  local dir n f
+
+  # 1. -C/--project <dir> — an explicit ask, so it wins over everything
+  if [ -n "${PITCREW_PROJECT_DIR:-}" ]; then
+    [ -f "$PITCREW_PROJECT_DIR" ] && { printf '%s' "$PITCREW_PROJECT_DIR"; return 0; }
+    [ -d "$PITCREW_PROJECT_DIR" ] || die "--project $PITCREW_PROJECT_DIR: no such file or directory"
+    dir=$(cd "$PITCREW_PROJECT_DIR" && pwd)
+    _walk_up_for_config "$dir" && return 0
+    n=$(project_for_dir "$dir")
+    [ -n "$n" ] && { project_file "$n"; return 0; }
+    die "no config for $PITCREW_PROJECT_DIR — create one with: pitcrew init $PITCREW_PROJECT_DIR"
+  fi
+
+  # 2. -p/--name <name> — a registered project, by name
+  if [ -n "${PITCREW_PROJECT_SEL:-}" ]; then
+    f=$(project_file "$PITCREW_PROJECT_SEL")
+    [ -f "$f" ] || die "no project '$PITCREW_PROJECT_SEL' — see: pitcrew projects"
+    printf '%s' "$f"; return 0
+  fi
+
+  # 3. $PITCREW_CONFIG
+  if [ -n "${PITCREW_CONFIG:-}" ]; then
+    [ -f "$PITCREW_CONFIG" ] || die "PITCREW_CONFIG=$PITCREW_CONFIG does not exist"
+    printf '%s' "$PITCREW_CONFIG"; return 0
+  fi
+
+  # 4. an in-project config, walked up from here
+  _walk_up_for_config "$PWD" && return 0
+
+  # 5. a registered project that contains this directory
+  n=$(project_for_dir "$PWD")
+  [ -n "$n" ] && { project_file "$n"; return 0; }
+
+  # 6. whatever `pitcrew use` last selected
+  n=$(project_current) && { project_file "$n"; return 0; }
+
   return 1
 }
 
@@ -91,6 +129,22 @@ config_finalize() { # $1 = path to the config file that was just sourced
   # The component list can't change while we're running, so resolve it once
   # here instead of re-running all_components (a fork) inside every frame loop.
   mapfile -t PITCREW_COMPS < <(all_components)
+
+  # The theme, colour depth and icon set are DERIVED values — escape sequences
+  # and glyph tables built from settings. lib/01-core.sh builds them when it is
+  # sourced, which is before this project's config has been read, so anything
+  # the config set would otherwise be ignored. Rebuild now that all is known.
+  [ -n "$PITCREW_ICONS_ENV" ] && PITCREW_ICONS=$PITCREW_ICONS_ENV
+  icons_load
+  theme_load
+
+  # what each app is written in, guessed once from its start command
+  declare -gA APP_ICON=()
+  local _a
+  for _a in "${PITCREW_APPS[@]}"; do
+    app_icon_for "${PITCREW_BE_CMD[$_a]:-}${PITCREW_FE_CMD[$_a]:-}"
+    APP_ICON[$_a]=$ICON
+  done
 
   # RAM cap per component, pre-resolved to bytes. The dashboard divides by
   # this once per component per frame; parsing "8G" there would mean a fork.
