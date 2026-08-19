@@ -101,6 +101,15 @@ test_state_machine() {
   assert_eq "$(_state_of fe-both open   $$      DOWN)" up       "no health path means port-open is up"
 }
 
+test_a_port_held_by_something_else_is_not_reported_as_ours() {
+  # This is how a project appears to be running when it is not: pitcrew decides
+  # "up" from the port, so two projects that share one (8080 and 3000 are not
+  # rare) each see the other's service and count it in their own summary.
+  assert_eq "$(_state_of be-both open 999999 UP)" external "port open, our pid dead"
+  assert_eq "$(_state_of be-both open ''     UP)" external "port open, never started by us"
+  assert_eq "$(_state_of be-both open $$     UP)" up       "port open and it IS ours"
+}
+
 test_unconfigured_role_is_n_a_not_down() {
   SNAP_STATE=()
   # beonly has no frontend at all — it must not be counted as something that

@@ -116,9 +116,15 @@ ov_deps() { # start docker deps quietly; returns 1 only if docker really can't
 ov_start() { # $@ = targets
   MENU_CLOSE=1
   ov_deps || return 0
+  local planned; mapfile -t planned < <(resolve_targets "$@" 2>/dev/null)
+  ram_preflight "${planned[@]}"
   start_targets "$@" >/dev/null 2>&1
   if [ ${#STARTED[@]} -eq 0 ]; then toast "${GREY}nothing to start${RESET}"; return 0; fi
-  toast "${YELLOW}▶${RESET} starting ${BOLD}${STARTED[*]}${RESET}"
+  if [ -n "$RAM_WARN" ]; then
+    toast "${C_WARN}⚠${RESET} $RAM_WARN"
+  else
+    toast "${YELLOW}▶${RESET} starting ${BOLD}${STARTED[*]}${RESET}"
+  fi
 }
 
 ov_stop() { # $@ = targets, may include --deps

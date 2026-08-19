@@ -126,6 +126,70 @@ switch_project() {
   exec "$SELF" -p "$n" "${PITCREW_CMD:-watch}"
 }
 
+# Every port a project claims, as "port comp" lines. Loading the config in a
+# $( ) subshell is safe where doing it in a function is not — a bare
+# `declare -A` is scoped to the running function, not to a subshell.
+project_ports() { # $1 name
+  local f root
+  f=$(project_file "$1"); [ -f "$f" ] || return 0
+  root=$(config_declared_root "$f")
+  ( ROOT=$root
+    config_defaults 2>/dev/null
+    # shellcheck source=/dev/null
+    source "$f" 2>/dev/null
+    local a
+    for a in "${PITCREW_APPS[@]:-}"; do
+      [ -n "${PITCREW_BE_PORT[$a]:-}" ] && printf '%s be-%s\n' "${PITCREW_BE_PORT[$a]}" "$a"
+      [ -n "${PITCREW_FE_PORT[$a]:-}" ] && printf '%s fe-%s\n' "${PITCREW_FE_PORT[$a]}" "$a"
+    done ) 2>/dev/null
+  return 0
+}
+
+# Ports two registered projects both claim. This matters more than it sounds:
+# pitcrew decides a component is up from its port, so overlapping projects each
+# see the other's services and report them as their own. 8080 and 3000 are not
+# exactly rare choices.
+port_conflicts() { # $1 name → "port thisComp otherProject otherComp" lines
+  local me=$1 other line port comp oport ocomp
+  declare -A mine=()
+  while read -r port comp; do [ -n "$port" ] && mine[$port]=$comp; done < <(project_ports "$me")
+  while IFS= read -r other; do
+    [ "$other" = "$me" ] && continue
+    while read -r oport ocomp; do
+      [ -n "$oport" ] || continue
+      [ -n "${mine[$oport]:-}" ] && printf '%s %s %s %s\n' "$oport" "${mine[$oport]}" "$other" "$ocomp"
+    done < <(project_ports "$other")
+  done < <(project_list)
+  return 0
+}
+
+cmd_ports() { # the whole port map across every registered project
+  local n port comp cur
+  cur=$(project_current || true)
+  say ""
+  while IFS= read -r n; do
+    say "  ${BOLD}${n}${RESET}"
+    while read -r port comp; do
+      [ -n "$port" ] || continue
+      printf '    %b%-6s%b %b%s%b\n' "$C_MUTED" "$port" "$RESET" "$C_SUBTLE" "$comp" "$RESET"
+    done < <(project_ports "$n" | sort -n)
+  done < <(project_list)
+  say ""
+  local any=0
+  while IFS= read -r n; do
+    while read -r port comp other ocomp; do
+      [ -n "$port" ] || continue
+      [ "$any" = 0 ] && { say "  ${C_WARN}⚠ ports claimed by more than one project${RESET}"; any=1; }
+      printf '    %b%-6s%b %s/%s  %bvs%b  %s/%s\n' "$C_WARN" "$port" "$RESET" \
+        "$n" "$comp" "$C_MUTED" "$RESET" "$other" "$ocomp"
+    done < <(port_conflicts "$n")
+    break                       # one direction is enough; the pairs are symmetric
+  done < <(project_list)
+  [ "$any" = 1 ] && say "  ${C_MUTED}running both at once makes each report the other's services as its own${RESET}"
+  say ""
+  return 0
+}
+
 cmd_projects() {
   if [ "${1:-}" = --show ]; then
     [ -n "${2:-}" ] || die "usage: pitcrew projects --show <name>"

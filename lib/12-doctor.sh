@@ -44,6 +44,29 @@ cmd_doctor() {
     pitcrew_doctor_extra
     echo
   fi
+  # ── does this project fit on this machine, and does it clash with another? ──
+  say "${BOLD}capacity${RESET}"
+  ram_preflight "${PITCREW_COMPS[@]}"
+  if [ -n "$RAM_WARN" ]; then warn "$RAM_WARN"
+  else ok "RAM caps for all ${#PITCREW_COMPS[@]} components fit in this machine"; fi
+
+  local me="" conflicts=0 line
+  case "$PITCREW_CFG" in
+    "$PROJECTS_DIR"/*) me=${PITCREW_CFG##*/}; me=${me%.sh} ;;
+  esac
+  if [ -n "$me" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      conflicts=$((conflicts + 1))
+      set -- $line
+      [ $conflicts -eq 1 ] && bad "ports also claimed by another registered project:"
+      say "      ${C_WARN}$1${RESET}  ${C_MUTED}this project's${RESET} $2  ${C_MUTED}vs${RESET} $3/$4"
+    done < <(port_conflicts "$me")
+    [ $conflicts -eq 0 ] && ok "no port clashes with other registered projects"
+    [ $conflicts -gt 0 ] && say "      ${C_MUTED}run both at once and each reports the other's services as its own${RESET}"
+  fi
+  echo
+
   local avail=""
   if [ "$PITCREW_OS" = linux ]; then
     avail=$(awk '/MemAvailable/{printf "%.1f", $2/1048576}' /proc/meminfo)

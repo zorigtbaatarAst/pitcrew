@@ -37,6 +37,7 @@ is_external() { # $1 comp → true if something's on its port that pitcrew isn't
 state_icon() { # $1 state → R (see the calling convention note in lib/04-meters.sh)
   case "$1" in
     up)       R="${C_OK}●${RESET}" ;;
+    external) R="${C_INFO}◇${RESET}" ;;
     # a booting service is the one thing on screen that is actively changing,
     # so it is the one thing that should move. SPIN existed and was unused here.
     starting) R="${C_WARN}${SPIN[FRAME_N % 10]}${RESET}" ;;
@@ -51,7 +52,9 @@ running_comps() {
   snapshot
   for c in "${PITCREW_COMPS[@]}"; do
     st=${SNAP_STATE[$c]:-n/a}
-    [ "$st" = up ] || [ "$st" = starting ] && printf '%s\n' "$c"
+    # `external` counts as running for stop/profile purposes: stop_comp knows
+    # how to free a port it does not own, and that is the whole point.
+    case "$st" in up|starting|external) printf '%s\n' "$c" ;; esac
   done
   return 0
 }

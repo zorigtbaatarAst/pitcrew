@@ -101,6 +101,7 @@ case "${1:-}" in
   init)     shift; cmd_init     "$@"; exit $? ;;
   theme)    shift; cmd_theme    "$@"; exit $? ;;
   projects|ls) shift; cmd_projects "$@"; exit $? ;;
+  ports)    shift; cmd_ports    "$@"; exit $? ;;
   use)      shift; cmd_use      "$@"; exit $? ;;
   forget)   shift; cmd_forget   "$@"; exit $? ;;
   edit)     shift; cmd_edit     "$@"; exit $? ;;

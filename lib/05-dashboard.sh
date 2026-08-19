@@ -33,22 +33,93 @@ TOAST=""
 TOAST_AT=0
 toast() { TOAST=$1; TOAST_AT=${SNAP_NOW_S:-0}; }
 
+# ── the working set ─────────────────────────────────────────────────────────
+# Detection routinely finds 15+ services in a real monorepo and you want three
+# of them. Profiles solve that once you know the names; filter, sort and marks
+# solve it while you are still working out which three.
+FILTER=""                      # substring match on the app name
+SORT=name                      # name | ram | cpu | state
+declare -gA MARKED=()          # comp -> 1, the set that `a` and `s` act on
+VIEW_APPS=()                   # apps visible this frame, in display order
+VIEW=()                        # their components, flattened — SEL indexes THIS
+
+# crashed first: the sort exists to bring what needs attention to the top
+_state_rank() { case "$1" in crashed) SR=0 ;; starting) SR=1 ;; up) SR=2 ;;
+                             external) SR=3 ;; down) SR=4 ;; *) SR=5 ;; esac; }
+
+_app_sortkey() { # $1 app → SORTKEY (higher sorts first)
+  local app=$1 c v
+  SORTKEY=0
+  case "$SORT" in
+    ram|cpu) for c in "be-$app" "fe-$app"; do
+               [ "$SORT" = ram ] && v=${SNAP_RSS[$c]:-0} || v=${SNAP_CPU[$c]:-0}
+               [ "${v:-0}" -gt "$SORTKEY" ] && SORTKEY=${v:-0}
+             done ;;
+    state)   SORTKEY=9
+             for c in "be-$app" "fe-$app"; do
+               [ -n "${SNAP_STATE[$c]:-}" ] || continue
+               _state_rank "${SNAP_STATE[$c]}"
+               [ "$SR" -lt "$SORTKEY" ] && SORTKEY=$SR
+             done
+             SORTKEY=$(( 9 - SORTKEY )) ;;   # invert: worst state sorts first
+  esac
+}
+
+build_view() {
+  local app c i j n key
+  VIEW_APPS=(); VIEW=()
+  for app in "${PITCREW_APPS[@]}"; do
+    if [ -n "$FILTER" ]; then case "$app" in *"$FILTER"*) ;; *) continue ;; esac; fi
+    VIEW_APPS+=("$app")
+  done
+  if [ "$SORT" != name ]; then
+    # insertion sort over a handful of apps — cheaper than forking sort
+    local -a keys=()
+    n=${#VIEW_APPS[@]}
+    for ((i = 0; i < n; i++)); do _app_sortkey "${VIEW_APPS[i]}"; keys[i]=$SORTKEY; done
+    for ((i = 1; i < n; i++)); do
+      app=${VIEW_APPS[i]}; key=${keys[i]}; j=$((i - 1))
+      while [ $j -ge 0 ] && [ "${keys[j]}" -lt "$key" ]; do
+        VIEW_APPS[j+1]=${VIEW_APPS[j]}; keys[j+1]=${keys[j]}; j=$((j - 1))
+      done
+      VIEW_APPS[j+1]=$app; keys[j+1]=$key
+    done
+  fi
+  for app in "${VIEW_APPS[@]}"; do
+    for c in "be-$app" "fe-$app"; do
+      [ -n "${SNAP_STATE[$c]:-}" ] && VIEW+=("$c")
+    done
+  done
+  return 0
+}
+
+# what `a` and `s` act on: the marked set, or the selection when nothing is marked
+target_set() {
+  TARGETS=()
+  local c
+  for c in "${PITCREW_COMPS[@]}"; do [ -n "${MARKED[$c]:-}" ] && TARGETS+=("$c"); done
+  [ ${#TARGETS[@]} -eq 0 ] && [ -n "${VIEW[$SEL]:-}" ] && TARGETS=("${VIEW[$SEL]}")
+  return 0
+}
+
 declare -gA EXPANDED=()                      # comp -> 1 when its process tree is open
 declare -gA ROW_COMP=()                      # screen row -> comp (for mouse hit-testing)
 SEL=0                                        # index into PITCREW_COMPS
 
 summary_line() { # → R, and SUM_UP / SUM_STARTING for the empty state
-  local c st up=0 starting=0 crashed=0 down=0
+  local c st up=0 starting=0 crashed=0 down=0 external=0
   for c in "${PITCREW_COMPS[@]}"; do
     case "${SNAP_STATE[$c]:-down}" in
       up) up=$((up+1)) ;; starting) starting=$((starting+1)) ;;
-      crashed) crashed=$((crashed+1)) ;; down) down=$((down+1)) ;;
+      crashed) crashed=$((crashed+1)) ;; external) external=$((external+1)) ;;
+      down) down=$((down+1)) ;;
     esac
   done
-  SUM_UP=$up; SUM_STARTING=$starting
+  SUM_UP=$up; SUM_STARTING=$starting; SUM_EXTERNAL=$external
   R="  ${C_OK}${up} up${RESET}"
   [ $starting -gt 0 ] && R+="${C_MUTED} · ${RESET}${C_WARN}${starting} starting${RESET}"
   [ $crashed  -gt 0 ] && R+="${C_MUTED} · ${RESET}${C_CRIT}${crashed} crashed${RESET}"
+  [ $external -gt 0 ] && R+="${C_MUTED} · ${RESET}${C_INFO}${external} external${RESET}"
   [ $down     -gt 0 ] && R+="${C_MUTED} · ${down} down${RESET}"
 }
 
@@ -107,6 +178,7 @@ rail_color() { # $1 app → RAILC
     case "$st" in
       crashed)  RAILC=$C_CRIT; return ;;
       starting) RAILC=$C_WARN ;;
+      external) [ "$RAILC" = "$C_FAINT" ] && RAILC=$C_INFO ;;
       up)       [ "$RAILC" = "$C_FAINT" ] && RAILC=$C_OK ;;
     esac
   done
@@ -302,7 +374,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # Column headers over an empty table are pure noise — they were the worst
     # thing about the first screen anyone sees.
     local empty=0
-    [ "${SUM_UP:-0}" -eq 0 ] && [ "${SUM_STARTING:-0}" -eq 0 ] && empty=1
+    [ "${SUM_UP:-0}" -eq 0 ] && [ "${SUM_STARTING:-0}" -eq 0 ] && [ "${SUM_EXTERNAL:-0}" -eq 0 ] && empty=1
 
     cell_header "$bw"; local chdr=$R
     if [ $empty = 1 ]; then :
@@ -318,11 +390,18 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     fi
 
     # rows left for services + any expanded trees, keeping the legend/help visible
-    avail=$(( H - ln - 5 ))
+    avail=$(( H - ln - 6 ))
 
     # A first run used to show twelve rows of dots under a table header. Say
     # what to do instead, centred on its own width rather than a shared guess.
-    if [ $empty = 1 ]; then
+    if [ ${#VIEW_APPS[@]} -eq 0 ]; then
+      local nomatch
+      printf -v nomatch '%bnothing matches%b %b %s %b' "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$FILTER" "$RESET"
+      frame+=$'\e[K\n'; ln=$((ln + 1))
+      centre "$W" $(( 16 + ${#FILTER} + 2 )) "$nomatch"
+      frame+="$R"$'\e[K\n'; ln=$((ln + 1))
+      avail=$(( avail - 2 ))
+    elif [ $empty = 1 ]; then
       local msg1 msg2
       printf -v msg1 '%b%s%b' "$C_TEXT$BOLD" "nothing is running yet" "$RESET"
       printf -v msg2 '%bpress%b %b m %b %bfor the menu, or run%b %b pitcrew start %b' \
@@ -334,24 +413,25 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       centre "$W" 46 "$msg2"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
       avail=$(( avail - 4 ))
     else
-    for ((i = 0; i < ${#PITCREW_APPS[@]}; i++)); do
+    for ((i = 0; i < ${#VIEW_APPS[@]}; i++)); do
       [ $avail -le 0 ] && break
-      app=${PITCREW_APPS[i]}
+      app=${VIEW_APPS[i]}
       local nm=$C_SUBTLE selected=0
-      if [ "${PITCREW_COMPS[$SEL]:-}" = "be-$app" ] || [ "${PITCREW_COMPS[$SEL]:-}" = "fe-$app" ]; then
+      if [ "${VIEW[$SEL]:-}" = "be-$app" ] || [ "${VIEW[$SEL]:-}" = "fe-$app" ]; then
         selected=1; nm="$C_TEXT$BOLD"
       fi
       rail_color "$app"
-      local label=$app
+      local label=$app mark=" "
       [ -n "${APP_ICON[$app]:-}" ] && label="${APP_ICON[$app]} $app"
-      printf -v line '%b▐%b  %b%-11.11s%b ' "$RAILC" "$RESET" "$nm" "$label" "$RESET"
+      [ -n "${MARKED[be-$app]:-}${MARKED[fe-$app]:-}" ] && mark="${C_ACCENT2}✓${RESET}"
+      printf -v line '%b▐%b%b %b%-11.11s%b ' "$RAILC" "$RESET" "$mark" "$nm" "$label" "$RESET"
       if [ $narrow = 1 ]; then
         # one component per row; the role moves into the label
         local nrow rc
         for rc in "be-$app" "fe-$app"; do
           [ -n "${SNAP_STATE[$rc]:-}" ] || continue
           rail_color "$app"
-          printf -v nrow '%b▐%b  %b%-11.11s%b ' "$RAILC" "$RESET" "$nm" "${label} ${rc:0:2}" "$RESET"
+              printf -v nrow '%b▐%b%b %b%-11.11s%b ' "$RAILC" "$RESET" "$mark" "$nm" "${label} ${rc:0:2}" "$RESET"
           comp_cell "$rc" "$bw"; nrow+="$R"
           frame+="$nrow"$'\e[K\n'; ln=$((ln + 1)); avail=$((avail - 1))
           ROW_COMP[$ln]="$app"
@@ -399,12 +479,19 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # Auto-wrap is off, so anything wider than the terminal is silently
     # truncated by it — drop legend entries that will not fit instead.
     local leg="   " lg vis=3
-    for lg in "● up" "◐ starting" "✗ crashed" "○ down" "· n/a" "⚡ log errors" "$FRAME_TAG"; do
+    for lg in "● up" "◐ starting" "✗ crashed" "◇ not ours" "○ down" "· n/a" "⚡ log errors" "$FRAME_TAG"; do
       [ $(( vis + ${#lg} + 2 )) -gt "$W" ] && break
       leg+="$lg  "; vis=$(( vis + ${#lg} + 2 ))
     done
     printf -v line '%b%s%b' "$C_FAINT" "$leg" "$RESET"
     frame+="$line"$'\e[K\n'
+    local ws="" nmark=0 mc
+    for mc in "${PITCREW_COMPS[@]}"; do [ -n "${MARKED[$mc]:-}" ] && nmark=$((nmark + 1)); done
+    [ "$SORT" != name ] && ws+="   ${C_MUTED}sort${RESET} ${C_TEXT}${SORT}${RESET}"
+    [ -n "$FILTER" ]    && ws+="   ${C_MUTED}filter${RESET} ${C_CAP}${C_TEXT} ${FILTER} ${RESET}"
+    [ "$nmark" -gt 0 ]  && ws+="   ${C_ACCENT2}✓ ${nmark} marked${RESET}"
+    if [ -n "$ws" ]; then frame+="$ws"$'\e[K\n'; else frame+=$'\e[K\n'; fi
+
     if [ -n "$TOAST" ] && [ $(( ${SNAP_NOW_S:-0} - TOAST_AT )) -lt 5 ]; then
       printf -v line '   %s' "$TOAST"
     else
@@ -415,7 +502,8 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # rather than as a line of shell output
     line=" "
     local kc cap lbl kvis=1 addw
-    for kc in "↑↓:select" "⏎:tree" "l:logs" "e:errors" "r:restart" "s:stop" "p:project" "m:menu" "q:quit"; do
+    for kc in "↑↓:select" "␣:mark" "a:start" "s:stop" "r:restart" "⏎:tree" \
+            "/:filter" "o:sort" "l:logs" "e:errors" "p:project" "m:menu" "q:quit"; do
       cap=${kc%%:*}; lbl=${kc#*:}
       addw=$(( ${#cap} + 2 + 1 + ${#lbl} + 2 ))     # " cap " + " " + label + "  "
       [ $(( kvis + addw )) -gt "$W" ] && break
@@ -434,11 +522,13 @@ cmd_watch() {
   tui_enter
   trap 'tui_leave; trap - INT; return 0' INT
   trap 'TERM_DIRTY=1' WINCH
-  n=${#PITCREW_COMPS[@]}
-
   while true; do
     collect_frame
     supervise
+    build_view
+    n=${#VIEW[@]}
+    [ "$n" -gt 0 ] && [ "$SEL" -ge "$n" ] && SEL=$((n - 1))
+    [ "$SEL" -lt 0 ] && SEL=0
     build_frame
     frame=$FRAME
     printf '\033[H%b\033[0J' "$frame"
@@ -449,17 +539,35 @@ cmd_watch() {
       up)   [ $n -gt 0 ] && SEL=$(( (SEL - 1 + n) % n )) ;;
       down) [ $n -gt 0 ] && SEL=$(( (SEL + 1) % n )) ;;
       enter)
-        c=${PITCREW_COMPS[$SEL]:-}
+        c=${VIEW[$SEL]:-}
         [ -n "$c" ] && { [ -n "${EXPANDED[$c]:-}" ] && unset "EXPANDED[$c]" || EXPANDED[$c]=1; } ;;
-      l|L) log_view "${PITCREW_COMPS[$SEL]:-}" ;;
+      ' ') c=${VIEW[$SEL]:-}
+           [ -n "$c" ] && { [ -n "${MARKED[$c]:-}" ] && unset "MARKED[$c]" || MARKED[$c]=1; }
+           [ "$n" -gt 0 ] && SEL=$(( (SEL + 1) % n )) ;;      # mark-and-advance
+      l|L) log_view "${VIEW[$SEL]:-}" ;;
       e|E) err_view ;;
-      r|R) c=${PITCREW_COMPS[$SEL]:-}
-           [ -n "$c" ] && { supervise_clear "$c"
-                            stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1
-                            toast "${YELLOW}↻${RESET} restarting ${BOLD}$c${RESET}"; } ;;
-      s|S) watch_stop ;;
+      o|O) case "$SORT" in name) SORT=state ;; state) SORT=ram ;; ram) SORT=cpu ;; *) SORT=name ;; esac ;;
+      /)   filter_prompt ;;
+      a|A) target_set
+           [ ${#TARGETS[@]} -eq 0 ] && { toast "${C_MUTED}nothing selected${RESET}"; continue; }
+           ram_preflight "${TARGETS[@]}"
+           for c in "${TARGETS[@]}"; do supervise_clear "$c"; start_comp "$c" >/dev/null 2>&1; done
+           if [ -n "$RAM_WARN" ]; then toast "${C_WARN}⚠${RESET} $RAM_WARN"
+           else toast "${YELLOW}▶${RESET} starting ${BOLD}${TARGETS[*]}${RESET}"; fi
+           MARKED=() ;;
+      r|R) target_set
+           [ ${#TARGETS[@]} -eq 0 ] && continue
+           for c in "${TARGETS[@]}"; do
+             supervise_clear "$c"; stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1
+           done
+           toast "${YELLOW}↻${RESET} restarting ${BOLD}${TARGETS[*]}${RESET}"; MARKED=() ;;
+      s|S) target_set
+           [ ${#TARGETS[@]} -eq 0 ] && continue
+           for c in "${TARGETS[@]}"; do stop_comp "$c" >/dev/null 2>&1; done
+           toast "${GREY}■${RESET} stopped ${BOLD}${TARGETS[*]}${RESET}"; MARKED=() ;;
       p|P) switch_project ;;
       m|M) watch_menu ;;
+      x|X) MARKED=(); FILTER=""; SORT=name; toast "${C_MUTED}cleared marks, filter and sort${RESET}" ;;
       mouse) watch_mouse ;;
     esac
   done
@@ -468,13 +576,40 @@ cmd_watch() {
   tui_leave
 }
 
+# Typing a filter repaints the real frame on every keystroke, so the list
+# narrows as you type rather than after you commit.
+filter_prompt() {
+  local saved=$FILTER
+  while true; do
+    collect_frame; build_view; build_frame
+    local hint
+    printf -v hint ' %b filter %b %b%s%b%b▏%b  %besc cancels · enter keeps%b' \
+      "$C_CAP$C_TEXT" "$RESET" "$C_TEXT" "$FILTER" "$RESET" "$C_ACCENT" "$RESET" \
+      "$C_MUTED" "$RESET"
+    printf '\033[H%b\033[0J' "$FRAME"
+    printf '\033[%d;1H%b\033[K' "$TERM_H" "$hint"
+    read_key 0.5 || continue
+    case "$KEY" in
+      enter) break ;;
+      esc)   FILTER=$saved; break ;;
+      $'\177'|$'\b') FILTER=${FILTER%?} ;;
+      mouse) ;;
+      up|down|left|right|tab) ;;
+      "") ;;
+      *) FILTER+=$KEY ;;
+    esac
+  done
+  SEL=0
+  return 0
+}
+
 # Click a service row to select it; click the selected row again to open its
 # process tree. Wheel scrolls the selection.
 watch_mouse() {
   local app c
   case "$MOUSE_BTN" in
-    64) [ ${#PITCREW_COMPS[@]} -gt 0 ] && SEL=$(( (SEL - 1 + ${#PITCREW_COMPS[@]}) % ${#PITCREW_COMPS[@]} )); return ;;
-    65) [ ${#PITCREW_COMPS[@]} -gt 0 ] && SEL=$(( (SEL + 1) % ${#PITCREW_COMPS[@]} )); return ;;
+    64) [ ${#VIEW[@]} -gt 0 ] && SEL=$(( (SEL - 1 + ${#VIEW[@]}) % ${#VIEW[@]} )); return ;;
+    65) [ ${#VIEW[@]} -gt 0 ] && SEL=$(( (SEL + 1) % ${#VIEW[@]} )); return ;;
     0)  [ "${MOUSE_REL:-0}" = 1 ] && return ;;
     *)  return ;;
   esac
@@ -485,8 +620,8 @@ watch_mouse() {
   if [ "${MOUSE_X:-0}" -gt $((TERM_W / 2)) ]; then c="fe-$app"; else c="be-$app"; fi
   [ -n "${SNAP_STATE[$c]:-}" ] || return
   local i
-  for i in "${!PITCREW_COMPS[@]}"; do
-    if [ "${PITCREW_COMPS[$i]}" = "$c" ]; then
+  for i in "${!VIEW[@]}"; do
+    if [ "${VIEW[$i]}" = "$c" ]; then
       if [ "$SEL" = "$i" ]; then
         [ -n "${EXPANDED[$c]:-}" ] && unset "EXPANDED[$c]" || EXPANDED[$c]=1
       fi

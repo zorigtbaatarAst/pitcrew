@@ -353,7 +353,15 @@ _snapshot_states() {
     if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
     pid=${SNAP_PID[$c]:-}
     if [ -n "$port" ] && [ -n "${SNAP_PORT_OPEN[$port]:-}" ]; then
-      if [ "$role" = be ] && [ "${SNAP_HEALTH[$app]:-UP}" != UP ]; then st=starting; else st=up; fi
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        if [ "$role" = be ] && [ "${SNAP_HEALTH[$app]:-UP}" != UP ]; then st=starting; else st=up; fi
+      else
+        # Something is listening, but it is not ours. Reporting that as "up"
+        # is how a project can appear to be running when it is not: two
+        # projects that share a port (and they do — 8080 and 3000 are hardly
+        # unique) each see the other's service and count it as their own.
+        st=external
+      fi
     elif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       st=starting                                # alive, port not open yet — still booting
     elif [ -n "$pid" ]; then

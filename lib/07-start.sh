@@ -172,6 +172,25 @@ wait_dashboard() {
 # (cmd_start, which wraps this in a banner, a boot dashboard and a URL table)
 # and by the live dashboard, which needs exactly this work done with nothing
 # printed over the frame it is drawing. Fills STARTED with what it touched.
+# A RAM cap only protects you if it is smaller than the machine. Sixteen
+# backends at the 8G default commit 128G on a 31G box — at which point the caps
+# never fire and the kernel's OOM killer picks the victim instead, which is
+# both slower and less predictable than being told up front.
+ram_preflight() { # $@ = components about to start → RAM_WARN ("" when fine)
+  RAM_WARN=""
+  local c committed=0 n=$#
+  for c in "$@"; do committed=$(( committed + ${COMP_MAX_B[$c]:-0} )); done
+  [ "$committed" -gt 0 ] || return 0
+  [ -n "${SYS_MEM_TOTAL_KB:-}" ] || sys_gauges
+  local total=$(( ${SYS_MEM_TOTAL_KB:-0} * 1024 ))
+  [ "$total" -gt 0 ] || return 0
+  [ "$committed" -le "$total" ] && return 0
+  human "$committed"; local ch=$HUMAN
+  human "$total";     local th=$HUMAN
+  RAM_WARN="$n services cap at ${ch} against ${th} of RAM — the caps cannot bite first, the OOM killer will"
+  return 0
+}
+
 start_targets() { # $@ = target words ("all" when empty)
   local words comps c
   mapfile -t words < <(expand_profiles "${@:-all}")
@@ -193,6 +212,9 @@ cmd_start() {
   if [ "${words[*]}" = "deps" ]; then echo; return; fi
   echo
   say "${BOLD}② services${RESET}"
+  local planned; mapfile -t planned < <(resolve_targets "${words[@]}")
+  ram_preflight "${planned[@]}"
+  [ -n "$RAM_WARN" ] && warn "$RAM_WARN"
   start_targets "${words[@]}"
   local comps=("${STARTED[@]}")
   say ""

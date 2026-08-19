@@ -123,4 +123,20 @@ test_history_ring_is_bounded() {
   assert_eq "${s[0]}"  15 "oldest sample dropped"
 }
 
+test_ram_preflight_warns_when_caps_exceed_the_machine() {
+  # A cap only protects you if it is smaller than the machine. Sixteen JVMs at
+  # the 8G default commit 128G on a 31G box, at which point no cap ever fires
+  # and the OOM killer picks the victim instead.
+  SYS_MEM_TOTAL_KB=$(( 4 * 1024 * 1024 ))        # pretend 4G of RAM
+  COMP_MAX_B[be-both]=$(( 1 * 1024 ** 3 ))
+  COMP_MAX_B[fe-both]=$(( 1 * 1024 ** 3 ))
+  ram_preflight be-both fe-both
+  assert_empty "$RAM_WARN" "2G of caps on a 4G box is fine"
+  COMP_MAX_B[be-both]=$(( 8 * 1024 ** 3 ))
+  ram_preflight be-both fe-both
+  assert_match "$RAM_WARN" 'OOM' "9G of caps on a 4G box is not"
+  assert_match "$RAM_WARN" '9.0G' "says how much was committed"
+  assert_match "$RAM_WARN" '4.0G' "and what the machine has"
+}
+
 run_tests

@@ -217,6 +217,19 @@ test_the_picker_preview_describes_a_project() {
   assert_match "$info" 'apps'     "and how many apps it has"
 }
 
+test_port_clashes_between_projects_are_found() {
+  _init_repo                                     # fixrepo: sales be 8111, fe 3111
+  local other; other=$(project_file rival)
+  printf 'PITCREW_ROOT=%s\nPITCREW_APPS=(thing)\npitcrew_app thing --be-cmd "true" --be-port 8111\n' \
+    "$ROOTFIX" > "$other"
+  local hits; hits=$(port_conflicts fixrepo)
+  assert_match "$hits" '8111'   "the shared port"
+  assert_match "$hits" 'rival'  "and who else claims it"
+  assert_not_match "$hits" '3111' "a port only one project uses is not a clash"
+  rm -f "$other"
+  assert_empty "$(port_conflicts fixrepo)" "no clash once the other project is gone"
+}
+
 test_a_project_is_registered_and_becomes_current() {
   _init_repo
   assert_match "$(project_list | tr '\n' ' ')" 'fixrepo' "listed"
