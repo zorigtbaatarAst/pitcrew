@@ -47,12 +47,13 @@ _init_repo() { # → INITOUT, and the generated config path in GENCFG
   GENCFG=$(project_file fixrepo)
 }
 
-_load_generated() { # source the generated config the way bin/pitcrew does
+_load_generated_from() { # source a config the way bin/pitcrew does
   config_defaults
-  ROOT=$(config_declared_root "$GENCFG")
-  source "$GENCFG"
-  config_finalize "$GENCFG"
+  ROOT=$(config_declared_root "$1")
+  source "$1"
+  config_finalize "$1"
 }
+_load_generated() { _load_generated_from "$GENCFG"; }
 
 test_detects_apps_and_ignores_noise() {
   DET_APPS=(); detect_scan "$ROOTFIX"
@@ -157,6 +158,30 @@ test_generated_ports_never_collide() {
   # and loading it must produce no warnings at all
   local warn; warn=$(plain "$(config_validate 2>&1)")
   assert_empty "$warn" "config_validate is silent on a generated config"
+}
+
+test_a_repo_with_its_own_config_is_registered_as_a_pointer() {
+  # Re-detecting a repo that already ships a config would produce a second,
+  # worse copy that drifts from the real one — and the in-project file wins at
+  # resolution time anyway, so the copy would never even be read.
+  mk "$ROOTFIX/pitcrew.config.sh" 'PITCREW_PROJECT_NAME="handwritten"
+PITCREW_APPS=(only)
+pitcrew_app only --be-cmd "true" --be-port 19999'
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  local gen; gen=$(project_file fixrepo)
+  assert_match "$(cat "$gen")" 'source "\$PITCREW_ROOT/pitcrew.config.sh"' "points at the repo's own config"
+  assert_not_match "$(cat "$gen")" 'pitcrew_app' "does not copy the model"
+
+  # and resolving through the registry entry yields the repo's model
+  _load_generated_from "$gen"
+  assert_eq "$PITCREW_PROJECT_NAME" "handwritten" "the repo's config is what loads"
+  assert_eq "${PITCREW_BE_PORT[only]}" 19999 "with its own values"
+
+  # --detect overrides, for when you do want a fresh look
+  cmd_init --force --detect --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  assert_match "$(cat "$gen")" 'pitcrew_app' "--detect regenerates instead"
+  rm -f "$ROOTFIX/pitcrew.config.sh"
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
 }
 
 test_a_project_is_registered_and_becomes_current() {

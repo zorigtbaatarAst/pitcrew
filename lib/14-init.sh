@@ -27,10 +27,11 @@ _next_port() { # $1 base → NEXT_PORT
 }
 
 cmd_init() { # [--in-project] [--force] [--name <name>] [<dir>]
-  local dir="" name="" in_project=0 force=0
+  local dir="" name="" in_project=0 force=0 redetect=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --in-project) in_project=1; shift ;;
+      --detect)     redetect=1; shift ;;
       --force|-f)   force=1; shift ;;
       --name)       [ $# -ge 2 ] || die "--name needs a value"; name=$2; shift 2 ;;
       -*)           die "init: unknown option '$1'" ;;
@@ -40,6 +41,47 @@ cmd_init() { # [--in-project] [--force] [--name <name>] [<dir>]
   dir=${dir:-$PWD}
   [ -d "$dir" ] || die "init: no such directory: $dir"
   dir=$(cd "$dir" && pwd)
+
+  # A repo that ships its own config has already answered every question this
+  # command exists to guess at — and that file wins at resolution time anyway,
+  # so a detected copy in the registry would be dead weight that drifts. Point
+  # at it instead. `--detect` overrides, for when you want a fresh look.
+  local existing="$dir/pitcrew.config.sh"
+  if [ -f "$existing" ] && [ "$in_project" != 1 ] && [ "$redetect" != 1 ]; then
+    name=${name:-$(basename "$dir")}
+    local lslug; lslug=$(project_slug "$name")
+    mkdir -p "$PROJECTS_DIR"
+    local ltarget; ltarget=$(project_file "$lslug")
+    if [ -e "$ltarget" ] && [ "$force" != 1 ]; then
+      die "$ltarget already exists — pass --force to replace it"
+    fi
+    {
+      printf '#!/usr/bin/env bash
+'
+      printf '# %s — registered by `pitcrew init` on %(%Y-%m-%d)T.
+' "$lslug" -1
+      printf '#
+# This project ships its own pitcrew.config.sh, so this entry just points at
+'
+      printf '# it. Edit the config in the repository, not here. `pitcrew init --detect`
+'
+      printf '# replaces this with a freshly detected config instead.
+
+'
+      printf 'PITCREW_ROOT=%q
+' "$dir"
+      printf '# shellcheck source=/dev/null
+'
+      printf 'source "$PITCREW_ROOT/pitcrew.config.sh"
+'
+    } > "$ltarget"
+    project_set_current "$lslug"
+    say ""
+    ok "registered ${BOLD}$lslug${RESET} ${C_MUTED}→ its own pitcrew.config.sh${RESET}"
+    say "    ${C_MUTED}$existing${RESET}"
+    say ""
+    return 0
+  fi
 
   say ""
   say "  ${C_MUTED}looking at${RESET} ${BOLD}$dir${RESET}"
