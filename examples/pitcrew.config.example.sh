@@ -120,7 +120,10 @@ pitcrew_doctor_extra() {
 # PITCREW_REFRESH=0.5        # seconds between frames — fractions are fine
 # PITCREW_GRAPH=braille      # block (default) | braille — 2 samples per cell
 # PITCREW_HISTORY=240        # sparkline samples kept per component
-# PITCREW_THEME=neon         # ~/.config/pitcrew/themes/<name>.sh, or themes/
+# PITCREW_THEME=tokyonight   # default | tokyonight | rosepine | gruvbox | mono
+# PITCREW_COLOR=truecolor    # truecolor | 16 | none — detected from $COLORTERM
+# PITCREW_ICONS=nerd         # unicode (default) | nerd — needs a patched font
+# PITCREW_NARROW_AT=110      # below this width, one component per row
 # PITCREW_MOUSE=1            # click to select, click again to expand, wheel scrolls
 #
 # What the error radar (the ⚡ counter, and the `e` key) treats as an error.

@@ -196,15 +196,28 @@ boot report, failure log tails and URL table.
 | `PITCREW_REFRESH` | `1` | seconds between frames; fractions like `0.25` are fine |
 | `PITCREW_GRAPH` | `block` | `block` (▁▂▃) or `braille` (⣀⣤⣶), which packs 2 samples per cell |
 | `PITCREW_HISTORY` | `240` | samples kept per component |
-| `PITCREW_THEME` | — | a file in `~/.config/pitcrew/themes/<name>.sh` or `themes/` |
+| `PITCREW_THEME` | `default` | `default` (Catppuccin Mocha), `tokyonight`, `rosepine`, `gruvbox`, `mono`, or your own |
+| `PITCREW_COLOR` | auto | `truecolor` / `16` / `none` — detected from `$COLORTERM`, override to force |
+| `PITCREW_ICONS` | `unicode` | `nerd` adds language and docker glyphs (needs a patched font) |
+| `PITCREW_NARROW_AT` | `110` | below this width, one component per row instead of two columns |
 | `PITCREW_MOUSE` | `0` | `1` enables click-to-select / click-again-to-expand / wheel |
 | `PITCREW_ERROR_PATTERN` | `ERROR\|FATAL\|Exception\|UnhandledRejection` | what the error radar counts |
 | `PITCREW_HEALTH_INTERVAL` | `5` | seconds between health probes (×3 once a service reports UP) |
 | `PITCREW_DEP_INTERVAL` | `10` | seconds between docker dep checks |
 
-`NO_COLOR` (or `PITCREW_NO_COLOR`) drops every color. A theme is a plain bash
-file that reassigns `$RED`, `$GREEN`, `$BOLD` and friends — no new format and
-no parser; see [`themes/default.sh`](themes/default.sh).
+`NO_COLOR` (or `PITCREW_NO_COLOR`) drops every colour.
+
+Colours are addressed by **role**, not by hue — `C_CRIT`, `C_MUTED`,
+`C_SURFACE` rather than `RED`, `GREY`. A theme is still a plain bash file, and
+it sets nothing but hex values; pitcrew converts them to 24-bit, to the 16
+ANSI colours, or to nothing at all depending on what the terminal reports. One
+theme file therefore works everywhere, including an old ssh target. See
+[`themes/default.sh`](themes/default.sh) — five lines.
+
+Graphs are coloured by each cell's **height**, cool at the bottom to hot at
+the top, so a climb is legible before you read a number. Height auto-scales to
+the series; how close a service is to its configured RAM cap moves to the
+colour of the number, which is where you look for it anyway.
 
 ## How it works
 

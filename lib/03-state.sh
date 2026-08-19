@@ -36,11 +36,13 @@ is_external() { # $1 comp → true if something's on its port that pitcrew isn't
 
 state_icon() { # $1 state → R (see the calling convention note in lib/04-meters.sh)
   case "$1" in
-    up)       R="${GREEN}●${RESET}" ;;
-    starting) R="${YELLOW}◐${RESET}" ;;
-    crashed)  R="${RED}✗${RESET}" ;;
-    down)     R="${GREY}○${RESET}" ;;
-    *)        R="${DIM}${GREY}·${RESET}" ;;
+    up)       R="${C_OK}●${RESET}" ;;
+    # a booting service is the one thing on screen that is actively changing,
+    # so it is the one thing that should move. SPIN existed and was unused here.
+    starting) R="${C_WARN}${SPIN[FRAME_N % 10]}${RESET}" ;;
+    crashed)  R="${C_CRIT}✗${RESET}" ;;
+    down)     R="${C_MUTED}○${RESET}" ;;
+    *)        R="${DIM}${C_FAINT}·${RESET}" ;;
   esac
 }
 

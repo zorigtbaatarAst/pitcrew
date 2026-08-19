@@ -94,6 +94,14 @@ config_finalize() { # $1 = path to the config file that was just sourced
 
   # RAM cap per component, pre-resolved to bytes. The dashboard divides by
   # this once per component per frame; parsing "8G" there would mean a fork.
+  # what each app is written in, guessed once from its start command
+  declare -gA APP_ICON=()
+  local _a
+  for _a in "${PITCREW_APPS[@]}"; do
+    app_icon_for "${PITCREW_BE_CMD[$_a]:-}${PITCREW_FE_CMD[$_a]:-}"
+    APP_ICON[$_a]=$ICON
+  done
+
   declare -gA COMP_MAX_B=()
   local _c _m
   for _c in "${PITCREW_COMPS[@]}"; do

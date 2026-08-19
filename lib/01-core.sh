@@ -5,20 +5,121 @@
 
 ESC=$'\e'
 SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
+# ── icons ────────────────────────────────────────────────────────────────────
+# Nerd Font glyphs live in the Private Use Area, so a terminal without a
+# patched font renders them as tofu boxes. That is a bad enough first
+# impression that detection is not worth guessing at — this is opt-in via
+# PITCREW_ICONS=nerd, and every other mode simply has no icon.
+PITCREW_ICONS="${PITCREW_ICONS:-unicode}"
+if [ "$PITCREW_ICONS" = nerd ]; then
+  I_JAVA=$'\ue738'; I_NODE=$'\ue718'; I_PY=$'\ue73c'; I_RUST=$'\ue7a8'
+  I_GO=$'\ue627';  I_RUBY=$'\ue739'; I_DOCKER=$'\uf308'; I_APP=$'\uf0c8'
+else
+  I_JAVA=""; I_NODE=""; I_PY=""; I_RUST=""; I_GO=""; I_RUBY=""; I_DOCKER=""; I_APP=""
+fi
+
+app_icon_for() { # $1 start command(s) → ICON, guessed from what it runs
+  case "$1" in
+    *gradle*|*bootRun*|*mvn*|*java\ *|*.jar*) ICON=$I_JAVA ;;
+    *npm*|*node*|*vite*|*next*|*yarn*|*pnpm*|*bun*) ICON=$I_NODE ;;
+    *python*|*uvicorn*|*gunicorn*|*flask*|*django*) ICON=$I_PY ;;
+    *cargo*) ICON=$I_RUST ;;
+    *"go run"*|*"go build"*) ICON=$I_GO ;;
+    *rails*|*bundle*|*ruby*) ICON=$I_RUBY ;;
+    *) ICON=$I_APP ;;
+  esac
+}
 BARS=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
 
 # ── palette ──────────────────────────────────────────────────────────────────
-# A theme is a plain bash file that reassigns these variables — no new format,
-# no parser. Looked up as $PITCREW_THEME in ~/.config/pitcrew/themes/<name>.sh
-# first (yours), then themes/<name>.sh in this repo (shipped).
-theme_defaults() {
+# Colours are addressed by ROLE, not by hue. `$RED` tells you nothing about
+# what a thing is; `$C_CRIT` does, and it means the theme decides what critical
+# looks like. A theme is still a plain bash file — it just sets hex values, and
+# the conversion to whatever the terminal can actually display happens here.
+#
+# Three colour depths are supported and detected, not guessed at:
+#   truecolor  24-bit, from $COLORTERM — what any modern terminal reports
+#   16         the classic ANSI codes, for an old ssh target or TERM=linux
+#   none       NO_COLOR, or a pipe
+# Override with PITCREW_COLOR=truecolor|16|none.
+
+pitcrew_color_depth() {
+  case "${PITCREW_COLOR:-}" in truecolor|16|none) printf '%s' "$PITCREW_COLOR"; return ;; esac
+  [ -n "${NO_COLOR:-}${PITCREW_NO_COLOR:-}" ] && { printf none; return; }
+  case "${COLORTERM:-}" in truecolor|24bit) printf truecolor; return ;; esac
+  printf 16
+}
+PITCREW_COLOR_DEPTH=$(pitcrew_color_depth)
+
+_tok() { # $1 var name, $2 hex "rrggbb", $3 ANSI fallback code
+  case "$PITCREW_COLOR_DEPTH" in
+    none)      printf -v "$1" '' ;;
+    truecolor) printf -v "$1" '%s[38;2;%d;%d;%dm' "$ESC" \
+                 $((16#${2:0:2})) $((16#${2:2:2})) $((16#${2:4:2})) ;;
+    *)         printf -v "$1" '%s[%sm' "$ESC" "$3" ;;
+  esac
+}
+
+_bgtok() { # same, for a background
+  case "$PITCREW_COLOR_DEPTH" in
+    none)      printf -v "$1" '' ;;
+    truecolor) printf -v "$1" '%s[48;2;%d;%d;%dm' "$ESC" \
+                 $((16#${2:0:2})) $((16#${2:2:2})) $((16#${2:4:2})) ;;
+    *)         printf -v "$1" '%s[%sm' "$ESC" "$3" ;;
+  esac
+}
+
+# The default palette. A theme file overrides any of these T_* hex values and
+# nothing else — it never touches escape sequences, so one theme file works at
+# every colour depth.
+theme_hex_defaults() {
+  T_TEXT=cdd6f4      # primary text — values you read
+  T_SUBTLE=9399b2    # secondary text — names you scan
+  T_MUTED=6c7086     # chrome — ports, labels, separators
+  T_FAINT=45475a     # barely there — baselines, placeholders
+  T_SURFACE=313244   # selected-row background
+  T_ACCENT=89b4fa    # primary accent
+  T_ACCENT2=cba6f7   # secondary accent — keys, markers
+  T_OK=a6e3a1
+  T_WARN=f9e2af
+  T_CRIT=f38ba8
+  T_INFO=89dceb
+  # graph ramp, bottom of the chart to the top
+  T_G1=94e2d5; T_G2=a6e3a1; T_G3=f9e2af; T_G4=f38ba8
+}
+
+theme_apply() {
   BOLD="$ESC[1m"; DIM="$ESC[2m"; RESET="$ESC[0m"
-  RED="$ESC[31m"; GREEN="$ESC[32m"; YELLOW="$ESC[33m"; BLUE="$ESC[34m"
-  MAGENTA="$ESC[35m"; CYAN="$ESC[36m"; GREY="$ESC[90m"
+  [ "$PITCREW_COLOR_DEPTH" = none ] && { BOLD=""; DIM=""; RESET=""; }
+
+  _tok C_TEXT    "$T_TEXT"    0
+  _tok C_SUBTLE  "$T_SUBTLE"  37
+  _tok C_MUTED   "$T_MUTED"   90
+  _tok C_FAINT   "$T_FAINT"   90
+  _tok C_ACCENT  "$T_ACCENT"  36
+  _tok C_ACCENT2 "$T_ACCENT2" 35
+  _tok C_OK      "$T_OK"      32
+  _tok C_WARN    "$T_WARN"    33
+  _tok C_CRIT    "$T_CRIT"    31
+  _tok C_INFO    "$T_INFO"    34
+  _tok C_G1      "$T_G1"      36
+  _tok C_G2      "$T_G2"      32
+  _tok C_G3      "$T_G3"      33
+  _tok C_G4      "$T_G4"      31
+  _bgtok C_BAND  "$T_SURFACE" 100
+  _bgtok C_CAP   "$T_FAINT"   100     # key caps / pills
+  GRAMP=("$C_G1" "$C_G2" "$C_G3" "$C_G4")
+
+  # Legacy names, kept as aliases so every existing call site still reads
+  # correctly while the codebase migrates to roles.
+  RED=$C_CRIT; GREEN=$C_OK; YELLOW=$C_WARN; BLUE=$C_INFO
+  MAGENTA=$C_ACCENT2; CYAN=$C_ACCENT; GREY=$C_MUTED
+  return 0
 }
 
 theme_load() {
-  theme_defaults
+  theme_hex_defaults
   local name="${PITCREW_THEME:-}" f
   if [ -n "$name" ]; then
     for f in "$HOME/.config/pitcrew/themes/$name.sh" "$LIB_DIR/../themes/$name.sh"; do
@@ -26,13 +127,7 @@ theme_load() {
       [ -f "$f" ] && { source "$f"; break; }
     done
   fi
-  # NO_COLOR is a documented cross-tool convention; honor it last so it wins
-  # over any theme. Every format string goes through %b, so empty is safe.
-  if [ -n "${NO_COLOR:-}${PITCREW_NO_COLOR:-}" ]; then
-    BOLD=""; DIM=""; RESET=""; RED=""; GREEN=""; YELLOW=""; BLUE=""
-    MAGENTA=""; CYAN=""; GREY=""
-  fi
-  return 0
+  theme_apply
 }
 theme_load
 

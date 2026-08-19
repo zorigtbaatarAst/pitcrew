@@ -37,7 +37,7 @@ declare -gA EXPANDED=()                      # comp -> 1 when its process tree i
 declare -gA ROW_COMP=()                      # screen row -> comp (for mouse hit-testing)
 SEL=0                                        # index into PITCREW_COMPS
 
-summary_line() { # → R
+summary_line() { # → R, and SUM_UP / SUM_STARTING for the empty state
   local c st up=0 starting=0 crashed=0 down=0
   for c in "${PITCREW_COMPS[@]}"; do
     case "${SNAP_STATE[$c]:-down}" in
@@ -45,10 +45,11 @@ summary_line() { # → R
       crashed) crashed=$((crashed+1)) ;; down) down=$((down+1)) ;;
     esac
   done
-  R="  ${GREEN}${up} up${RESET}"
-  [ $starting -gt 0 ] && R+="${GREY} · ${RESET}${YELLOW}${starting} starting${RESET}"
-  [ $crashed  -gt 0 ] && R+="${GREY} · ${RESET}${RED}${crashed} crashed${RESET}"
-  [ $down     -gt 0 ] && R+="${GREY} · ${RESET}${GREY}${down} down${RESET}"
+  SUM_UP=$up; SUM_STARTING=$starting
+  R="  ${C_OK}${up} up${RESET}"
+  [ $starting -gt 0 ] && R+="${C_MUTED} · ${RESET}${C_WARN}${starting} starting${RESET}"
+  [ $crashed  -gt 0 ] && R+="${C_MUTED} · ${RESET}${C_CRIT}${crashed} crashed${RESET}"
+  [ $down     -gt 0 ] && R+="${C_MUTED} · ${down} down${RESET}"
 }
 
 status_table() {
@@ -91,6 +92,21 @@ status_table() {
 
 cmd_status() { banner; status_table; echo; }
 
+# The rail colour is the worst state across an app's roles: it is a
+# peripheral-vision signal, so it must report the thing that needs attention,
+# not an average.
+rail_color() { # $1 app → RAILC
+  local app=$1 s1=${SNAP_STATE[be-$app]:-n/a} s2=${SNAP_STATE[fe-$app]:-n/a} st
+  RAILC=$C_FAINT
+  for st in "$s1" "$s2"; do
+    case "$st" in
+      crashed)  RAILC=$C_CRIT; return ;;
+      starting) RAILC=$C_WARN ;;
+      up)       [ "$RAILC" = "$C_FAINT" ] && RAILC=$C_OK ;;
+    esac
+  done
+}
+
 # ── one service cell ────────────────────────────────────────────────────────
 # The field widths are constants because BOTH comp_cell and cell_header build
 # from them. The header used to be a hand-spaced literal, so its "ram"/"cpu"
@@ -104,11 +120,11 @@ CELL_GAP_W=2         # between the backend and frontend cells
 
 cell_header() { # $1 graph width → R, exactly CELL_FIXED_W + $1 wide
   printf -v R '%b%2s%-7s%-*s %6s %4s %-4s%b' \
-    "$BOLD$GREY" "" "port" "$1" "graph" "ram" "cpu" "" "$RESET"
+    "$C_MUTED" "" "port" "$1" "graph" "ram" "cpu" "" "$RESET"
 }
 
 comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
-  local c=$1 gw=$2 st port cur app role cell pct half
+  local c=$1 gw=$2 st port cur app role cell pct half i
   st=${SNAP_STATE[$c]:-n/a}
   app=${c#??-}; role=${c:0:2}
   if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
@@ -116,22 +132,26 @@ comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
 
   state_icon "$st"; cell="$R "
   if [ "$st" = n/a ]; then
-    printf -v R '%b%-6s%b ' "$GREY" "n/a" "$RESET"
+    printf -v R '%b%-6s%b ' "$C_FAINT" "n/a" "$RESET"
   else
-    printf -v R '%b:%-5s%b ' "$GREY" "${port:--}" "$RESET"
+    printf -v R '%b:%-5s%b ' "$C_MUTED" "${port:--}" "$RESET"
   fi
   cell+="$R"
 
   if [[ "$cur" =~ ^[0-9]+$ ]] && [ "$cur" -gt 0 ]; then
-    # Height auto-scales to this service's own recent range, so the shape is
-    # always readable. Colour still comes from how close it is to its
-    # configured RAM cap, so the headroom signal is not lost.
+    # The graph's HEIGHT auto-scales to this service's own recent range, and
+    # its COLOUR runs cool-to-hot by cell height. That leaves "how close am I
+    # to the configured cap" without a channel, so it moves to the number —
+    # which is where you look for it anyway.
     pct=$(( cur * 100 / ${COMP_MAX_B[$c]:-1} ))
     pct_color "$pct"
-    spark "${HIST_MEM[$c]:-}" "$gw" 67108864 "$PCOL"      # 64M floor
+    spark "${HIST_MEM[$c]:-}" "$gw" 67108864              # 64M floor
     cell+="$R"
     human "$cur"
-    printf -v R ' %6s %4s' "$HUMAN" "${SNAP_CPU[$c]:-0}%"
+    # units and the % sign are chrome: bright value, dim unit
+    printf -v R ' %b%5s%b%b%s%b %b%3s%b%b%%%b' \
+      "$PCOL" "${HUMAN%[GM]}" "$RESET" "$C_MUTED" "${HUMAN: -1}" "$RESET" \
+      "$C_TEXT" "${SNAP_CPU[$c]:-0}" "$RESET" "$C_MUTED" "$RESET"
     cell+="$R"
   elif is_external "$c"; then
     printf -v R '%b%*s%b %6s %4s' "$DIM$GREY" "$gw" "external" "$RESET" "—" "—"
@@ -148,8 +168,11 @@ comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
     printf -v R '%b%-*.*s%b %6s %4s' "$RED" "$gw" "$gw" " $reason" "$RESET" "" ""
     cell+="$R"
   else
-    half=$(( gw / 2 + 1 ))
-    printf -v R '%b%*s%-*s%b %6s %4s' "$DIM$GREY" "$half" "·" "$((gw - half))" "" "$RESET" "" ""
+    # a faint baseline, not a lone dot: the column reads as an empty chart
+    # rather than as something broken
+    local base=""
+    for ((i = 0; i < gw; i++)); do base+="─"; done
+    printf -v R '%b%s%b %6s %4s' "$C_FAINT" "$base" "$RESET" "" ""
     cell+="$R"
   fi
 
@@ -186,7 +209,9 @@ _tree_sorted() { # $1 comp → TREE_SORTED array
 #   build_frame    turns state into $FRAME (pure; no I/O, no forks)
 #   cmd_watch      paints it and handles input
 
+FRAME_N=0
 collect_frame() {
+  FRAME_N=$(( FRAME_N + 1 ))
   snapshot
   err_scan
   local c
@@ -207,7 +232,16 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
   # The graph gets whatever the terminal has left over after the fixed
   # columns, so a wide window buys more history instead of dead space.
   term_size; W=$TERM_W; H=$TERM_H
-    bw=$(( (W - ROW_PREFIX_W - CELL_GAP_W - 2 * CELL_FIXED_W) / 2 ))
+    # Below this width two cells side by side stop being readable: the graph is
+    # squeezed to nothing and the columns collide. One component per row beats
+    # two unreadable ones.
+    local narrow=0
+    [ "$W" -lt "${PITCREW_NARROW_AT:-110}" ] && narrow=1
+    if [ $narrow = 1 ]; then
+      bw=$(( W - ROW_PREFIX_W - CELL_FIXED_W - 2 ))
+    else
+      bw=$(( (W - ROW_PREFIX_W - CELL_GAP_W - 2 * CELL_FIXED_W) / 2 ))
+    fi
     [ $bw -lt 8 ] && bw=8; [ $bw -gt 40 ] && bw=40
     sw=$(( W / 5 )); [ $sw -lt 12 ] && sw=12; [ $sw -gt 40 ] && sw=40
     ROW_COMP=()
@@ -215,8 +249,9 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     printf -v ts '%(%H:%M:%S)T' -1        # builtin strftime — no `date` fork
 
     # ── title rule ──
-    printf -v line '%b── %b%s · live%b ' "$CYAN" "$BOLD" "${PITCREW_PROJECT_NAME:-pitcrew}" "$RESET$CYAN"
-    rule_len=$((W - 12 - ${#PITCREW_PROJECT_NAME} - ${#ts})); [ $rule_len -lt 0 ] && rule_len=0
+    printf -v line '%b──%b %b%s%b %blive%b %b' "$C_FAINT" "$RESET" "$C_ACCENT$BOLD" "${PITCREW_PROJECT_NAME:-pitcrew}" "$RESET" "$C_MUTED" "$RESET" "$C_FAINT"
+    # visible chrome: "── " + name + " live " + rule + " " + ts + " ──"
+    rule_len=$((W - 13 - ${#PITCREW_PROJECT_NAME} - ${#ts})); [ $rule_len -lt 0 ] && rule_len=0
     r=""; while [ ${#r} -lt $rule_len ]; do r+="─"; done
     frame+="$line$r $ts ──$RESET"$'\e[K\n\e[K\n'; ln=$((ln + 2))
 
@@ -225,7 +260,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # auto-scaled: 4% CPU should look like 4%, not like a full bar.
     pct_color "${SYS_CPU_PCT:-0}"
     spark "$HIST_SYS_CPU" "$sw" 100 "$PCOL"
-    printf -v line '   %bCPU%b %s %3s%%' "$BOLD" "$RESET" "$R" "${SYS_CPU_PCT:-0}"
+    printf -v line '   %bCPU%b %s %b%3s%b%b%%%b' "$C_MUTED" "$RESET" "$R" "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET" "$C_MUTED" "$RESET"
     frame+="$line"$'\e[K\n'; ln=$((ln + 1))
     if [ -n "$SYS_MEM_TOTAL_KB" ] && [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ]; then
       local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB )) used
@@ -233,16 +268,17 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$PCOL"
       human $(( SYS_MEM_USED_KB * 1024 )); used=$HUMAN
       human $(( SYS_MEM_TOTAL_KB * 1024 ))
-      printf -v line '   %bRAM%b %s %s / %s' "$BOLD" "$RESET" "$R" "$used" "$HUMAN"
+      printf -v line '   %bRAM%b %s %b%s%b %b/%b %b%s%b' "$C_MUTED" "$RESET" "$R" \
+        "$C_TEXT" "$used" "$RESET" "$C_FAINT" "$RESET" "$C_MUTED" "$HUMAN" "$RESET"
     else
-      printf -v line '   %bRAM%b %bunavailable on this OS%b' "$BOLD" "$RESET" "$GREY" "$RESET"
+      printf -v line '   %bRAM%b %bunavailable on this OS%b' "$C_MUTED" "$RESET" "$C_FAINT" "$RESET"
     fi
     frame+="$line"$'\e[K\n\e[K\n'; ln=$((ln + 2))
 
     # ── deps, folded onto their own rule line ──
     if [ ${#PITCREW_DEPS[@]} -gt 0 ]; then
       local dep dline
-      printf -v dline '%b── deps%b   ' "$BOLD$GREY" "$RESET"
+      printf -v dline '%b──%b %b%s%b   ' "$C_FAINT" "$RESET" "$C_TEXT$BOLD" "deps" "$RESET"
       for dep in "${PITCREW_DEPS[@]}"; do
         state_icon "${SNAP_DEP[$dep]:-down}"
         dline+="$R ${dep}   "
@@ -252,27 +288,69 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
 
     # ── services ──
     summary_line
-    printf -v line '%b── services%b%s' "$BOLD$GREY" "$RESET" "$R"
-    frame+="$line"$'\e[K\n'; ln=$((ln + 1))
-    printf -v line '%b%-*s%-*s%*s%s%b' "$BOLD$GREY" \
-      "$ROW_PREFIX_W" "   app" "$((CELL_FIXED_W + bw))" "backend" "$CELL_GAP_W" "" "frontend" "$RESET"
+    printf -v line '%b──%b %b%s%b%s' "$C_FAINT" "$RESET" "$C_TEXT$BOLD" "services" "$RESET" "$R"
     frame+="$line"$'\e[K\n'; ln=$((ln + 1))
     cell_header "$bw"; local chdr=$R
-    printf -v line '%*s%s%*s%s' "$ROW_PREFIX_W" "" "$chdr" "$CELL_GAP_W" "" "$chdr"
-    frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    if [ $narrow = 1 ]; then
+      printf -v line '%b%-*s%s%b' "$C_MUTED" "$ROW_PREFIX_W" "   service" "$chdr" "$RESET"
+      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    else
+      printf -v line '%b%-*s%-*s%*s%s%b' "$C_MUTED" \
+        "$ROW_PREFIX_W" "   app" "$((CELL_FIXED_W + bw))" "backend" "$CELL_GAP_W" "" "frontend" "$RESET"
+      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+      printf -v line '%*s%s%*s%s' "$ROW_PREFIX_W" "" "$chdr" "$CELL_GAP_W" "" "$chdr"
+      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    fi
 
     # rows left for services + any expanded trees, keeping the legend/help visible
     avail=$(( H - ln - 5 ))
+
+    # A first run shows twelve rows of nothing. Say what to do instead.
+    if [ "${SUM_UP:-0}" -eq 0 ] && [ "${SUM_STARTING:-0}" -eq 0 ]; then
+      local pad=$(( (W - 26) / 2 )); [ $pad -lt 3 ] && pad=3
+      frame+=$'\e[K\n'; ln=$((ln + 1))
+      printf -v line '%*s%b%s%b' "$pad" "" "$C_TEXT$BOLD" "nothing is running yet" "$RESET"
+      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+      printf -v line '%*s%bpress%b %b m %b %bfor the menu, or run%b %b pitcrew start %b' \
+        "$((pad - 4))" "" "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$RESET" \
+        "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$RESET"
+      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+      avail=$(( avail - 3 ))
+    else
     for ((i = 0; i < ${#PITCREW_APPS[@]}; i++)); do
       [ $avail -le 0 ] && break
       app=${PITCREW_APPS[i]}
-      local marker="  " nm="$CYAN"
+      local nm=$C_SUBTLE selected=0
       if [ "${PITCREW_COMPS[$SEL]:-}" = "be-$app" ] || [ "${PITCREW_COMPS[$SEL]:-}" = "fe-$app" ]; then
-        marker=" ${MAGENTA}▸${RESET}"; nm="$BOLD$CYAN"
+        selected=1; nm="$C_TEXT$BOLD"
       fi
-      printf -v line '%b %b%-11s%b ' "$marker" "$nm" "$app" "$RESET"
+      rail_color "$app"
+      local label=$app
+      [ -n "${APP_ICON[$app]:-}" ] && label="${APP_ICON[$app]} $app"
+      printf -v line '%b▐%b  %b%-11.11s%b ' "$RAILC" "$RESET" "$nm" "$label" "$RESET"
+      if [ $narrow = 1 ]; then
+        # one component per row; the role moves into the label
+        local nrow rc
+        for rc in "be-$app" "fe-$app"; do
+          [ -n "${SNAP_STATE[$rc]:-}" ] || continue
+          rail_color "$app"
+          printf -v nrow '%b▐%b  %b%-11.11s%b ' "$RAILC" "$RESET" "$nm" "${label} ${rc:0:2}" "$RESET"
+          comp_cell "$rc" "$bw"; nrow+="$R"
+          frame+="$nrow"$'\e[K\n'; ln=$((ln + 1)); avail=$((avail - 1))
+          ROW_COMP[$ln]="$app"
+        done
+        continue
+      fi
       comp_cell "be-$app" "$bw"; line+="$R"
       comp_cell "fe-$app" "$bw"; line+="  $R"
+      # Selection is a full-width background band rather than a caret. Every
+      # RESET inside the row would drop the band, so re-arm it after each one.
+      if [ "$selected" = 1 ] && [ -n "$C_BAND" ]; then
+        line=${line//"$RESET"/"$RESET$C_BAND"}
+        local rw=$(( ROW_PREFIX_W + CELL_GAP_W + 2 * (CELL_FIXED_W + bw) )) sp=""
+        while [ ${#sp} -lt $(( W - rw )) ] && [ $rw -lt "$W" ]; do sp+=" "; done
+        line="$C_BAND$line$sp$RESET"
+      fi
       frame+="$line"$'\e[K\n'
       ln=$((ln + 1)); avail=$((avail - 1))
       ROW_COMP[$ln]="$app"
@@ -288,18 +366,27 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
           k=$((k + 1))
           local branch="├"; [ $k -eq $tot ] && branch="└"
           human "${SNAP_PROC_RSS[$p]:-0}"
-          printf -v line '      %b%s%b %b%-6s %-18s%b %7s %4s%%' \
-            "$GREY" "$branch" "$RESET" "$DIM" "$p" "${SNAP_PROC_CMD[$p]:-?}" "$RESET" \
-            "$HUMAN" "${SNAP_PROC_CPU[$p]:-0}"
+          printf -v line '   %b│%b   %b%s%b %b%-6s%b %b%-18s%b %b%6s%b%b%s%b %b%3s%b%b%%%b' \
+            "$C_FAINT" "$RESET" "$C_FAINT" "$branch" "$RESET" \
+            "$C_MUTED" "$p" "$RESET" "$C_SUBTLE" "${SNAP_PROC_CMD[$p]:-?}" "$RESET" \
+            "$C_TEXT" "${HUMAN%[GM]}" "$RESET" "$C_MUTED" "${HUMAN: -1}" "$RESET" \
+            "$C_TEXT" "${SNAP_PROC_CPU[$p]:-0}" "$RESET" "$C_MUTED" "$RESET"
           frame+="$line"$'\e[K\n'
           ln=$((ln + 1)); avail=$((avail - 1))
         done
       done
     done
+    fi
 
     frame+=$'\e[K\n'
-    printf -v line '   %b● up  ◐ starting  ✗ crashed  ○ down  · n/a  ⚡ log errors  %s%b' \
-      "$DIM$GREY" "$FRAME_TAG" "$RESET"
+    # Auto-wrap is off, so anything wider than the terminal is silently
+    # truncated by it — drop legend entries that will not fit instead.
+    local leg="   " lg vis=3
+    for lg in "● up" "◐ starting" "✗ crashed" "○ down" "· n/a" "⚡ log errors" "$FRAME_TAG"; do
+      [ $(( vis + ${#lg} + 2 )) -gt "$W" ] && break
+      leg+="$lg  "; vis=$(( vis + ${#lg} + 2 ))
+    done
+    printf -v line '%b%s%b' "$C_FAINT" "$leg" "$RESET"
     frame+="$line"$'\e[K\n'
     if [ -n "$TOAST" ] && [ $(( ${SNAP_NOW_S:-0} - TOAST_AT )) -lt 5 ]; then
       printf -v line '   %s' "$TOAST"
@@ -307,9 +394,17 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       TOAST=""; line=""
     fi
     frame+="$line"$'\e[K\n'
-    printf -v line ' %b↑↓%b select  %b⏎%b tree  %bl%b logs  %be%b errors  %br%b restart  %bs%b stop  %bm%b menu  %bq%b quit' \
-      "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" \
-      "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET"
+    # key caps: an inverse-video cap and a dim label reads as an app footer
+    # rather than as a line of shell output
+    line=" "
+    local kc cap lbl kvis=1 addw
+    for kc in "↑↓:select" "⏎:tree" "l:logs" "e:errors" "r:restart" "s:stop" "m:menu" "q:quit"; do
+      cap=${kc%%:*}; lbl=${kc#*:}
+      addw=$(( ${#cap} + 2 + 1 + ${#lbl} + 2 ))     # " cap " + " " + label + "  "
+      [ $(( kvis + addw )) -gt "$W" ] && break
+      line+="${C_CAP}${C_TEXT} ${cap} ${RESET}${C_MUTED} ${lbl}${RESET}  "
+      kvis=$(( kvis + addw ))
+    done
     frame+="$line"$'\e[K'
 
   FRAME=$frame

@@ -110,29 +110,32 @@ _braille_init() {
   return 0
 }
 
-spark() { # $1 history, $2 width in cells, $3 scale floor, $4 color → R
+spark() { # $1 history, $2 width in cells, $3 scale floor → R
   #
   # Auto-scaling: the graph is scaled to the maximum of exactly the window it
   # draws, not to the component's configured RAM cap. Scaling to the cap is
   # what made every graph a flat line — a backend using 1.0G of an 8G cap sits
-  # at 12%, so every sample lands on level 1 and renders as "▁▁▁▁…". Nobody
-  # runs near their cap, so that made the graphs useless for all services.
+  # at 12%, so every sample lands on level 1 and renders as "▁▁▁▁…".
   #
   # The floor keeps an idle service from being amplified into noise, and it
   # doubles as a fixed scale: pass a floor the data never exceeds (100 for a
   # percentage, total RAM for the system gauge) and the graph is absolute.
   #
-  # Colour is the caller's business — it still comes from value-vs-cap, so
-  # "how close am I to the limit" survives the change of scale.
-  local hist=$1 w=$2 mx=${3:-1} color=$4
+  # Colour comes from each cell's own HEIGHT, not from the series' current
+  # value — the ramp runs cool at the bottom to hot at the top, so a climb is
+  # legible before you read a single number. The newest sample is emboldened so
+  # "now" is distinct from history, and the run-in before the data starts is a
+  # faint baseline rather than blank space, which makes the column read as a
+  # chart area instead of a gap.
+  local hist=$1 w=$2 mx=${3:-1}
   local -a s=($hist)
-  local n=${#s[@]} need start i a b l r v from
+  local n=${#s[@]} need start i a b l r v from lvl
   if [ "$PITCREW_GRAPH" = braille ]; then need=$((w * 2)); else need=$w; fi
   start=$(( n - need ))
   from=$start; [ $from -lt 0 ] && from=0
   for ((i = from; i < n; i++)); do v=${s[i]}; [ "$v" -gt "$mx" ] && mx=$v; done
 
-  R="$color"
+  R=""
   if [ "$PITCREW_GRAPH" = braille ]; then
     _braille_init
     for ((i = 0; i < need; i += 2)); do
@@ -140,12 +143,23 @@ spark() { # $1 history, $2 width in cells, $3 scale floor, $4 color → R
       # a negative index would silently mean "from the end" in bash — guard it
       if [ $a -ge 0 ]; then _level "${s[a]}" "$mx" 4; l=$LVL; else l=0; fi
       if [ $b -ge 0 ]; then _level "${s[b]}" "$mx" 4; r=$LVL; else r=0; fi
+      if [ $b -lt 0 ]; then R+="${C_FAINT}─"; continue; fi
+      lvl=$l; [ $r -gt $lvl ] && lvl=$r
+      R+="${GRAMP[$(( lvl * 4 / 5 ))]}"
+      [ $(( i + 2 )) -ge "$need" ] && R+="$BOLD"
       R+="${BRAILLE[$(( _BRAILLE_LMASK[l] + _BRAILLE_RMASK[r] ))]}"
     done
   else
     for ((i = 0; i < w; i++)); do
       a=$(( start + i ))
-      if [ $a -ge 0 ]; then _level "${s[a]}" "$mx" 7; R+="${BARS[$LVL]}"; else R+=" "; fi
+      if [ $a -ge 0 ]; then
+        _level "${s[a]}" "$mx" 7
+        R+="${GRAMP[$(( LVL / 2 ))]}"
+        [ $(( i + 1 )) -eq "$w" ] && R+="$BOLD"
+        R+="${BARS[$LVL]}"
+      else
+        R+="${C_FAINT}─"
+      fi
     done
   fi
   R+="$RESET"
@@ -222,7 +236,13 @@ err_scan() {
     fi
     first=0
     if [ -z "${ERR_FD[$c]:-}" ]; then
-      exec {fd}<"$f" 2>/dev/null || continue
+      # NO trailing `2>/dev/null` here. `exec` with no command applies EVERY
+      # redirection to the shell itself and keeps them — so that innocuous
+      # looking suppressor permanently sent this process's stderr to /dev/null,
+      # hiding every subsequent error message from every part of the tool.
+      # The `-r` test in the todo loop above is the guard instead.
+      [ -r "$f" ] || continue
+      exec {fd}<"$f"
       ERR_FD[$c]=$fd
       first=1
     fi
