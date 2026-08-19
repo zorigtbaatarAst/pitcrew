@@ -15,6 +15,11 @@ cmd_doctor() {
   else
     warn "meters ps fallback — no /proc, so each frame costs a ps + a port listing (refresh ${PITCREW_REFRESH}s)"
   fi
+  if [ "${PITCREW_RESTART:-0}" = 1 ]; then
+    ok "restart auto-restart on ${GREY}(backoff ${PITCREW_RESTART_BACKOFF}s, up to ${PITCREW_RESTART_MAX} tries — only while the dashboard is open)${RESET}"
+  else
+    ok "restart off ${GREY}(set PITCREW_RESTART=1 to auto-restart crashed components)${RESET}"
+  fi
   if [ "$HAS_SYSTEMD" = 1 ]; then
     ok "systemd --user available — RAM caps (MemoryMax) are enforced"
   else

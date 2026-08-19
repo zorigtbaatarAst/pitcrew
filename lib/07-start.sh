@@ -21,19 +21,55 @@ start_deps() {
   [ -n "$PITCREW_DEPS_READY_CMD" ] && bash -c "$PITCREW_DEPS_READY_CMD" >/dev/null 2>&1
 }
 
+# How many previous runs of each component's log to keep beside the live one.
+PITCREW_LOG_KEEP="${PITCREW_LOG_KEEP:-2}"
+
+rotate_log() { # $1 comp — keep the previous run's output instead of erasing it
+  # The old behaviour was `: > log`, which meant restarting a service destroyed
+  # the log you were restarting it to investigate. The previous process is
+  # already dead by the time we get here, so a plain rename is safe — no open
+  # fd is still pointing at the file.
+  # NOTE: `c` must be its own `local` statement. bash expands the RHS of every
+  # name=value in one `local ...` command against the PRE-statement scope, so
+  # `f="$LOG_DIR/$c.log"` on the same line reads the CALLER's $c. It happened
+  # to work only because launch_process has a variable of the same name — see
+  # the identical note in be_health (lib/03-state.sh).
+  local c=$1
+  local f="$LOG_DIR/$c.log" i
+  [ -s "$f" ] || { : > "$f"; return 0; }
+  if [ "${PITCREW_LOG_KEEP:-0}" -lt 1 ]; then : > "$f"; return 0; fi
+  for ((i = PITCREW_LOG_KEEP - 1; i >= 1; i--)); do
+    [ -f "$f.$i" ] && mv -f "$f.$i" "$f.$((i + 1))"
+  done
+  mv -f "$f" "$f.1"
+  : > "$f"
+  return 0
+}
+
 launch_process() { # $1 comp $2 full command (env prefix already folded in)
   local c=$1 full_cmd=$2
   mkdir -p "$LOG_DIR"
-  : > "$LOG_DIR/$c.log"
-  rm -f "$LOG_DIR/$c.pid" "$LOG_DIR/.health-${c#??-}"
-  if [ "$HAS_SYSTEMD" = 1 ]; then
-    systemctl --user reset-failed "$SESSION-$c.scope" 2>/dev/null || true
-    ( exec systemd-run --user --scope --collect --unit "$SESSION-$c" \
+  rotate_log "$c"
+  rm -f "$LOG_DIR/$c.pid" "$LOG_DIR/$c.exit" "$LOG_DIR/.health-${c#??-}"
+
+  # The command is wrapped rather than exec'd so that something outlives it and
+  # can record HOW it ended. Without this a dead service is just an absence:
+  # the dashboard can say "crashed" but never "exited 1 at 12:04", which is the
+  # first thing you actually want to know. The wrapper lives exactly as long as
+  # the service, so pid liveness still means what it meant, and the process
+  # tree walk already looks through it for RAM/CPU.
+  {
+    local rc=0
+    if [ "$HAS_SYSTEMD" = 1 ]; then
+      systemctl --user reset-failed "$SESSION-$c.scope" 2>/dev/null || true
+      systemd-run --user --scope --collect --unit "$SESSION-$c" \
         -p MemoryMax="$(comp_max "$c")" -p MemorySwapMax=2G \
-        bash -c "$full_cmd" ) >>"$LOG_DIR/$c.log" 2>&1 &
-  else
-    ( exec bash -c "$full_cmd" ) >>"$LOG_DIR/$c.log" 2>&1 &
-  fi
+        bash -c "$full_cmd" || rc=$?
+    else
+      bash -c "$full_cmd" || rc=$?
+    fi
+    printf '%s %s\n' "$rc" "$EPOCHSECONDS" > "$LOG_DIR/$c.exit"
+  } >>"$LOG_DIR/$c.log" 2>&1 &
   echo $! > "$LOG_DIR/$c.pid"
   disown 2>/dev/null || true
   say "  ${YELLOW}▶${RESET} launched ${BOLD}$c${RESET}"

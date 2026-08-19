@@ -55,18 +55,13 @@ _forks_over() { # $1 = frames → FORKS, the number of children this shell spawn
 
 _now_ms() { local e=${EPOCHREALTIME/,/.}; printf '%s' $(( ${e%.*} * 1000 + 10#${e#*.} / 1000 )); }
 
-# everything cmd_watch does per frame except the final paint
-_frame() {
-  local c app
-  snapshot; err_scan
-  for c in "${PITCREW_COMPS[@]}"; do hist_push "$c" "${SNAP_RSS[$c]:-0}" "${SNAP_CPU[$c]:-0}"; done
-  hist_push_sys "${SYS_CPU_PCT:-0}" "${SYS_MEM_USED_KB:-0}"
-  pct_color "${SYS_CPU_PCT:-0}"; spark "$HIST_SYS_CPU" 24 100 "$PCOL"
-  summary_line; cell_header 24
-  for app in "${PITCREW_APPS[@]}"; do
-    comp_cell "be-$app" 24; comp_cell "fe-$app" 24
-  done
-}
+# The REAL frame, not an imitation of it. This used to be a hand-copied
+# version of cmd_watch's loop body, which meant anything added to the dashboard
+# afterwards — a footer, a header, a new column — sat outside the fork budget
+# and could regress without failing anything. cmd_watch is now split so the
+# test drives exactly what the dashboard drives.
+COLUMNS=140 LINES=40
+_frame() { collect_frame; build_frame; }
 
 test_the_fixture_actually_exercises_the_live_path() {
   # guards the guard: if this stops being true the fork budget below becomes

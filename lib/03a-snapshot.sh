@@ -37,6 +37,8 @@ declare -gA SNAP_PROC_CMD=()           # pid           -> comm
 declare -gA SNAP_HEALTH=()             # app           -> UP|DOWN
 declare -gA SNAP_HEALTH_AT=()          # app           -> epoch secs of last probe
 declare -gA SNAP_DEP=()                # dep container -> up|down
+declare -gA SNAP_EXIT=()               # comp -> exit status of the last run
+declare -gA SNAP_EXIT_AT=()            # comp -> epoch seconds it ended
 declare -gA _JIFF_PREV=()              # pid           -> utime+stime at previous sample
 declare -gA _JIFF_TREE_PREV=()         # comp          -> summed tree jiffies, previous sample
 declare -gA _JIFF_TREE_NOW=()          # comp          -> summed tree jiffies, this sample
@@ -360,6 +362,15 @@ _snapshot_states() {
       st=down
     fi
     SNAP_STATE[$c]=$st
+
+    # "crashed" on its own tells you nothing actionable. The wrapper in
+    # launch_process records how the run ended, so say so.
+    unset "SNAP_EXIT[$c]" "SNAP_EXIT_AT[$c]"
+    if [ "$st" = crashed ] && [ -r "$LOG_DIR/$c.exit" ]; then
+      local code when
+      read -r code when < "$LOG_DIR/$c.exit" 2>/dev/null
+      [ -n "${code:-}" ] && { SNAP_EXIT[$c]=$code; SNAP_EXIT_AT[$c]=${when:-0}; }
+    fi
   done
 }
 

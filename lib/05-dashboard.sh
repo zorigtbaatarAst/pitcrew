@@ -136,6 +136,17 @@ comp_cell() { # $1 comp, $2 graph width → R: one aligned service cell
   elif is_external "$c"; then
     printf -v R '%b%*s%b %6s %4s' "$DIM$GREY" "$gw" "external" "$RESET" "—" "—"
     cell+="$R"
+  elif [ "$st" = crashed ] && [ -n "${SNAP_EXIT[$c]:-}" ]; then
+    # the graph area is empty for a dead service anyway — spend it on the one
+    # thing you want to know, which is how it died
+    local reason
+    printf -v reason 'exit %s' "${SNAP_EXIT[$c]}"
+    [ "${SNAP_EXIT[$c]}" -gt 128 ] 2>/dev/null && \
+      printf -v reason 'signal %s' "$(( ${SNAP_EXIT[$c]} - 128 ))"
+    [ -n "${SNAP_EXIT_AT[$c]:-}" ] && [ "${SNAP_EXIT_AT[$c]}" -gt 0 ] 2>/dev/null && \
+      printf -v reason '%s · %(%H:%M:%S)T' "$reason" "${SNAP_EXIT_AT[$c]}"
+    printf -v R '%b%-*.*s%b %6s %4s' "$RED" "$gw" "$gw" " $reason" "$RESET" "" ""
+    cell+="$R"
   else
     half=$(( gw / 2 + 1 ))
     printf -v R '%b%*s%-*s%b %6s %4s' "$DIM$GREY" "$half" "·" "$((gw - half))" "" "$RESET" "" ""
@@ -165,29 +176,40 @@ _tree_sorted() { # $1 comp → TREE_SORTED array
   done
 }
 
-cmd_watch() {
-  local W H bw sw frame line ts pick sc c app i n rule_len r
-  local ln avail
-  tui_enter
-  trap 'tui_leave; trap - INT; return 0' INT
-  trap 'TERM_DIRTY=1' WINCH
-  n=${#PITCREW_COMPS[@]}
+# ── one frame, in three pieces ──────────────────────────────────────────────
+# Split so the performance test can drive the REAL renderer instead of a
+# hand-copied imitation of it. The test used to duplicate the frame body, which
+# meant anything added to the dashboard afterwards — a footer, a header — was
+# outside the fork budget and could regress unnoticed.
+#
+#   collect_frame  gathers state (the only part that touches the system)
+#   build_frame    turns state into $FRAME (pure; no I/O, no forks)
+#   cmd_watch      paints it and handles input
 
-  while true; do
-    term_size; W=$TERM_W; H=$TERM_H
-    # The graph gets whatever the terminal has left over after the fixed
-    # columns, so a wide window buys more history instead of dead space.
+collect_frame() {
+  snapshot
+  err_scan
+  local c
+  for c in "${PITCREW_COMPS[@]}"; do
+    hist_push "$c" "${SNAP_RSS[$c]:-0}" "${SNAP_CPU[$c]:-0}"
+  done
+  hist_push_sys "${SYS_CPU_PCT:-0}" "${SYS_MEM_USED_KB:-0}"
+  return 0
+}
+
+# Constant for the life of the process; computing it inside the frame would be
+# a command substitution, i.e. a fork, on every repaint.
+FRAME_TAG="${PITCREW_COLLECTOR}·${PITCREW_REFRESH}s"
+[ "${PITCREW_RESTART:-0}" = 1 ] && FRAME_TAG+="·supervised"
+
+build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
+  local W H bw sw frame line ts c app i rule_len r ln avail
+  # The graph gets whatever the terminal has left over after the fixed
+  # columns, so a wide window buys more history instead of dead space.
+  term_size; W=$TERM_W; H=$TERM_H
     bw=$(( (W - ROW_PREFIX_W - CELL_GAP_W - 2 * CELL_FIXED_W) / 2 ))
     [ $bw -lt 8 ] && bw=8; [ $bw -gt 40 ] && bw=40
     sw=$(( W / 5 )); [ $sw -lt 12 ] && sw=12; [ $sw -gt 40 ] && sw=40
-
-    snapshot
-    err_scan
-    for c in "${PITCREW_COMPS[@]}"; do
-      hist_push "$c" "${SNAP_RSS[$c]:-0}" "${SNAP_CPU[$c]:-0}"
-    done
-    hist_push_sys "${SYS_CPU_PCT:-0}" "${SYS_MEM_USED_KB:-0}"
-
     ROW_COMP=()
     frame=""; ln=0
     printf -v ts '%(%H:%M:%S)T' -1        # builtin strftime — no `date` fork
@@ -277,7 +299,7 @@ cmd_watch() {
 
     frame+=$'\e[K\n'
     printf -v line '   %b● up  ◐ starting  ✗ crashed  ○ down  · n/a  ⚡ log errors  %s%b' \
-      "$DIM$GREY" "${PITCREW_COLLECTOR}·${PITCREW_REFRESH}s" "$RESET"
+      "$DIM$GREY" "$FRAME_TAG" "$RESET"
     frame+="$line"$'\e[K\n'
     if [ -n "$TOAST" ] && [ $(( ${SNAP_NOW_S:-0} - TOAST_AT )) -lt 5 ]; then
       printf -v line '   %s' "$TOAST"
@@ -290,6 +312,23 @@ cmd_watch() {
       "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET" "$BOLD$MAGENTA" "$RESET"
     frame+="$line"$'\e[K'
 
+  FRAME=$frame
+  return 0
+}
+
+cmd_watch() {
+  local W H bw sw frame line ts pick sc c app i n rule_len r
+  local ln avail
+  tui_enter
+  trap 'tui_leave; trap - INT; return 0' INT
+  trap 'TERM_DIRTY=1' WINCH
+  n=${#PITCREW_COMPS[@]}
+
+  while true; do
+    collect_frame
+    supervise
+    build_frame
+    frame=$FRAME
     printf '\033[H%b\033[0J' "$frame"
 
     read_key "$PITCREW_REFRESH" || continue
@@ -303,7 +342,8 @@ cmd_watch() {
       l|L) log_view "${PITCREW_COMPS[$SEL]:-}" ;;
       e|E) err_view ;;
       r|R) c=${PITCREW_COMPS[$SEL]:-}
-           [ -n "$c" ] && { stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1
+           [ -n "$c" ] && { supervise_clear "$c"
+                            stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1
                             toast "${YELLOW}↻${RESET} restarting ${BOLD}$c${RESET}"; } ;;
       s|S) watch_stop ;;
       m|M) watch_menu ;;

@@ -244,6 +244,37 @@ backends per app, etc.), point the extra process at whichever role slot is
 free, or open an issue — the two-role model is a scope decision, not a hard
 architectural limit.
 
+## When something dies
+
+A crashed component now says *why*: the launcher wraps each start so something
+outlives the process and records how it ended, and the dashboard shows
+`✗ :8082  exit 3 · 12:04:15` instead of a bare `✗ crashed`.
+
+Restarting a service no longer erases the log you were restarting it to read.
+The previous run is kept as `<component>.log.1`, the one before that as
+`.log.2`, up to `PITCREW_LOG_KEEP` (default 2; set 0 for the old truncating
+behaviour).
+
+pitcrew can also bring crashed components back:
+
+| Variable | Default | |
+|---|---|---|
+| `PITCREW_RESTART` | `0` | `1` = auto-restart components that crash |
+| `PITCREW_RESTART_BACKOFF` | `2` | seconds before the first retry, doubling each attempt |
+| `PITCREW_RESTART_MAX` | `5` | attempts before giving up on a crash loop |
+| `PITCREW_RESTART_RESET` | `60` | seconds a component must stay up to earn its budget back |
+| `PITCREW_LOG_KEEP` | `2` | previous runs' logs to keep per component |
+
+Two things this deliberately is not. It **only runs while the live dashboard
+is open** — pitcrew has no daemon and nothing to attach to, and adding a
+background supervisor would mean inventing a pidfile for the supervisor, a way
+to stop it, and a way to notice when it dies. Restarting while you're watching
+covers the case that actually hurts without any of that, and `pitcrew doctor`
+tells you which mode you are in. And it **gives up**: a service that crashes on
+a syntax error is not something to relaunch forever, because the log you need
+ends up buried under a thousand identical boot attempts. Press `r` on a
+component to clear its give-up and try again.
+
 ## Development
 
 ```bash

@@ -133,5 +133,18 @@ pitcrew_doctor_extra() {
 # PITCREW_HEALTH_INTERVAL=5
 # PITCREW_DEP_INTERVAL=10    # how often `docker inspect` is run for deps
 
+# ── crash handling (optional) ───────────────────────────────────────────────
+# Bring crashed components back automatically, with exponential backoff and a
+# budget so a service that crashes on a syntax error is not relaunched forever.
+# Only active while the live dashboard is open — pitcrew has no daemon.
+# PITCREW_RESTART=1
+# PITCREW_RESTART_BACKOFF=2    # seconds before the first retry, doubling
+# PITCREW_RESTART_MAX=5        # attempts before giving up (press r to retry)
+# PITCREW_RESTART_RESET=60     # seconds up before the attempt budget resets
+#
+# Previous runs' logs to keep per component (<comp>.log.1, .log.2, ...).
+# 0 restores the old behaviour of erasing the log on every restart.
+# PITCREW_LOG_KEEP=2
+
 # ── uncommon: point pitcrew at a project root other than this file's dir ───
 # PITCREW_ROOT="$ROOT/.."
