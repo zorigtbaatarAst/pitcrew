@@ -89,7 +89,8 @@ done
 
 case "${1:-}" in
   help|-h|--help) usage; exit 0 ;;
-  init) shift; cmd_init "$@"; exit $? ;;
+  init)  shift; cmd_init  "$@"; exit $? ;;
+  theme) shift; cmd_theme "$@"; exit $? ;;
 esac
 
 # Config is sourced here, at the script's top level (not inside a function) —

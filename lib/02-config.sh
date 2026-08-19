@@ -94,6 +94,15 @@ config_finalize() { # $1 = path to the config file that was just sourced
 
   # RAM cap per component, pre-resolved to bytes. The dashboard divides by
   # this once per component per frame; parsing "8G" there would mean a fork.
+  # The theme, colour depth and icon set are all DERIVED values — escape
+  # sequences and glyph tables built from settings. lib/01-core.sh builds them
+  # when it is sourced, which is before this project's config has been read,
+  # so anything the config set would otherwise have been ignored. Rebuild them
+  # here, now that everything is known.
+  [ -n "$PITCREW_ICONS_ENV" ] && PITCREW_ICONS=$PITCREW_ICONS_ENV
+  icons_load
+  theme_load
+
   # what each app is written in, guessed once from its start command
   declare -gA APP_ICON=()
   local _a

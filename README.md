@@ -104,6 +104,7 @@ pitcrew profile save <name> <targets...> | list | rm <name>
 pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
 pitcrew doctor                    check the local environment
 pitcrew init [<dir>]              generate a starter pitcrew.config.sh (default: $PWD)
+pitcrew theme [<name>]            list themes, or switch and remember (--reset to forget)
 pitcrew urls | help
 
 pitcrew -C <dir> <command>        run against <dir>'s project instead of walking up from $PWD
@@ -197,6 +198,7 @@ boot report, failure log tails and URL table.
 | `PITCREW_GRAPH` | `block` | `block` (▁▂▃) or `braille` (⣀⣤⣶), which packs 2 samples per cell |
 | `PITCREW_HISTORY` | `240` | samples kept per component |
 | `PITCREW_THEME` | `default` | `default` (Catppuccin Mocha), `tokyonight`, `rosepine`, `gruvbox`, `mono`, or your own |
+| `PITCREW_THEME_FILE` | `~/.config/pitcrew/theme` | where `pitcrew theme <name>` remembers your choice |
 | `PITCREW_COLOR` | auto | `truecolor` / `16` / `none` — detected from `$COLORTERM`, override to force |
 | `PITCREW_ICONS` | `unicode` | `nerd` adds language and docker glyphs (needs a patched font) |
 | `PITCREW_NARROW_AT` | `110` | below this width, one component per row instead of two columns |
@@ -206,6 +208,22 @@ boot report, failure log tails and URL table.
 | `PITCREW_DEP_INTERVAL` | `10` | seconds between docker dep checks |
 
 `NO_COLOR` (or `PITCREW_NO_COLOR`) drops every colour.
+
+```bash
+pitcrew theme              # every theme, drawn in its own colours
+pitcrew theme tokyonight   # switch, and remember it for next time
+pitcrew theme --reset      # forget the saved choice
+```
+
+Or press `m` in the dashboard and pick **change theme…** — the fzf preview
+draws each palette as you move through the list, and choosing one applies it
+immediately and remembers it.
+
+Four settings decide the theme, most specific first: `PITCREW_THEME` in the
+environment (a one-off for this run), `PITCREW_THEME` in the project's
+`pitcrew.config.sh` (so a repo can look the same for everyone who opens it),
+the saved preference from `pitcrew theme <name>` (how you like your terminal),
+and finally the built-in palette.
 
 Colours are addressed by **role**, not by hue — `C_CRIT`, `C_MUTED`,
 `C_SURFACE` rather than `RED`, `GREY`. A theme is still a plain bash file, and

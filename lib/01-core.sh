@@ -11,13 +11,18 @@ SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 # patched font renders them as tofu boxes. That is a bad enough first
 # impression that detection is not worth guessing at — this is opt-in via
 # PITCREW_ICONS=nerd, and every other mode simply has no icon.
+PITCREW_ICONS_ENV="${PITCREW_ICONS:-}"
 PITCREW_ICONS="${PITCREW_ICONS:-unicode}"
-if [ "$PITCREW_ICONS" = nerd ]; then
-  I_JAVA=$'\ue738'; I_NODE=$'\ue718'; I_PY=$'\ue73c'; I_RUST=$'\ue7a8'
-  I_GO=$'\ue627';  I_RUBY=$'\ue739'; I_DOCKER=$'\uf308'; I_APP=$'\uf0c8'
-else
-  I_JAVA=""; I_NODE=""; I_PY=""; I_RUST=""; I_GO=""; I_RUBY=""; I_DOCKER=""; I_APP=""
-fi
+icons_load() {
+  if [ "$PITCREW_ICONS" = nerd ]; then
+    I_JAVA=$'\ue738'; I_NODE=$'\ue718'; I_PY=$'\ue73c'; I_RUST=$'\ue7a8'
+    I_GO=$'\ue627';  I_RUBY=$'\ue739'; I_DOCKER=$'\uf308'; I_APP=$'\uf0c8'
+  else
+    I_JAVA=""; I_NODE=""; I_PY=""; I_RUST=""; I_GO=""; I_RUBY=""; I_DOCKER=""; I_APP=""
+  fi
+  return 0
+}
+icons_load
 
 app_icon_for() { # $1 start command(s) → ICON, guessed from what it runs
   case "$1" in
@@ -118,14 +123,85 @@ theme_apply() {
   return 0
 }
 
+PITCREW_THEME_ENV="${PITCREW_THEME:-}"
+PITCREW_COLOR_ENV="${PITCREW_COLOR:-}"
+PITCREW_THEME_FILE="${PITCREW_THEME_FILE:-$HOME/.config/pitcrew/theme}"
+
+theme_dirs() { printf '%s\n' "$HOME/.config/pitcrew/themes" "$LIB_DIR/../themes"; }
+
+theme_list() { # every theme available, yours first, deduped
+  local d f n
+  { while IFS= read -r d; do
+      [ -d "$d" ] || continue
+      for f in "$d"/*.sh; do [ -f "$f" ] || continue; n=${f##*/}; printf '%s\n' "${n%.sh}"; done
+    done < <(theme_dirs); } | awk '!seen[$0]++'
+}
+
+theme_save() { # remember a choice across runs
+  mkdir -p "$(dirname "$PITCREW_THEME_FILE")" 2>/dev/null
+  printf '%s\n' "$1" > "$PITCREW_THEME_FILE"
+}
+
+# Resolution order, most specific first: the environment (a one-off run), the
+# project's own config (this repo always looks like this), the saved
+# preference (how you like your terminal), then the built-in palette.
+theme_resolve() {
+  if   [ -n "$PITCREW_THEME_ENV" ]; then PITCREW_THEME=$PITCREW_THEME_ENV
+  elif [ -n "${PITCREW_THEME:-}" ]; then :
+  elif [ -r "$PITCREW_THEME_FILE" ]; then read -r PITCREW_THEME < "$PITCREW_THEME_FILE"
+  else PITCREW_THEME=""
+  fi
+  [ -n "$PITCREW_COLOR_ENV" ] && PITCREW_COLOR=$PITCREW_COLOR_ENV
+  PITCREW_COLOR_DEPTH=$(pitcrew_color_depth)
+  return 0
+}
+
+theme_swatch() { # $1 theme name → one line showing what it looks like
+  local name=$1 saved=${PITCREW_THEME:-}
+  PITCREW_THEME_ENV=$name; theme_load
+  printf '  %b%-11s%b %b██%b██%b██%b██%b  %bup%b %bstarting%b %bcrashed%b %b down %b\n' \
+    "$C_ACCENT$BOLD" "$name" "$RESET" \
+    "$C_G1" "$C_G2" "$C_G3" "$C_G4" "$RESET" \
+    "$C_OK" "$RESET" "$C_WARN" "$RESET" "$C_CRIT" "$RESET" "$C_BAND$C_TEXT" "$RESET"
+  PITCREW_THEME_ENV=$saved; theme_load
+}
+
+# `pitcrew theme` — runs before any project config is resolved, so it works
+# from anywhere, like `init` does.
+cmd_theme() {
+  case "${1:-list}" in
+    list|"")
+      local t cur=${PITCREW_THEME:-default}
+      say ""
+      while IFS= read -r t; do
+        theme_swatch "$t"
+      done < <(theme_list)
+      say ""
+      say "  ${C_MUTED}current: ${RESET}${BOLD}${cur}${RESET}"
+      say "  ${C_MUTED}pitcrew theme <name>   ·   saved to $PITCREW_THEME_FILE${RESET}"
+      say "" ;;
+    --swatch) [ -n "${2:-}" ] || die "usage: pitcrew theme --swatch <name>"
+              theme_swatch "$2" ;;
+    --reset)  rm -f "$PITCREW_THEME_FILE"; ok "theme preference cleared — back to the default" ;;
+    *)
+      theme_list | grep -qx -- "$1" || die "no theme '$1' — see: pitcrew theme"
+      theme_save "$1"
+      PITCREW_THEME_ENV=$1; theme_load
+      ok "theme set to ${BOLD}$1${RESET}"
+      theme_swatch "$1" ;;
+  esac
+}
+
 theme_load() {
+  theme_resolve
   theme_hex_defaults
-  local name="${PITCREW_THEME:-}" f
+  local name="${PITCREW_THEME:-}" f d
   if [ -n "$name" ]; then
-    for f in "$HOME/.config/pitcrew/themes/$name.sh" "$LIB_DIR/../themes/$name.sh"; do
+    while IFS= read -r d; do
+      f="$d/$name.sh"
       # shellcheck source=/dev/null
       [ -f "$f" ] && { source "$f"; break; }
-    done
+    done < <(theme_dirs)
   fi
   theme_apply
 }
