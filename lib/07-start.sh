@@ -25,7 +25,7 @@ launch_process() { # $1 comp $2 full command (env prefix already folded in)
   local c=$1 full_cmd=$2
   mkdir -p "$LOG_DIR"
   : > "$LOG_DIR/$c.log"
-  rm -f "$LOG_DIR/$c.pid"
+  rm -f "$LOG_DIR/$c.pid" "$LOG_DIR/.health-${c#??-}"
   if [ "$HAS_SYSTEMD" = 1 ]; then
     systemctl --user reset-failed "$SESSION-$c.scope" 2>/dev/null || true
     ( exec systemd-run --user --scope --collect --unit "$SESSION-$c" \
@@ -71,12 +71,13 @@ wait_dashboard() {
   while [ $t -lt "$PITCREW_WAIT_SECS" ]; do
     printf '\033[?7l'   # no auto-wrap: a too-wide line must never break the repaint line count
     W=$(tput cols 2>/dev/null); [ -n "$W" ] || W=100; w=$((W - 8))
+    snapshot
     pending=0; focus=""; frame=""
     printf -v line '  %b%s%b %bwaiting%b %b(%ss · Ctrl+C stops waiting — services keep starting)%b' \
       "$MAGENTA" "${SPIN[i % 10]}" "$RESET" "$BOLD" "$RESET" "$GREY" "$t" "$RESET"
     frame+="$line"$'\e[K\n\e[K\n'
     for c in "${comps[@]}"; do
-      st=$(comp_state "$c")
+      st=${SNAP_STATE[$c]:-n/a}
       if [ "$st" != up ]; then
         if [ "$st" = crashed ] || fail_marker "$c"; then
           st=crashed; failed[$c]=1
@@ -85,7 +86,8 @@ wait_dashboard() {
         fi
         [ -z "$focus" ] && focus=$c
       fi
-      printf -v line '    %b %-14s %b%s%b' "$(state_icon "$st")" "$c" "$GREY" "$st" "$RESET"
+      state_icon "$st"
+      printf -v line '    %b %-14s %b%s%b' "$R" "$c" "$GREY" "$st" "$RESET"
       frame+="$line"$'\e[K\n'
     done
     # live tail of the first not-yet-up service, so a slow or dying start is never a black box
@@ -152,9 +154,10 @@ cmd_start() {
 # drop straight into the live dashboard — one command, nothing to remember.
 cmd_up() {
   local comps; mapfile -t comps < <(resolve_targets all)
-  local c missing=()
+  local c missing=() st
+  snapshot
   for c in "${comps[@]}"; do
-    local st; st=$(comp_state "$c")
+    st=${SNAP_STATE[$c]:-n/a}
     [ "$st" = up ] || [ "$st" = starting ] || missing+=("$c")
   done
   if [ ${#missing[@]} -gt 0 ] || [ ${#PITCREW_DEPS[@]} -gt 0 ]; then

@@ -126,7 +126,7 @@ menu() {
 # away from"; this is just a togglable section under it.
 watch_menu() {
   command -v fzf >/dev/null || return
-  printf '\033[?7h'; tput cnorm 2>/dev/null
+  tui_pause
   printf '\n\n%b── menu %b\n' "$GREY" "$RESET"
   local choice
   while true; do
@@ -135,5 +135,5 @@ watch_menu() {
     dispatch_choice "$choice"
     [ "$MENU_CLOSE" = 1 ] && break
   done
-  tput civis 2>/dev/null
+  tui_resume
 }

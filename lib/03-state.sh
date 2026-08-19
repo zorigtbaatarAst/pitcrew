@@ -6,64 +6,50 @@
 # port not open yet = still booting. A *stale* pidfile (recorded, now dead)
 # = crashed. No pidfile at all = down. `stop_comp` removes the pidfile on a
 # clean stop, which is exactly what makes a leftover one mean "it died".
+#
+# The classification itself now happens once per frame inside snapshot()
+# (lib/03a-snapshot.sh); the functions here are lookups over its result. That
+# matters because comp_state used to be recomputed two or three times per
+# component per frame, each time re-opening a TCP socket and re-curling a
+# health endpoint. Anything that loops over components calls snapshot() first.
 
-read_pid() { cat "$LOG_DIR/$1.pid" 2>/dev/null; }
+read_pid() { local p=""; [ -r "$LOG_DIR/$1.pid" ] && read -r p < "$LOG_DIR/$1.pid" 2>/dev/null; printf '%s' "$p"; }
 
 pid_alive() { local pid=$1; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
 
-be_health() { # $1 app → UP or DOWN, via the configured actuator-style health path
-  # NOTE: `app` must be its own `local` statement — bash expands the RHS of every
-  # name=value in one `local ...` command against the PRE-statement scope, so a
-  # combined `local app=$1 path=${MAP[$app]}` reads $app from before this call.
-  local app=$1
-  local path=${PITCREW_BE_HEALTH_PATH[$app]:-} port=${PITCREW_BE_PORT[$app]:-}
-  [ -n "$path" ] && [ -n "$port" ] || { echo UP; return; }   # no health path configured → port-open is enough
-  curl -sf -m 2 "http://127.0.0.1:${port}${path}" 2>/dev/null \
-    | grep -q '"UP"' && echo UP || echo DOWN
+be_health() { # $1 app → UP or DOWN, from the cached probe result
+  printf '%s' "${SNAP_HEALTH[$1]:-UP}"
 }
 
-comp_state() {
-  local c=$1
-  case "$c" in
-    be-*|fe-*)
-      local app=${c#??-}
-      local role=${c:0:2}
-      app_has_role "$app" "$role" || { echo n/a; return; }
-      local port; port=$(comp_port "$c")
-      local pid; pid=$(read_pid "$c")
-      if port_open "$port"; then
-        if [ "$role" = be ] && [ "$(be_health "$app")" != UP ]; then echo starting; else echo up; fi
-      elif pid_alive "$pid"; then
-        echo starting                # process is up, port not open yet — still booting
-      elif [ -n "$pid" ]; then
-        echo crashed                  # pidfile recorded, process is gone — died on its own
-      else
-        echo down
-      fi ;;
-    dep-*)
-      container_running "${c#dep-}" && echo up || echo down ;;
+comp_state() { # pure lookup — call snapshot() before any loop over components
+  case "$1" in
+    dep-*) printf '%s' "${SNAP_DEP[${1#dep-}]:-down}" ;;
+    *)     printf '%s' "${SNAP_STATE[$1]:-n/a}" ;;
   esac
 }
 
 is_external() { # $1 comp → true if something's on its port that pitcrew isn't tracking
-  local c=$1 pid; pid=$(read_pid "$c")
-  port_open "$(comp_port "$c")" && ! pid_alive "$pid"
+  local c=$1 app=${1#??-} role=${1:0:2} port
+  if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+  [ -n "$port" ] && [ -n "${SNAP_PORT_OPEN[$port]:-}" ] && ! pid_alive "${SNAP_PID[$c]:-}"
 }
 
-state_icon() {
+state_icon() { # $1 state → R (see the calling convention note in lib/04-meters.sh)
   case "$1" in
-    up)       printf '%b' "${GREEN}●${RESET}" ;;
-    starting) printf '%b' "${YELLOW}◐${RESET}" ;;
-    crashed)  printf '%b' "${RED}✗${RESET}" ;;
-    down)     printf '%b' "${GREY}○${RESET}" ;;
-    n/a)      printf '%b' "${DIM}${GREY}·${RESET}" ;;
+    up)       R="${GREEN}●${RESET}" ;;
+    starting) R="${YELLOW}◐${RESET}" ;;
+    crashed)  R="${RED}✗${RESET}" ;;
+    down)     R="${GREY}○${RESET}" ;;
+    *)        R="${DIM}${GREY}·${RESET}" ;;
   esac
 }
 
 running_comps() {
   local c st
-  while IFS= read -r c; do
-    st=$(comp_state "$c")
-    [ "$st" = up ] || [ "$st" = starting ] && echo "$c"
-  done < <(all_components)
+  snapshot
+  for c in "${PITCREW_COMPS[@]}"; do
+    st=${SNAP_STATE[$c]:-n/a}
+    [ "$st" = up ] || [ "$st" = starting ] && printf '%s\n' "$c"
+  done
+  return 0
 }

@@ -72,8 +72,23 @@ sys_gauges_linux() {
   d_total=$((total - SYS_P_TOTAL)); d_idle=$((idle - SYS_P_IDLE))
   [ $d_total -gt 0 ] && SYS_CPU_PCT=$(( (d_total - d_idle) * 100 / d_total ))
   SYS_P_TOTAL=$total; SYS_P_IDLE=$idle
-  SYS_MEM_TOTAL_KB=$(awk '/MemTotal/{print $2}' /proc/meminfo)
-  local avail; avail=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+  # /proc/meminfo with the read builtin — this used to be two awks, i.e. four
+  # forks on every single frame. MemAvailable sits within the first few lines,
+  # so the loop bails as soon as it has both numbers.
+  # mapfile, not a read loop — see the note in lib/03a-snapshot.sh about read's
+  # byte-at-a-time behaviour on /proc. MemTotal/MemFree/MemAvailable are the
+  # first three lines.
+  local k v avail=0
+  local -a mi
+  SYS_MEM_TOTAL_KB=0
+  mapfile -t -n 3 mi < /proc/meminfo
+  for k in "${mi[@]}"; do
+    v=${k#*:}; v=${v% kB}; v=${v// /}     # "MemTotal:   32525836 kB" -> "32525836"
+    case "${k%%:*}" in
+      MemTotal)     SYS_MEM_TOTAL_KB=$v ;;
+      MemAvailable) avail=$v ;;
+    esac
+  done
   SYS_MEM_USED_KB=$((SYS_MEM_TOTAL_KB - avail))
 }
 
@@ -103,3 +118,14 @@ sys_gauges() {
     macos) sys_gauges_macos 2>/dev/null ;;
   esac
 }
+
+# ── which collector the dashboard uses (see lib/03a-snapshot.sh) ────────────
+# "proc" reads everything out of /proc with bash builtins — zero forks per
+# frame. "ps" is the portable fallback: one `ps` + one port listing per frame.
+# The fallback is also what Linux gets if /proc is somehow unreadable, so the
+# tool degrades instead of breaking.
+if [ "$PITCREW_OS" = linux ] && [ -r /proc/net/tcp ] && [ -r /proc/self/stat ]; then
+  PITCREW_COLLECTOR=proc
+else
+  PITCREW_COLLECTOR=ps
+fi

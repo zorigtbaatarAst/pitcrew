@@ -63,9 +63,11 @@ ln -s "$(pwd)/pitcrew/bin/pitcrew" ~/.local/bin/pitcrew
 
 ## Quick start
 
-1. Drop a `pitcrew.config.sh` at your project root — copy
+1. Drop a `pitcrew.config.sh` at your project root — either run
+   `pitcrew init` inside the project (prompts for a name and app list, then
+   generates a starter file), or copy
    [`examples/pitcrew.config.example.sh`](examples/pitcrew.config.example.sh)
-   and edit it. See that file for the full annotated schema.
+   by hand and edit it. See that file for the full annotated schema.
 2. `cd` anywhere inside your project (pitcrew walks up looking for the
    config, like `git` does for `.git`) and run:
 
@@ -81,7 +83,8 @@ pitcrew stop           # stop everything (deps stay up unless --deps)
 ## Commands
 
 ```
-pitcrew                  live dashboard (default) — l logs · s stop · m menu · q quit
+pitcrew                  live dashboard (default) — ↑↓ select · ⏎ process tree
+                          l logs · e errors · r restart · s stop · m menu · q quit
                           observes only — nothing is started for you
                           (in logs: Tab/←→ switch · x stop · r restart · Enter full log)
 pitcrew menu              interactive fzf menu
@@ -97,7 +100,11 @@ pitcrew stale [--restart]         apps whose code changed since they started
 pitcrew profile save <name> <targets...> | list | rm <name>
 pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
 pitcrew doctor                    check the local environment
+pitcrew init [<dir>]              generate a starter pitcrew.config.sh (default: $PWD)
 pitcrew urls | help
+
+pitcrew -C <dir> <command>        run against <dir>'s project instead of walking up from $PWD
+pitcrew --project <dir> <command> same as -C — <dir> may be the project root or the config file itself
 ```
 
 A "target" is an app name (`sales`), a specific role (`be-sales`, `fe-sales`),
@@ -108,10 +115,26 @@ dashboard that only observes. Nothing gets started unless you explicitly ask
 for it with `pitcrew start` or `pitcrew up` (the latter starts whatever's
 missing, then drops into the same dashboard — handy, but opt-in).
 
+`-C`/`--project` let you run pitcrew against a project without `cd`-ing into
+it first — handy for an alias like `alias autoland='pitcrew -C ~/workspace/autoland-management'`.
+It must come before the subcommand and takes priority over `$PITCREW_CONFIG`
+and the usual walk-up-from-`$PWD` search.
+
 ## Config
 
 Full schema with comments:
 [`examples/pitcrew.config.example.sh`](examples/pitcrew.config.example.sh).
+Run `pitcrew init` to generate a starter file instead of copying by hand.
+
+For an app that follows the usual pattern, `pitcrew_app <name> --be-cmd ...
+--be-port ... [--fe-cmd ...] [--fe-port ...] [--url-path ...] [--be-health
+...] [--watch-be ...] [--watch-fe ...]` sets everything for that app in one
+call instead of an entry in each of the arrays below — the two styles mix
+freely in the same config. Loading also runs a few sanity checks (typo'd app
+name in a per-app array, an app with no be/fe command at all, two components
+sharing a port, an unknown name in `PITCREW_PROTECTED_DEPS`) and prints a
+warning, not a hard failure, when something looks off.
+
 The short version — everything except `PITCREW_APPS` and start commands is
 optional:
 
@@ -136,6 +159,36 @@ Env var overrides (higher precedence than the config file):
 `PITCREW_CONFIG`, `PITCREW_ROOT`, `PITCREW_FE_MAX`, `PITCREW_BE_MAX`,
 `PITCREW_WAIT`.
 
+## Dashboard
+
+The live dashboard keeps a rolling history per component and draws it as a
+sparkline where a single number used to be, so a leak looks like a leak
+instead of a number that happens to be large today. Selecting a service and
+pressing Enter expands its real process tree — the Gradle daemon, the `node`,
+the `esbuild` — each with its own RAM and CPU.
+
+| Key | |
+|---|---|
+| `↑` `↓` | select a service (mouse click also selects, when enabled) |
+| `⏎` | expand/collapse that service's process tree |
+| `e` | the error radar's actual matched log lines, not just the count |
+| `l` `r` `s` `m` `q` | logs · restart · stop · menu · quit |
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PITCREW_REFRESH` | `1` | seconds between frames; fractions like `0.25` are fine |
+| `PITCREW_GRAPH` | `block` | `block` (▁▂▃) or `braille` (⣀⣤⣶), which packs 2 samples per cell |
+| `PITCREW_HISTORY` | `240` | samples kept per component |
+| `PITCREW_THEME` | — | a file in `~/.config/pitcrew/themes/<name>.sh` or `themes/` |
+| `PITCREW_MOUSE` | `0` | `1` enables click-to-select / click-again-to-expand / wheel |
+| `PITCREW_ERROR_PATTERN` | `ERROR\|FATAL\|Exception\|UnhandledRejection` | what the error radar counts |
+| `PITCREW_HEALTH_INTERVAL` | `5` | seconds between health probes (×3 once a service reports UP) |
+| `PITCREW_DEP_INTERVAL` | `10` | seconds between docker dep checks |
+
+`NO_COLOR` (or `PITCREW_NO_COLOR`) drops every color. A theme is a plain bash
+file that reassigns `$RED`, `$GREEN`, `$BOLD` and friends — no new format and
+no parser; see [`themes/default.sh`](themes/default.sh).
+
 ## How it works
 
 - Each backend/frontend is a plain background process — wrapped in
@@ -143,8 +196,19 @@ Env var overrides (higher precedence than the config file):
   cap when systemd is available, a bare backgrounded process otherwise.
   Output goes to `.pitcrew/logs/<component>.log`, its pid to
   `.pitcrew/logs/<component>.pid`, both in your project root (add
-  `.pitcrew/` to `.gitignore`). RAM/CPU meters are read from that process's
-  whole tree via `ps`, so they work identically with or without systemd.
+  `.pitcrew/` to `.gitignore`).
+- RAM/CPU are summed over each component's whole process tree, so they work
+  identically with or without systemd. On Linux the dashboard reads all of it
+  — listening ports, process trees, per-process RSS and CPU jiffies — straight
+  out of `/proc` with bash builtins, which means **a frame costs no forks at
+  all**: 158ms and ~5s of child CPU per 25 frames became 6ms and zero. That is
+  what makes a sub-second refresh and per-service history affordable. RSS is
+  taken from `statm`, so it matches what `ps -o rss` reports to the page, and
+  CPU is a real utime+stime delta over the sampling window rather than `ps`'s
+  lifetime average. macOS (or any Linux without a readable `/proc`) falls back
+  to one `ps` plus one port listing per frame — same numbers, two forks
+  instead of none, and a 1s floor on the refresh rate. `pitcrew doctor` tells
+  you which collector is active.
 - "Up" means: the port is open, and — if you configured a health path — the
   health endpoint reports `"UP"`. Anything else is "starting" while the
   pidfile's process is alive, or "crashed" if it died on its own (a leftover

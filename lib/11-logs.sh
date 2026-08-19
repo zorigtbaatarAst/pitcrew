@@ -20,6 +20,7 @@ log_view() { # in-place live log viewer ($1 = optional preselect); assumes alt s
     printf '\033[?7l'   # no auto-wrap: a too-wide line must never break the repaint line count
     mapfile -t comps < <(log_components)
     [ ${#comps[@]} -eq 0 ] && break
+    snapshot
     [ "$sel" -ge ${#comps[@]} ] && sel=$((${#comps[@]} - 1))
     W=$(tput cols 2>/dev/null); [ -n "$W" ] || W=100
     H=$(tput lines 2>/dev/null); [ -n "$H" ] || H=30
@@ -34,7 +35,8 @@ log_view() { # in-place live log viewer ($1 = optional preselect); assumes alt s
       if [ "$i" -lt 9 ]; then tok="$((i + 1)) ${comps[$i]}"; else tok="${comps[$i]}"; fi
       if [ $((used + ${#tok} + 5)) -gt "$W" ]; then hdr+="${GREY}›${RESET}"; break; fi
       if [ "$i" -eq "$sel" ]; then
-        hdr+="$(state_icon "$(comp_state "$c")") ${BOLD}${CYAN}${tok}${RESET}   "
+        state_icon "${SNAP_STATE[$c]:-n/a}"
+        hdr+="$R ${BOLD}${CYAN}${tok}${RESET}   "
       else
         hdr+="${GREY}${tok}${RESET}   "
       fi
@@ -53,45 +55,32 @@ log_view() { # in-place live log viewer ($1 = optional preselect); assumes alt s
     frame+="$line$RESET"$'\e[K'
     printf '\033[H%b\033[0J' "$frame"
 
-    if IFS= read -rsn1 -t 1 key 2>/dev/null; then
-      [ -z "$key" ] && key=enter
-    else
-      key=""   # timeout → just refresh
-    fi
-    if [ "$key" = $'\e' ]; then
-      rest=""; IFS= read -rsn2 -t 0.01 rest 2>/dev/null || true
-      case "$rest" in
-        '[C'|'[B') key=next ;;
-        '[D'|'[A') key=prev ;;
-        '')        key=q ;;     # bare Esc
-        *)         key="" ;;
-      esac
-    fi
+    read_key 1 || continue
+    key=$KEY
     case "$key" in
-      q|Q) break ;;
-      next|l|L|n|N|$'\t') sel=$(( (sel + 1) % ${#comps[@]} )) ;;
-      prev|h|H|p|P)       sel=$(( (sel - 1 + ${#comps[@]}) % ${#comps[@]} )) ;;
+      q|Q|esc) break ;;
+      right|down|l|L|n|N|tab) sel=$(( (sel + 1) % ${#comps[@]} )) ;;
+      left|up|h|H|p|P)        sel=$(( (sel - 1 + ${#comps[@]}) % ${#comps[@]} )) ;;
       [1-9]) i=$((key - 1)); [ "$i" -lt ${#comps[@]} ] && sel=$i ;;
       x|X) stop_comp "$c" >/dev/null 2>&1 ;;
       r|R) stop_comp "$c" >/dev/null 2>&1; start_comp "$c" >/dev/null 2>&1 ;;
       enter)
-        printf '\033[?7h'; tput rmcup 2>/dev/null; tput cnorm 2>/dev/null
+        tui_pause
         if [ -n "${PAGER:-}" ]; then "$PAGER" "$f"
         elif command -v less >/dev/null; then less -R "$f"
         else more "$f"; fi
-        tput smcup 2>/dev/null; tput civis 2>/dev/null ;;
+        tui_resume ;;
     esac
   done
-  printf '\033[?7h'
 }
 
 cmd_logs() { # standalone entry: wrap log_view in its own alt screen
   [ -d "$LOG_DIR" ] || die "no logs yet — nothing has been started"
-  tput smcup 2>/dev/null; tput civis 2>/dev/null
-  trap 'tput cnorm 2>/dev/null; tput rmcup 2>/dev/null; trap - INT; return 0' INT
+  tui_enter
+  trap 'tui_leave; trap - INT; return 0' INT
   log_view "${1:-}"
   trap - INT
-  tput cnorm 2>/dev/null; tput rmcup 2>/dev/null
+  tui_leave
 }
 
 cmd_shell() { # $1 = name of a PITCREW_SHELLS entry (e.g. "mongo", "redis") — runs in the foreground

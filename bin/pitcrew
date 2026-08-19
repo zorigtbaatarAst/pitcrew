@@ -46,26 +46,45 @@ Usage:
   pitcrew profile save <name> <targets...> | list | rm <name>
   pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
   pitcrew doctor                    check the local environment
+  pitcrew init [<dir>]              generate a starter pitcrew.config.sh (default: $PWD)
   pitcrew urls | help
 
-Config discovery: pitcrew.config.sh, walked up from $PWD, or $PITCREW_CONFIG.
+Flags (must come before the subcommand):
+  -C, --project <dir>       use this project instead of walking up from $PWD
+                             <dir> may be a project root or the config file itself
+
+Config discovery: pitcrew.config.sh, walked up from $PWD, or -C/--project, or $PITCREW_CONFIG.
 Env overrides: PITCREW_CONFIG, PITCREW_ROOT, PITCREW_FE_MAX, PITCREW_BE_MAX, PITCREW_WAIT.
 EOF
 }
 
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -C|--project)
+      [ $# -ge 2 ] || die "-C/--project needs a path"
+      PITCREW_PROJECT_DIR=$2
+      shift 2
+      ;;
+    --project=*) PITCREW_PROJECT_DIR="${1#*=}"; shift ;;
+    *) break ;;
+  esac
+done
+
 case "${1:-}" in
   help|-h|--help) usage; exit 0 ;;
+  init) shift; cmd_init "$@"; exit $? ;;
 esac
 
 # Config is sourced here, at the script's top level (not inside a function) —
 # see the note atop lib/02-config.sh for why that matters.
 PITCREW_CFG=$(find_config) || die "no pitcrew.config.sh found in $PWD or any parent directory.
-Point PITCREW_CONFIG at one, or copy examples/pitcrew.config.example.sh into your project root."
+Point PITCREW_CONFIG at one (or run with -C/--project), or run \`pitcrew init\` to generate one."
 config_defaults
 ROOT=$(cd "$(dirname "$PITCREW_CFG")" && pwd)
 # shellcheck source=/dev/null
 source "$PITCREW_CFG"
 config_finalize "$PITCREW_CFG"
+config_validate
 cd "$ROOT" 2>/dev/null || die "project root not found at $ROOT"
 
 case "${1:-watch}" in

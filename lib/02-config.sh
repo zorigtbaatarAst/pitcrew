@@ -10,6 +10,19 @@
 # the full schema with comments.
 
 find_config() {
+  # -C/--project (bin/pitcrew sets PITCREW_PROJECT_DIR) wins over everything —
+  # it's an explicit ask, not a fallback.
+  if [ -n "${PITCREW_PROJECT_DIR:-}" ]; then
+    [ -f "$PITCREW_PROJECT_DIR" ] && { echo "$PITCREW_PROJECT_DIR"; return; }
+    [ -d "$PITCREW_PROJECT_DIR" ] || die "--project $PITCREW_PROJECT_DIR: no such file or directory"
+    local dir
+    dir=$(cd "$PITCREW_PROJECT_DIR" && pwd)
+    while [ "$dir" != "/" ]; do
+      if [ -f "$dir/pitcrew.config.sh" ]; then echo "$dir/pitcrew.config.sh"; return; fi
+      dir=$(dirname "$dir")
+    done
+    die "no pitcrew.config.sh found in $PITCREW_PROJECT_DIR or any parent directory"
+  fi
   if [ -n "${PITCREW_CONFIG:-}" ]; then
     [ -f "$PITCREW_CONFIG" ] && { echo "$PITCREW_CONFIG"; return; }
     die "PITCREW_CONFIG=$PITCREW_CONFIG does not exist"
@@ -43,6 +56,27 @@ config_defaults() {
   PITCREW_PROJECT_NAME=""; PITCREW_EMOJI=""
 }
 
+pitcrew_app() { # pitcrew_app <name> [--be-cmd CMD] [--fe-cmd CMD] [--be-port N] [--fe-port N]
+                 #             [--url-path P] [--be-health PATH] [--watch-be DIRS] [--watch-fe DIRS]
+                 # One call per app instead of hand-editing 6+ parallel associative arrays.
+                 # Purely a shorthand for the arrays below — mix and match with direct
+                 # array assignment freely, e.g. for apps with no clean per-app pattern.
+  local app=${1:?pitcrew_app needs an app name}; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --be-cmd)    [ $# -ge 2 ] || die "pitcrew_app $app: --be-cmd needs a value";    PITCREW_BE_CMD[$app]=$2; shift 2 ;;
+      --fe-cmd)    [ $# -ge 2 ] || die "pitcrew_app $app: --fe-cmd needs a value";    PITCREW_FE_CMD[$app]=$2; shift 2 ;;
+      --be-port)   [ $# -ge 2 ] || die "pitcrew_app $app: --be-port needs a value";   PITCREW_BE_PORT[$app]=$2; shift 2 ;;
+      --fe-port)   [ $# -ge 2 ] || die "pitcrew_app $app: --fe-port needs a value";   PITCREW_FE_PORT[$app]=$2; shift 2 ;;
+      --url-path)  [ $# -ge 2 ] || die "pitcrew_app $app: --url-path needs a value";  PITCREW_URL_PATH[$app]=$2; shift 2 ;;
+      --be-health) [ $# -ge 2 ] || die "pitcrew_app $app: --be-health needs a value"; PITCREW_BE_HEALTH_PATH[$app]=$2; shift 2 ;;
+      --watch-be)  [ $# -ge 2 ] || die "pitcrew_app $app: --watch-be needs a value";  PITCREW_WATCH_DIR[be-$app]=$2; shift 2 ;;
+      --watch-fe)  [ $# -ge 2 ] || die "pitcrew_app $app: --watch-fe needs a value";  PITCREW_WATCH_DIR[fe-$app]=$2; shift 2 ;;
+      *) die "pitcrew_app $app: unknown option '$1'" ;;
+    esac
+  done
+}
+
 config_finalize() { # $1 = path to the config file that was just sourced
   CONFIG_FILE=$1
   [ -n "${PITCREW_ROOT:-}" ] && ROOT="$PITCREW_ROOT"
@@ -53,6 +87,19 @@ config_finalize() { # $1 = path to the config file that was just sourced
   SESSION=$(printf '%s' "$PITCREW_PROJECT_NAME" | tr -c 'A-Za-z0-9_-' '-' | tr 'A-Z' 'a-z')
   LOG_DIR="$ROOT/.pitcrew/logs"
   PROFILE_DIR="$HOME/.config/pitcrew/$SESSION/profiles"
+
+  # The component list can't change while we're running, so resolve it once
+  # here instead of re-running all_components (a fork) inside every frame loop.
+  mapfile -t PITCREW_COMPS < <(all_components)
+
+  # RAM cap per component, pre-resolved to bytes. The dashboard divides by
+  # this once per component per frame; parsing "8G" there would mean a fork.
+  declare -gA COMP_MAX_B=()
+  local _c _m
+  for _c in "${PITCREW_COMPS[@]}"; do
+    [ "${_c:0:2}" = be ] && _m=$PITCREW_BE_MAX || _m=$PITCREW_FE_MAX
+    COMP_MAX_B[$_c]=$(to_bytes "$_m")
+  done
 }
 
 app_has_role() { # $1 app $2 role(be|fe)
@@ -78,5 +125,45 @@ all_components() {
   local app role
   for app in "${PITCREW_APPS[@]}"; do
     for role in $(app_roles "$app"); do echo "$role-$app"; done
+  done
+}
+
+# Non-fatal sanity checks over the loaded config — catches typos and dead
+# entries early with a specific message, instead of a confusing failure (or
+# silent no-op) later during start/doctor/logs. Never dies: a warning here
+# must not block someone from running a config that's merely unusual.
+config_validate() {
+  local -A known_app=()
+  local app key comp port dep d2 has_known
+
+  for app in "${PITCREW_APPS[@]}"; do known_app[$app]=1; done
+
+  for key in "${!PITCREW_BE_CMD[@]}" "${!PITCREW_FE_CMD[@]}" "${!PITCREW_BE_PORT[@]}" \
+             "${!PITCREW_FE_PORT[@]}" "${!PITCREW_URL_PATH[@]}" "${!PITCREW_BE_HEALTH_PATH[@]}"; do
+    [ -n "${known_app[$key]:-}" ] || \
+      warn "config: '$key' is set in a per-app array but isn't listed in PITCREW_APPS — typo?"
+  done
+
+  for app in "${PITCREW_APPS[@]}"; do
+    app_has_role "$app" be || app_has_role "$app" fe || \
+      warn "config: app '$app' has no PITCREW_BE_CMD or PITCREW_FE_CMD — nothing will ever start for it"
+  done
+
+  local -A port_owner=()
+  for comp in $(all_components); do
+    port=$(comp_port "$comp")
+    [ -n "$port" ] || continue
+    if [ -n "${port_owner[$port]:-}" ]; then
+      warn "config: port $port is used by both ${port_owner[$port]} and $comp"
+    else
+      port_owner[$port]=$comp
+    fi
+  done
+
+  for dep in "${PITCREW_PROTECTED_DEPS[@]:-}"; do
+    [ -n "$dep" ] || continue
+    has_known=""
+    for d2 in "${PITCREW_DEPS[@]}"; do [ "$d2" = "$dep" ] && has_known=1; done
+    [ -n "$has_known" ] || warn "config: PITCREW_PROTECTED_DEPS has '$dep' which isn't in PITCREW_DEPS"
   done
 }

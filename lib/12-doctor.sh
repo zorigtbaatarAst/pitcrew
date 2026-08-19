@@ -10,6 +10,11 @@ cmd_doctor() {
   command -v lsof >/dev/null && ok "lsof   present ${GREY}(port → pid lookups)${RESET}" \
     || warn "lsof missing — falls back to ss (Linux) or port checks will be limited"
   command -v fzf  >/dev/null && ok "fzf    $(fzf --version | awk '{print $1}')" || warn "fzf missing — menus fall back to plain prompts"
+  if [ "$PITCREW_COLLECTOR" = proc ]; then
+    ok "meters /proc ${GREY}(fork-free collector · refresh ${PITCREW_REFRESH}s · graph ${PITCREW_GRAPH})${RESET}"
+  else
+    warn "meters ps fallback — no /proc, so each frame costs a ps + a port listing (refresh ${PITCREW_REFRESH}s)"
+  fi
   if [ "$HAS_SYSTEMD" = 1 ]; then
     ok "systemd --user available — RAM caps (MemoryMax) are enforced"
   else

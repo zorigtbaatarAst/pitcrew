@@ -1,15 +1,32 @@
 #!/usr/bin/env bash
 # pitcrew.config.sh — example config, annotated with every supported variable.
 #
-# Drop a file like this at the root of your project as `pitcrew.config.sh`.
-# pitcrew walks up from your current directory looking for it, so you can run
-# `pitcrew` from any subdirectory. Everything below is optional except
-# PITCREW_APPS and at least one *_CMD entry per app.
+# Drop a file like this at the root of your project as `pitcrew.config.sh`
+# (or run `pitcrew init` to generate a starter one). pitcrew walks up from
+# your current directory looking for it, so you can run `pitcrew` from any
+# subdirectory — or run it from anywhere with `pitcrew -C <project dir>`.
+# Everything below is optional except PITCREW_APPS and at least one *_CMD
+# entry per app.
 #
 # This example models a small monorepo: "storefront" (Rails API + React
 # frontend), "worker" (a backend-only queue processor, no frontend), and
 # "admin" (a Next.js app with its own small Node API route, no separate
 # backend process) — showing the asymmetric-role support.
+#
+# It's written with the raw per-app arrays below because that's what best
+# shows the asymmetric-role model. For a monorepo where most apps follow the
+# same pattern (same command shape, differing only by name/port), the
+# `pitcrew_app` shorthand collects one app's whole config in a single call
+# instead of scattering it across 5+ parallel arrays:
+#
+#   pitcrew_app storefront \
+#     --be-cmd    "cd $ROOT/storefront && bundle exec rails s -p 4000" --be-port 4000 \
+#     --fe-cmd    "cd $ROOT/storefront/frontend && npm run dev"        --fe-port 3000 \
+#     --be-health "/health"
+#
+# The two styles freely mix in the same file — use whichever reads clearer
+# for a given app. See PITCREW_APPS/*_CMD below for the equivalent written
+# by hand.
 
 # ── apps ──────────────────────────────────────────────────────────────────
 # Ordered list of app names. Each app gets a "be" (backend) and/or "fe"
@@ -98,6 +115,23 @@ pitcrew_doctor_extra() {
     && ok "storefront frontend deps installed" \
     || warn "storefront frontend needs npm install (auto-runs on first start)"
 }
+
+# ── dashboard (optional; all of these are env vars too) ────────────────────
+# PITCREW_REFRESH=0.5        # seconds between frames — fractions are fine
+# PITCREW_GRAPH=braille      # block (default) | braille — 2 samples per cell
+# PITCREW_HISTORY=240        # sparkline samples kept per component
+# PITCREW_THEME=neon         # ~/.config/pitcrew/themes/<name>.sh, or themes/
+# PITCREW_MOUSE=1            # click to select, click again to expand, wheel scrolls
+#
+# What the error radar (the ⚡ counter, and the `e` key) treats as an error.
+# A Spring backend and a Vite frontend do not log failures the same way.
+# PITCREW_ERROR_PATTERN='ERROR|FATAL|Exception|UnhandledRejection'
+#
+# How often the health endpoint above is probed, in seconds. Probes run in the
+# background so a booting JVM can never stall a repaint, and back off to 3x
+# this once a service reports UP.
+# PITCREW_HEALTH_INTERVAL=5
+# PITCREW_DEP_INTERVAL=10    # how often `docker inspect` is run for deps
 
 # ── uncommon: point pitcrew at a project root other than this file's dir ───
 # PITCREW_ROOT="$ROOT/.."
