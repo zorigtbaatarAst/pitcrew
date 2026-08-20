@@ -6,6 +6,7 @@ from pathlib import Path
 
 from gi.repository import Adw, GLib, Gtk
 
+from .model import human_bytes
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error
 from .widgets import OutputView
@@ -185,3 +186,91 @@ class ConfigDialog(Adw.Dialog):
         self._output.show_text("running pitcrew doctor…")
         self._runner.run(["-p", self._name, "doctor"],
                          lambda ok, out: self._output.show_text(out or "doctor said nothing"))
+
+
+# Sizes offered in the picker. A free-text box would let you type "8gb" and be
+# told no by a CLI you cannot see; a list cannot be typo'd. "Default" is first
+# because clearing an override is the commonest thing after setting one.
+LIMIT_CHOICES = ("default", "256M", "512M", "1G", "2G", "3G", "4G", "6G", "8G", "12G", "16G")
+
+
+class LimitsDialog(Adw.Dialog):
+    """Per-component RAM caps.
+
+    Writes nothing itself: every change goes through `pitcrew limit`, the same
+    way adding a project goes through `pitcrew init`. One place knows the file
+    format, and it is not the GUI.
+    """
+
+    def __init__(self, runner: Runner, project: str, components: list[dict], on_changed):
+        super().__init__(title=f"{project} · RAM caps", content_width=560, content_height=620)
+        self._runner = runner
+        self._project = project
+        self._on_changed = on_changed
+        self._rows: dict[str, Adw.ComboRow] = {}
+
+        group = Adw.PreferencesGroup(
+            title="Caps",
+            description="Applied when a component starts — restart one to change its cap")
+        for comp in components:
+            group.add(self._row_for(comp))
+
+        self._output = OutputView(height=110)
+        self._output.show_text(
+            "A cap is a property of this machine, not the project: these are stored "
+            "locally, not in the config the repo shares.")
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        body.append(group)
+        body.append(self._output)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(Gtk.ScrolledWindow(child=body, propagate_natural_height=True))
+        self.set_child(view)
+
+    def _row_for(self, comp: dict) -> Adw.ComboRow:
+        name = comp["name"]
+        source = comp.get("limitSource") or "role"
+        effective = human_bytes(comp.get("limit")) if comp.get("limit") else "—"
+        subtitle = {
+            "override": f"{effective} · set here",
+            "app": f"{effective} · from the project config",
+        }.get(source, f"{effective} · role default")
+
+        row = Adw.ComboRow(title=name, subtitle=subtitle, use_markup=False,
+                           model=Gtk.StringList.new(list(LIMIT_CHOICES)))
+        # Only an override selects a value; anything inherited sits on "default"
+        # so picking it again is a no-op rather than a silent re-assertion.
+        current = _size_label(comp.get("limit")) if source == "override" else "default"
+        row.set_selected(LIMIT_CHOICES.index(current) if current in LIMIT_CHOICES else 0)
+        row.connect("notify::selected", self._chosen, name)
+        self._rows[name] = row
+        return row
+
+    def _chosen(self, row: Adw.ComboRow, _param, name: str) -> None:
+        value = LIMIT_CHOICES[row.get_selected()]
+        self._output.show_text(f"setting {name} to {value}…")
+        self._runner.run(["-p", self._project, "limit", name, value],
+                         lambda ok, out: self._done(ok, out, name))
+
+    def _done(self, ok: bool, output: str, name: str) -> None:
+        lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+        self._output.show_text(lines[-1] if lines else f"{name} updated")
+        if ok:
+            self._on_changed()
+
+
+def _size_label(size_bytes: int | None) -> str:
+    """Bytes back to the label the picker uses, or "" if it is not one of them."""
+    if not size_bytes:
+        return ""
+    for label in LIMIT_CHOICES:
+        if label == "default":
+            continue
+        unit, number = label[-1], int(label[:-1])
+        scale = 1024 ** 3 if unit == "G" else 1024 ** 2
+        if number * scale == size_bytes:
+            return label
+    return ""

@@ -143,7 +143,14 @@ class ComponentRow(Adw.ActionRow):
             self._badge_class = css
         self._badge.set_text(state)
 
-        bits = [human_bytes(comp.get("rss"))]
+        # RSS alone does not tell you whether a service is near the cap that will
+        # kill it, which is the number you actually want when the laptop starts
+        # swapping. Show both, and only once there is a reading to compare.
+        used, limit = comp.get("rss"), comp.get("limit")
+        if used and limit:
+            bits = [f"{human_bytes(used)} / {human_bytes(limit)}"]
+        else:
+            bits = [human_bytes(used)]
         cpu = comp.get("cpu")
         bits.append("cpu —" if cpu is None else f"{cpu}% cpu")
         if comp.get("port"):

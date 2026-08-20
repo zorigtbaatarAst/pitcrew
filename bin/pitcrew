@@ -79,6 +79,8 @@ Usage:
   pitcrew stop --deps                       also stop non-protected deps
   pitcrew restart <app>...
   pitcrew status [--json]           one-shot dashboard, or machine-readable state
+  pitcrew limit [<component> <size|default>]
+                                     per-component RAM caps (no args = show them)
   pitcrew json [--watch [--interval N]]
                                      one state object, or an NDJSON stream
                                      (--watch is the only mode with real cpu%)
@@ -176,6 +178,7 @@ case "${1:-watch}" in
   restart) shift;  [ $# -ge 1 ] || die "restart needs app names"; cmd_stop "$@"; cmd_start "$@" ;;
   status)  shift; if [ "${1:-}" = --json ]; then cmd_json; else cmd_status; fi ;;
   json)    shift; if [ "${1:-}" = --watch ]; then shift; cmd_json_watch "$@"; else cmd_json; fi ;;
+  limit)   shift; cmd_limit "$@"; exit $? ;;
   wait)    shift;  cmd_wait "$@"; exit $? ;;
   watch)           cmd_watch ;;
   logs)    shift;  cmd_logs "$@" ;;

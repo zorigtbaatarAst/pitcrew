@@ -85,6 +85,7 @@ config_defaults() {
   # defaults — a config file only needs to set what it wants to change
   PITCREW_APPS=()
   declare -gA PITCREW_BE_CMD=() PITCREW_FE_CMD=()
+  declare -gA PITCREW_BE_MAX_APP=() PITCREW_FE_MAX_APP=()   # per-app caps, if the config sets any
   declare -gA PITCREW_BE_PORT=() PITCREW_FE_PORT=()
   declare -gA PITCREW_BE_HEALTH_PATH=() PITCREW_URL_PATH=() PITCREW_WATCH_DIR=() PITCREW_SHELLS=()
   PITCREW_DEPS=(); PITCREW_PROTECTED_DEPS=(); PITCREW_DEPS_READY_CMD=""
@@ -96,6 +97,7 @@ config_defaults() {
 
 pitcrew_app() { # pitcrew_app <name> [--be-cmd CMD] [--fe-cmd CMD] [--be-port N] [--fe-port N]
                  #             [--url-path P] [--be-health PATH] [--watch-be DIRS] [--watch-fe DIRS]
+                 #             [--be-max SIZE] [--fe-max SIZE]
                  # One call per app instead of hand-editing 6+ parallel associative arrays.
                  # Purely a shorthand for the arrays below — mix and match with direct
                  # array assignment freely, e.g. for apps with no clean per-app pattern.
@@ -110,6 +112,8 @@ pitcrew_app() { # pitcrew_app <name> [--be-cmd CMD] [--fe-cmd CMD] [--be-port N]
       --be-health) [ $# -ge 2 ] || die "pitcrew_app $app: --be-health needs a value"; PITCREW_BE_HEALTH_PATH[$app]=$2; shift 2 ;;
       --watch-be)  [ $# -ge 2 ] || die "pitcrew_app $app: --watch-be needs a value";  PITCREW_WATCH_DIR[be-$app]=$2; shift 2 ;;
       --watch-fe)  [ $# -ge 2 ] || die "pitcrew_app $app: --watch-fe needs a value";  PITCREW_WATCH_DIR[fe-$app]=$2; shift 2 ;;
+      --be-max)    [ $# -ge 2 ] || die "pitcrew_app $app: --be-max needs a value";    PITCREW_BE_MAX_APP[$app]=$2; shift 2 ;;
+      --fe-max)    [ $# -ge 2 ] || die "pitcrew_app $app: --fe-max needs a value";    PITCREW_FE_MAX_APP[$app]=$2; shift 2 ;;
       *) die "pitcrew_app $app: unknown option '$1'" ;;
     esac
   done
@@ -169,11 +173,14 @@ config_finalize() { # $1 = path to the config file that was just sourced
     APP_ICON[$_a]=$ICON
   done
 
+  # Overrides first: comp_max reads them, and COMP_MAX_B is built from comp_max
+  # so the meters, the preflight and systemd all see one number.
+  limits_load
+
   declare -gA COMP_MAX_B=()
-  local _c _m
+  local _c
   for _c in "${PITCREW_COMPS[@]}"; do
-    [ "${_c:0:2}" = be ] && _m=$PITCREW_BE_MAX || _m=$PITCREW_FE_MAX
-    COMP_MAX_B[$_c]=$(to_bytes "$_m")
+    COMP_MAX_B[$_c]=$(to_bytes "$(comp_max "$_c")")
   done
 }
 
@@ -194,7 +201,12 @@ app_roles() { # $1 app → "be", "fe", "be fe", or "" (config error — caught e
 comp_port() { local app=${1#??-}; [ "${1:0:2}" = be ] && echo "${PITCREW_BE_PORT[$app]:-}" || echo "${PITCREW_FE_PORT[$app]:-}"; }
 comp_cmd()  { local app=${1#??-}; [ "${1:0:2}" = be ] && echo "${PITCREW_BE_CMD[$app]:-}" || echo "${PITCREW_FE_CMD[$app]:-}"; }
 comp_env()  { [ "${1:0:2}" = be ] && echo "$PITCREW_BE_ENV" || echo "$PITCREW_FE_ENV"; }
-comp_max()  { [ "${1:0:2}" = be ] && echo "$PITCREW_BE_MAX" || echo "$PITCREW_FE_MAX"; }
+comp_max()  { # machine-local override → per-app cap → role default (lib/17-limits.sh)
+  local app=${1#??-} v=${COMP_MAX_OVERRIDE[$1]:-}
+  [ -n "$v" ] && { echo "$v"; return; }
+  if [ "${1:0:2}" = be ]; then echo "${PITCREW_BE_MAX_APP[$app]:-$PITCREW_BE_MAX}"
+  else echo "${PITCREW_FE_MAX_APP[$app]:-$PITCREW_FE_MAX}"; fi
+}
 
 # every configured component, stable order: be then fe per app, only roles that exist
 all_components() {

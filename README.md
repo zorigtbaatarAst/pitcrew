@@ -324,7 +324,44 @@ service you started by hand — and it is also how two projects that both use
 - `pitcrew doctor` fails the check if this project clashes with another
   registered one
 
-`doctor` also checks that the RAM caps fit the machine. Sixteen backends at the
+`doctor` also checks that the RAM caps fit the machine.
+
+## RAM caps
+
+Two numbers for a whole stack is the wrong shape once the stack is not uniform:
+a Spring backend wants 8G and the cron worker beside it wants 512M, and giving
+both 8G means the caps never bite and the OOM killer picks the victim instead.
+A cap resolves through three layers, highest first:
+
+| | where | for |
+|---|---|---|
+| per component | `~/.config/pitcrew/<session>/limits` | this machine |
+| per app | `pitcrew_app api --be-max 2G` in the config | everyone on the project |
+| per role | `PITCREW_BE_MAX` / `PITCREW_FE_MAX` | the default |
+
+```bash
+pitcrew limit                      # every component, its cap, and where it came from
+pitcrew limit be-orders 3G         # override it here
+pitcrew limit be-orders default    # and back
+```
+
+The top layer is a machine-local file rather than more config on purpose: **a
+cap is a property of the machine, not the project.** 8G is generous on a 64G
+workstation and suicidal on a 16G laptop, and two developers sharing a repo
+should not be editing each other's numbers in git. The middle layer still
+exists for a project that genuinely wants to say "this one is small" for
+everybody.
+
+Caps are applied when a component **starts**, so changing one under a running
+service does nothing until it restarts — `pitcrew limit` says so when that is
+the case. The cap also reaches `pitcrew status --json` as `limit` and
+`limitSource`, so the dashboard, the preflight, systemd's `MemoryMax` and the
+GUI are all reading one number.
+
+In the desktop app it is **RAM caps…** in the menu: every component with its
+effective cap and where that came from. It writes nothing itself — each change
+goes through `pitcrew limit`, the same way adding a project goes through
+`pitcrew init`. Sixteen backends at the
 8G default commit 128G on a 31G box, at which point no cap ever fires and the
 kernel's OOM killer picks the victim instead — better to be told.
 

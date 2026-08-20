@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from .dialogs import ConfigDialog, InitDialog
+from .dialogs import ConfigDialog, InitDialog, LimitsDialog
 from .model import (SERIES_COLORS, STATE_STYLE, UNKNOWN_STYLE, Series, empty_message,
                     group_of, human_bytes, plain)
 from .registry import current_project, declared_root, known_projects, project_file
@@ -28,6 +28,7 @@ class Window(Adw.ApplicationWindow):
         # Rebuilding the list is only correct-and-cheap because it happens when
         # the SHAPE changes, not every frame. This is that shape.
         self._layout_key: tuple | None = None
+        self._last_components: list[dict] = []
 
         self.set_title("pitcrew")
         self.set_default_size(760, 620)
@@ -90,7 +91,11 @@ class Window(Adw.ApplicationWindow):
 
     def _build_menu_button(self) -> Gtk.Widget:
         menu = Gio.Menu()
+        menu.append("RAM caps…", "win.limits")
         menu.append("Preferences", "win.preferences")
+        limits = Gio.SimpleAction.new("limits", None)
+        limits.connect("activate", lambda *_: self._show_limits())
+        self.add_action(limits)
         action = Gio.SimpleAction.new("preferences", None)
         action.connect("activate", lambda *_: self._show_preferences())
         self.add_action(action)
@@ -237,6 +242,22 @@ class Window(Adw.ApplicationWindow):
         self._refresh_project_menu()
         self._refresh_projects()
 
+    def _show_limits(self) -> None:
+        if not self._project:
+            self._toast("no project selected")
+            return
+        if not self._last_components:
+            # The caps arrive in the same frame as everything else, so there is
+            # nothing sensible to show until one has landed.
+            self._toast("waiting for the first frame")
+            return
+
+        def changed() -> None:
+            # A cap only takes effect at start, so nothing on screen changes yet;
+            # the next frame carries the new number and the row subtitles follow.
+            self._layout_key = None
+        LimitsDialog(self._runner, self._project, self._last_components, changed).present(self)
+
     # ── preferences ─────────────────────────────────────────────────────────
     def _show_preferences(self) -> None:
         dialog = Adw.PreferencesDialog(title="Preferences")
@@ -349,6 +370,7 @@ class Window(Adw.ApplicationWindow):
     def _on_state(self, state: dict) -> None:
         self._banner.set_revealed(False)
         components = state.get("components", [])
+        self._last_components = components
         colors = {c["name"]: SERIES_COLORS[i % len(SERIES_COLORS)]
                   for i, c in enumerate(components)}
         history = self._settings["history"]
@@ -430,9 +452,12 @@ class Window(Adw.ApplicationWindow):
     def _group_summary(comps: list[dict]) -> str:
         up = sum(1 for c in comps if c.get("state") == "up")
         rss = sum(c.get("rss") or 0 for c in comps)
+        capped = sum(c.get("limit") or 0 for c in comps)
         parts = [f"{up}/{len(comps)} up"]
         if rss:
             parts.append(human_bytes(rss))
+        if capped:
+            parts.append(f"capped at {human_bytes(capped)}")
         return "  ·  ".join(parts)
 
     def _render_deps(self, deps: list[dict]) -> None:

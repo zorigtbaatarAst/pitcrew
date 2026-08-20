@@ -40,11 +40,12 @@ cmd_json() {
                   down) down=$((down+1));; esac
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s}' \
+    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s}' \
       "$(_json_str "$c")" "$(_json_str "$app")" "$(_json_str "$role")" "$(_json_str "$st")" \
       "$(_json_num "$port")" "$(_json_num "${SNAP_PID[$c]:-}")" \
       "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_cpu "${SNAP_CPU[$c]:-}")" \
-      "$(_json_num "${ERR_COUNT[$c]:-0}")" "$(_json_num "${SNAP_EXIT[$c]:-}")"
+      "$(_json_num "${ERR_COUNT[$c]:-0}")" "$(_json_num "${SNAP_EXIT[$c]:-}")" \
+      "$(_json_num "${COMP_MAX_B[$c]:-}")" "$(_json_str "$(comp_max_source "$c")")"
   done
   printf '],"deps":['
   first=1
