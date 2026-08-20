@@ -27,11 +27,15 @@ icons_load
 app_icon_for() { # $1 start command(s) → ICON, guessed from what it runs
   case "$1" in
     *gradle*|*bootRun*|*mvn*|*java\ *|*.jar*) ICON=$I_JAVA ;;
-    *npm*|*node*|*vite*|*next*|*yarn*|*pnpm*|*bun*) ICON=$I_NODE ;;
+    # Ruby BEFORE node, and not by accident: `*bun*` (the Bun runtime) also
+    # matches "bundle", so `bundle exec rails s` used to come out as a node app.
+    # `*pnpm*` is gone from the node line for the same reason in reverse — it
+    # could never match, because `*npm*` had already caught it.
+    *rails*|*bundle*|*ruby*) ICON=$I_RUBY ;;
+    *npm*|*node*|*vite*|*next*|*yarn*|*bun*) ICON=$I_NODE ;;
     *python*|*uvicorn*|*gunicorn*|*flask*|*django*) ICON=$I_PY ;;
     *cargo*) ICON=$I_RUST ;;
     *"go run"*|*"go build"*) ICON=$I_GO ;;
-    *rails*|*bundle*|*ruby*) ICON=$I_RUBY ;;
     *) ICON=$I_APP ;;
   esac
 }
@@ -95,7 +99,7 @@ theme_hex_defaults() {
 }
 
 theme_apply() {
-  BOLD="$ESC[1m"; DIM="$ESC[2m"; RESET="$ESC[0m"
+  BOLD="${ESC}[1m"; DIM="${ESC}[2m"; RESET="${ESC}[0m"
   [ "$PITCREW_COLOR_DEPTH" = none ] && { BOLD=""; DIM=""; RESET=""; }
 
   _tok C_TEXT    "$T_TEXT"    0

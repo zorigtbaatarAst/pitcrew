@@ -27,7 +27,14 @@ fi
 echo "── shellcheck"
 # SC1090/SC1091: sourced paths are computed at runtime, by design.
 # SC2034: lib files define variables consumed by other lib files.
-shellcheck --shell=bash --exclude=SC1090,SC1091,SC2034 \
+#
+# --severity=warning is the point of the gate, not a way of lowering the bar.
+# At `style` this reported 58 findings, 43 of them cosmetic, so `make lint`
+# always failed — and a check that is always red is a check nobody reads. It
+# had been hiding two real bugs (a case pattern that shadowed another, and a
+# `local` reading the caller's variable). Anything at warning or above now
+# fails; anything below is either fixed or annotated at the line with why.
+shellcheck --shell=bash --severity=warning --exclude=SC1090,SC1091,SC2034 \
   bin/pitcrew install.sh lib/*.sh themes/*.sh || rc=1
 [ $rc -eq 0 ] && printf '\033[32m✔ clean\033[0m\n'
 exit $rc

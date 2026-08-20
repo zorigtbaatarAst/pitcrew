@@ -326,6 +326,25 @@ service you started by hand — and it is also how two projects that both use
 
 `doctor` also checks that the RAM caps fit the machine.
 
+## Starting in waves
+
+`pitcrew up` used to launch every component at once. On a six-app monorepo that
+is six Gradle daemons and six Next dev servers compiling against the same cores
+— the machine is unusable for a minute, and it is often *slower* in wall-clock
+terms than starting them in waves.
+
+Components now queue: at most `PITCREW_START_CONCURRENCY` (default **3**) may be
+`starting` at a time, and a slot frees as soon as one opens its port.
+
+```bash
+PITCREW_START_CONCURRENCY=6 pitcrew up   # a bigger machine
+PITCREW_START_CONCURRENCY=0 pitcrew up   # all at once, as before
+```
+
+A component that never comes up would otherwise hold the queue forever, so a
+slot is released after `PITCREW_START_SLOT_SECS` (default 45) regardless and the
+dashboard reports it as still starting.
+
 ## RAM caps
 
 Two numbers for a whole stack is the wrong shape once the stack is not uniform:
@@ -582,6 +601,10 @@ GUI is a renderer plus start/stop/restart buttons.
 
 - picks up whichever project `pitcrew use` selected; switch from the header, or
   pin one with `pitcrew-gui -p <name>`
+- a **Logs** view tails any component live, with the lines the error radar
+  counts highlighted in place. It learns where logs are from the stream
+  (`logDir`) and what counts as an error from `errorPattern`, so it shows the
+  same lines the dashboard counts rather than a second opinion
 - components are **grouped by app** by default, so a backend and its frontend
   sit together under one heading with a `2/2 up · 1.6 GiB` rollup
 - errors surface in a banner with a Retry, never as a window quietly showing
@@ -735,6 +758,14 @@ ends up buried under a thousand identical boot attempts. Press `r` on a
 component to clear its give-up and try again.
 
 ## Development
+
+`make check` is lint + tests, and it is green — `make lint` fails on anything
+shellcheck rates **warning** or above. It used to run at `style`, where 58
+findings (43 of them cosmetic) meant it always failed, so nobody read it. It had
+been hiding two real bugs the whole time: `*bun*` shadowing `*bundle*`, so every
+`bundle exec rails` app drew the node icon, and a `rail_color` `local` line that
+read the *caller's* `$app` — the exact trap `lib/07-start.sh` already documents.
+Anything below warning is either fixed or annotated at the line with why.
 
 ```bash
 make check      # lint + tests, the same thing CI runs

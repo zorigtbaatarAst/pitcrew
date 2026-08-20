@@ -167,6 +167,7 @@ _pid_stat() {
   read -r line < "/proc/$pid/stat" 2>/dev/null || return 1
   _P_CMD=${line#*(}; _P_CMD=${_P_CMD%)*}
   rest=${line##*') '}
+  # shellcheck disable=SC2206  # splitting a /proc line on spaces is the point
   local -a f=($rest)
   [ ${#f[@]} -ge 13 ] || return 1
   _P_JIFF=$(( ${f[11]} + ${f[12]} ))

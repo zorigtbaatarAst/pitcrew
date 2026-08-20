@@ -29,6 +29,11 @@ cmd_json() {
   printf '"project":%s,' "$(_json_str "${PITCREW_PROJECT_NAME:-}")"
   printf '"root":%s,' "$(_json_str "$ROOT")"
   printf '"collector":%s,' "$(_json_str "$PITCREW_COLLECTOR")"
+  # Where the logs are and what counts as an error line, so a reader can show
+  # the same lines the dashboard counts without knowing pitcrew's layout or
+  # re-inventing the pattern.
+  printf '"logDir":%s,' "$(_json_str "$LOG_DIR")"
+  printf '"errorPattern":%s,' "$(_json_str "$PITCREW_ERROR_PATTERN")"
   printf '"at":%s,' "$(_json_num "${SNAP_NOW_S:-0}")"
   printf '"components":['
   for c in "${PITCREW_COMPS[@]}"; do

@@ -224,9 +224,12 @@ sys_gauges() {
 # per frame. Linux falls back to it too if /proc is somehow unreadable, so the
 # tool degrades instead of breaking.
 if [ "$PITCREW_OS" = linux ] && [ -r /proc/net/tcp ] && [ -r /proc/self/stat ]; then
+  # shellcheck disable=SC2209  # the literal string "proc", not the command
   PITCREW_COLLECTOR=proc
 else
+  # shellcheck disable=SC2209  # the literal string "ps", not the command
   PITCREW_COLLECTOR=ps
 fi
 # Escape hatch for exercising the portable path on a Linux box.
+# shellcheck disable=SC2209  # the literal string "ps", not the command
 [ "${PITCREW_FORCE_COLLECTOR:-}" = ps ] && PITCREW_COLLECTOR=ps

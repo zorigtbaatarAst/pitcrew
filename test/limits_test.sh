@@ -192,5 +192,30 @@ test_the_menu_feeds_one_line_per_component_and_per_size() {
   reset_limits
 }
 
+# ── staggered start ─────────────────────────────────────────────────────────
+
+test_the_start_queue_waits_for_a_slot() {
+  # Launching everything at once is a thundering herd. The queue holds at the
+  # concurrency limit while components are still `starting`, and releases as
+  # they come up.
+  PITCREW_START_CONCURRENCY=2
+  local -A SNAP_STATE=([a]=starting [b]=starting [c]=up)
+  assert_eq "$(snapshot() { :; }; _booting_count a b c)" "2" "only the booting ones count"
+  assert_eq "$(snapshot() { :; }; _booting_count c)"     "0" "an up component holds no slot"
+}
+
+test_the_queue_does_not_wait_below_the_limit() {
+  # Fewer launched than the limit means there is nothing to wait for, and
+  # _wait_for_slot must return immediately rather than snapshot in a loop.
+  PITCREW_START_CONCURRENCY=3
+  assert_ok _wait_for_slot a b
+  assert_ok _wait_for_slot
+}
+
+test_concurrency_zero_restores_the_old_all_at_once_behaviour() {
+  PITCREW_START_CONCURRENCY=0
+  assert_ok _wait_for_slot a b c d e f
+}
+
 trap 'rm -f "$LIMITS_FILE" 2>/dev/null' EXIT
 run_tests

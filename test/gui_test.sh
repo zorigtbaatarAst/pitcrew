@@ -417,4 +417,67 @@ test_dry_run_succeeds_even_when_things_are_missing() {
   assert_eq "$rc" "0" "--dry-run reports without failing"
 }
 
+# ── the log viewer ──────────────────────────────────────────────────────────
+
+test_the_log_view_tails_and_marks_the_error_lines() {
+  gui_available || return 0
+  local dir; dir=$(mktemp -d)
+  printf 'starting up\nready on :8080\n' > "$dir/be-demo.log"
+  local out; out=$(_drive "
+import pathlib
+from pitcrewgui.logview import LogView
+log = pathlib.Path('$dir/be-demo.log')
+errs = []
+view = LogView(errs.append)
+view.update_sources('$dir', ['be-demo'], 'ERROR|FATAL|Exception')
+view._selection_changed()
+loop = GLib.MainLoop()
+
+def more():
+    with log.open('a') as fh:
+        fh.write('handling request\nERROR could not reach mongo\nrecovered\n')
+    return False
+
+def check():
+    buf = view._buffer
+    text = buf.get_text(*buf.get_bounds(), False)
+    tagged = []
+    it = buf.get_start_iter()
+    while True:
+        end = it.copy()
+        if not end.forward_to_line_end():
+            break
+        if any(t.props.name == 'error' for t in it.get_tags()):
+            tagged.append(buf.get_text(it, end, False))
+        if not it.forward_line():
+            break
+    print('ready on :8080' in text, 'recovered' in text,
+          tagged == ['ERROR could not reach mongo'], not errs)
+    view.stop(); loop.quit(); return False
+
+GLib.timeout_add(1200, more)
+GLib.timeout_add(3200, check)
+GLib.timeout_add_seconds(20, lambda: (loop.quit(), False)[1])
+loop.run()
+")
+  rm -rf "$dir"
+  assert_eq "$out" "True True True True" "tails, follows, marks only the error line, reports nothing"
+}
+
+test_the_log_view_says_so_when_there_is_no_log_yet() {
+  gui_available || return 0
+  # A component that has never started has no file. An empty pane would read as
+  # a broken viewer rather than as "nothing has run".
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_drive "
+from pitcrewgui.logview import LogView
+view = LogView(lambda e: None)
+view.update_sources('$dir', ['be-never'], 'ERROR')
+view._selection_changed()
+print(view._status.get_text())
+")
+  rm -rf "$dir"
+  assert_match "$out" 'has not been started' "it explains the empty pane"
+}
+
 run_tests

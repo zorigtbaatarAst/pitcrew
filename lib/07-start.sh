@@ -191,12 +191,44 @@ ram_preflight() { # $@ = components about to start → RAM_WARN ("" when fine)
   return 0
 }
 
+# How many components may be BOOTING at once. Launching twelve at a time is a
+# thundering herd: six Gradle daemons and six Next dev servers all compiling
+# against the same cores makes the machine unusable for a minute and is often
+# slower, wall-clock, than starting them in waves. 0 disables the wait entirely
+# (the old behaviour) for anyone who wants it back.
+PITCREW_START_CONCURRENCY="${PITCREW_START_CONCURRENCY:-3}"
+PITCREW_START_SLOT_SECS="${PITCREW_START_SLOT_SECS:-45}"   # give up waiting on one
+
+_booting_count() { # how many of $@ are still on their way up
+  local c n=0
+  snapshot
+  for c in "$@"; do
+    case "${SNAP_STATE[$c]:-}" in starting) n=$((n + 1)) ;; esac
+  done
+  printf '%s' "$n"
+}
+
+_wait_for_slot() { # $@ = already-launched components
+  [ "$PITCREW_START_CONCURRENCY" -gt 0 ] 2>/dev/null || return 0
+  [ $# -ge "$PITCREW_START_CONCURRENCY" ] || return 0
+  local waited=0
+  while [ "$(_booting_count "$@")" -ge "$PITCREW_START_CONCURRENCY" ]; do
+    sleep 1
+    waited=$((waited + 1))
+    # A service that never opens its port would otherwise hold the queue
+    # forever. Move on and let the dashboard report it as still starting.
+    [ "$waited" -ge "$PITCREW_START_SLOT_SECS" ] && return 0
+  done
+  return 0
+}
+
 start_targets() { # $@ = target words ("all" when empty)
   local words comps c
   mapfile -t words < <(expand_profiles "${@:-all}")
   mapfile -t comps < <(resolve_targets "${words[@]}")
   STARTED=()
   for c in "${comps[@]}"; do
+    _wait_for_slot "${STARTED[@]}"
     start_comp "$c"
     STARTED+=("$c")
   done

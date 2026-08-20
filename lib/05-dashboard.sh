@@ -162,6 +162,7 @@ _app_rows() { # $1 app → APP_ROWS: screen rows this app costs in the current l
   fi
   for c in "be-$app" "fe-$app"; do
     [ -n "${EXPANDED[$c]:-}" ] || continue
+    # shellcheck disable=SC2206  # SNAP_PIDS IS a space-separated pid list
     local -a pids=(${SNAP_PIDS[$c]:-})
     APP_ROWS=$(( APP_ROWS + ${#pids[@]} ))
   done
@@ -286,7 +287,11 @@ centre() { # $1 total width, $2 visible width of $3, $3 rendered text → R
 }
 
 rail_color() { # $1 app → RAILC
-  local app=$1 s1=${SNAP_STATE[be-$app]:-n/a} s2=${SNAP_STATE[fe-$app]:-n/a} st
+  # Two `local`s on purpose: a variable assigned earlier on the SAME local line
+  # is not in scope yet, so s1/s2 would have read the CALLER's $app — the exact
+  # trap already documented in lib/07-start.sh.
+  local app=$1
+  local s1=${SNAP_STATE[be-$app]:-n/a} s2=${SNAP_STATE[fe-$app]:-n/a} st
   RAILC=$C_FAINT
   for st in "$s1" "$s2"; do
     case "$st" in
@@ -571,6 +576,7 @@ _band_row() { # $1 rendered row, $2 its visible width, $3 terminal width → R
 # handful of pids — cheaper than forking `sort`, and it runs per open row only.
 _tree_sorted() { # $1 comp → TREE_SORTED array
   local c=$1 p i j n
+  # shellcheck disable=SC2206  # SNAP_PIDS IS a space-separated pid list
   TREE_SORTED=(${SNAP_PIDS[$c]:-})
   n=${#TREE_SORTED[@]}
   for ((i = 1; i < n; i++)); do

@@ -312,9 +312,11 @@ bar() { # $1 pct, $2 width → R
 hist_push() { # $1 comp, $2 mem bytes (may be ""), $3 cpu pct (may be "")
   local c=$1 m=${2:-0} p=${3:-0}
   local -a a
+  # shellcheck disable=SC2206  # split on spaces: the history IS a space-separated list
   a=(${HIST_MEM[$c]:-} "${m:-0}")
   [ ${#a[@]} -gt "$PITCREW_HISTORY" ] && a=("${a[@]: -$PITCREW_HISTORY}")
   HIST_MEM[$c]="${a[*]}"
+  # shellcheck disable=SC2206  # split on spaces: the history IS a space-separated list
   a=(${HIST_CPU[$c]:-} "${p:-0}")
   [ ${#a[@]} -gt "$PITCREW_HISTORY" ] && a=("${a[@]: -$PITCREW_HISTORY}")
   HIST_CPU[$c]="${a[*]}"
@@ -325,9 +327,11 @@ HIST_SYS_CPU=""
 HIST_SYS_MEM=""
 hist_push_sys() { # $1 cpu pct, $2 mem used kB
   local -a a
+  # shellcheck disable=SC2206  # split on spaces: the history IS a space-separated list
   a=(${HIST_SYS_CPU} "${1:-0}")
   [ ${#a[@]} -gt "$PITCREW_HISTORY" ] && a=("${a[@]: -$PITCREW_HISTORY}")
   HIST_SYS_CPU="${a[*]}"
+  # shellcheck disable=SC2206  # split on spaces: the history IS a space-separated list
   a=(${HIST_SYS_MEM} "${2:-0}")
   [ ${#a[@]} -gt "$PITCREW_HISTORY" ] && a=("${a[@]: -$PITCREW_HISTORY}")
   HIST_SYS_MEM="${a[*]}"
@@ -390,6 +394,7 @@ spark() { # $1 history, $2 width in cells, $3 scale floor, $4 colour, $5 scale m
   # run-in before the data starts is a faint baseline rather than blank space,
   # which makes the column read as a chart area instead of a gap.
   local hist=$1 w=$2 mx=${3:-1} fixed=${4:-} mode=${5:-abs}
+  # shellcheck disable=SC2206  # split on spaces: the history IS a space-separated list
   local -a s=($hist)
   local n=${#s[@]} need start i a b l r v from lvl mn=0 span=0
   if [ "$PITCREW_GRAPH" = braille ]; then need=$((w * 2)); else need=$w; fi

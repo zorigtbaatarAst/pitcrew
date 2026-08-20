@@ -193,6 +193,7 @@ cmd_ports() { # the whole port map across every registered project
   return 0
 }
 
+# shellcheck disable=SC2120  # callers pass nothing; the args are for `pitcrew ls`
 cmd_projects() {
   if [ "${1:-}" = --show ]; then
     [ -n "${2:-}" ] || die "usage: pitcrew projects --show <name>"

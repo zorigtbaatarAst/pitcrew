@@ -95,4 +95,21 @@ test_icons_are_off_unless_asked_for() {
 }
 
 trap 'rm -f "$PREF"' EXIT
+test_the_language_icon_is_guessed_from_the_start_command() {
+  # `*bun*` (the Bun runtime) also matches "bundle", so with the node line
+  # first every `bundle exec rails` app came out as a node app. shellcheck had
+  # been reporting the shadowing for a while; `make lint` was red for unrelated
+  # style noise, so nobody saw it.
+  PITCREW_ICONS=1 icons_load
+  app_icon_for "cd api && bundle exec rails s"; local ruby=$ICON
+  app_icon_for "pnpm dev";                      local node=$ICON
+  app_icon_for "npm run dev";                   local npm=$ICON
+  app_icon_for "./gradlew bootRun";             local java=$ICON
+
+  assert_eq "$ruby" "$I_RUBY" "bundler is ruby, not node"
+  assert_eq "$node" "$I_NODE" "pnpm still resolves (it was a dead pattern)"
+  assert_eq "$npm"  "$I_NODE" "and npm is unchanged"
+  assert_eq "$java" "$I_JAVA" "gradle still wins over everything"
+}
+
 run_tests

@@ -5,6 +5,7 @@ from __future__ import annotations
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from .dialogs import ConfigDialog, InitDialog, LimitsDialog
+from .logview import LogView
 from .model import (SERIES_COLORS, STATE_STYLE, UNKNOWN_STYLE, Series, empty_message,
                     group_of, human_bytes, plain)
 from .registry import current_project, declared_root, known_projects, project_file
@@ -31,7 +32,7 @@ class Window(Adw.ApplicationWindow):
         self._last_components: list[dict] = []
 
         self.set_title("pitcrew")
-        self.set_default_size(760, 620)
+        self.set_default_size(900, 680)
 
         self._stack = Adw.ViewStack()
         self._stack.add_titled_with_icon(
@@ -39,10 +40,16 @@ class Window(Adw.ApplicationWindow):
         self._stack.add_titled_with_icon(
             self._build_resources(), "resources", "Resources", "utilities-system-monitor-symbolic")
         self._stack.add_titled_with_icon(
+            self._build_logs(), "logs", "Logs", "text-x-generic-symbolic")
+        self._stack.add_titled_with_icon(
             self._build_projects(), "projects", "Projects", "folder-symbolic")
 
         header = Adw.HeaderBar()
-        header.set_title_widget(Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.WIDE))
+        # NARROW stacks the icon over the label, which is what makes four views
+        # fit: WIDE puts them side by side and truncated every title to "Comp…"
+        # the moment a fourth tab arrived.
+        header.set_title_widget(
+            Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.NARROW))
         header.pack_start(self._build_project_button())
         header.pack_end(self._build_menu_button())
 
@@ -141,6 +148,10 @@ class Window(Adw.ApplicationWindow):
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         scroller.set_child(box)
         return scroller
+
+    def _build_logs(self) -> Gtk.Widget:
+        self._logs = LogView(self._toast)
+        return self._logs
 
     def _build_projects(self) -> Gtk.Widget:
         self._projects_group = Adw.PreferencesGroup(
@@ -341,6 +352,7 @@ class Window(Adw.ApplicationWindow):
     def _restart_stream(self) -> None:
         if self._stream:
             self._stream.stop()
+        self._logs.stop()          # its file belongs to the project we are leaving
         self._series.clear()
         self._clear_lists()
 
@@ -382,6 +394,8 @@ class Window(Adw.ApplicationWindow):
                 series = self._series[name] = Series(name, colors[name], history)
             series.push(comp.get("cpu"), comp.get("rss"))
 
+        self._logs.update_sources(state.get("logDir"), [c["name"] for c in components],
+                                  state.get("errorPattern"))
         self._render_components(components, colors)
         self._render_deps(state.get("deps", []))
         self._render_graphs(components, history)
