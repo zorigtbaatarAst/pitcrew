@@ -305,6 +305,10 @@ class Stream:
         self._proc: Gio.Subprocess | None = None
         self._stderr_tail: list[str] = []
         self._stopping = False
+        # Cancelled on stop(), so a stream belonging to a project the user has
+        # already switched away from can never deliver one last frame into a
+        # window that has moved on.
+        self._cancel = Gio.Cancellable()
 
     def start(self) -> None:
         try:
@@ -321,21 +325,28 @@ class Stream:
 
     def stop(self) -> None:
         self._stopping = True
+        self._cancel.cancel()            # our side first, then the child's
         if self._proc:
+            # SIGKILL, so no half-dead bash lingers holding the pipe. Its `sleep`
+            # grandchild is orphaned but exits within one interval on its own,
+            # and we have already stopped reading from it.
             self._proc.force_exit()
 
     def _read(self, stream: Gio.DataInputStream, handler) -> None:
-        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, handler)
+        if self._stopping:
+            return
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, self._cancel, handler)
 
     def _on_line(self, stream: Gio.DataInputStream, result) -> None:
         raw = self._finish_line(stream, result)
-        if raw is None:
+        if raw is None:                  # EOF or cancelled; _on_exit explains why
             return
-        try:
-            self._on_state(json.loads(raw))
-        except json.JSONDecodeError as error:
-            # Never silently: a malformed frame means the contract broke.
-            self._on_error(f"malformed state from pitcrew: {error}")
+        if raw.strip():                  # a blank line is not a malformed frame
+            try:
+                self._on_state(json.loads(raw))
+            except json.JSONDecodeError as error:
+                # Never silently: a malformed frame means the contract broke.
+                self._on_error(f"malformed state from pitcrew: {error}")
         self._read(stream, self._on_line)
 
     def _on_stderr(self, stream: Gio.DataInputStream, result) -> None:
@@ -347,18 +358,29 @@ class Stream:
         self._read(stream, self._on_stderr)
 
     def _finish_line(self, stream: Gio.DataInputStream, result) -> str | None:
+        """One line, or None at end-of-stream.
+
+        GIO reports EOF as a NULL *or empty* line — in PyGObject it is `b""`,
+        never None — and an async read on a pipe that has hit EOF completes
+        IMMEDIATELY, every time. Re-arming on that spins the main loop at
+        G_PRIORITY_DEFAULT (0), which outranks GTK's redraw (G_PRIORITY_HIGH_IDLE
+        + 20 = 120), so the window stops painting and the process pegs a core.
+        That is what "switching project freezes the GUI" was: stop() killed the
+        child, and the dead stream then starved the compositor.
+        """
         try:
-            data, _ = stream.read_line_finish(result)
+            data, length = stream.read_line_finish(result)
         except GLib.Error as error:
-            if not self._stopping:
+            if not self._stopping and not error.matches(
+                    Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
                 self._on_error(f"stream read failed: {error.message}")
             return None
-        if data is None:                      # EOF; _on_exit explains why
+        if data is None or length == 0:
             return None
         return data.decode("utf-8", "replace")
 
     def _on_exit(self, proc: Gio.Subprocess, result) -> None:
-        if self._stopping:
+        if self._stopping:               # we killed it; that is not a failure
             return
         try:
             proc.wait_check_finish(result)
