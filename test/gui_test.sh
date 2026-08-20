@@ -99,4 +99,95 @@ print(len(frames), 'quiet' if s.reads - after < 20 else f'SPUN({s.reads - after}
   assert_eq "$out" "0 quiet 0" "silent after stop, and cancelling is not an error"
 }
 
+# ── settings and grouping ───────────────────────────────────────────────────
+
+_settings_drive() { # $1 = python body, with Settings/SETTINGS_BY_KEY/group_of in scope
+  /usr/bin/python3 -c "
+import importlib.machinery, importlib.util, os, pathlib, sys
+import gi
+gi.require_version('Gtk', '4.0')
+spec = importlib.util.spec_from_loader(
+    'pgui', importlib.machinery.SourceFileLoader('pgui', '$GUI'))
+pgui = importlib.util.module_from_spec(spec); spec.loader.exec_module(pgui)
+Settings, SETTINGS, SETTINGS_BY_KEY = pgui.Settings, pgui.SETTINGS, pgui.SETTINGS_BY_KEY
+group_of = pgui.group_of
+$1
+" 2>/dev/null
+}
+
+test_settings_round_trip_through_the_house_file_format() {
+  gui_available || return 0
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_settings_drive "
+path = pathlib.Path('$dir/gui')
+s = Settings(path)
+s['group'] = 'role'; s['interval'] = 9
+print(s.save())
+print(path.read_text().strip().replace(chr(10), ' '))
+print(Settings(path)['group'], Settings(path)['interval'])
+")
+  rm -rf "$dir"
+  local saved; saved=$(printf '%s' "$out" | sed -n 2p)
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "save reports success"
+  assert_match "$saved" 'group=role' "written as key=value, like render"
+  assert_match "$saved" 'interval=9' "every key is rewritten, not just the changed one"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "role 9" "and reads back"
+}
+
+test_a_hand_edited_setting_falls_back_instead_of_crashing() {
+  gui_available || return 0
+  # Same contract as render_resolve: the file is written by us, so an unknown
+  # value means a hand edit or a newer version — use the default, do not die.
+  local dir; dir=$(mktemp -d)
+  printf 'group=sideways\ninterval=nine\nhistory=99999\nbogus=1\n' > "$dir/gui"
+  local out; out=$(_settings_drive "
+s = Settings(pathlib.Path('$dir/gui'))
+print(s['group'], s['interval'], s['history'])
+")
+  rm -rf "$dir"
+  assert_eq "$out" "app 2 120" "every unusable value falls back to its default"
+}
+
+test_env_overrides_the_saved_file() {
+  gui_available || return 0
+  local dir; dir=$(mktemp -d)
+  printf 'group=flat\n' > "$dir/gui"
+  local out; out=$(PITCREW_GUI_GROUP=role _settings_drive "
+print(Settings(pathlib.Path('$dir/gui'))['group'])
+")
+  rm -rf "$dir"
+  assert_eq "$out" "role" "PITCREW_GUI_* beats the file, like PITCREW_GRAPH does"
+}
+
+test_grouping_uses_the_stream_fields_not_the_component_name() {
+  gui_available || return 0
+  # A component is `<role>-<app>`, but the JSON carries app and role already —
+  # parsing the name would break on any app whose name contains a dash.
+  local out; out=$(_settings_drive "
+comp = {'name': 'be-my-app', 'app': 'my-app', 'role': 'be'}
+fe = {'name': 'fe-my-app', 'app': 'my-app', 'role': 'fe'}
+print(group_of(comp, 'app')[1], group_of(fe, 'app')[1])
+print(group_of(comp, 'role')[1], group_of(fe, 'role')[1])
+print(group_of(comp, 'flat')[1])
+print('be-first' if group_of(comp, 'role')[0] < group_of(fe, 'role')[0] else 'wrong-order')
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "my-app my-app" "by app: both roles land together"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "Backends Frontends" "by role: split"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "Components" "flat: one heading"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "be-first" "backends sort before frontends"
+}
+
+test_an_empty_component_list_always_explains_itself() {
+  gui_available || return 0
+  # A filter that hides everything must not look like a broken app.
+  local out; out=$(_settings_drive "
+print(pgui.empty_message(0))
+print(pgui.empty_message(1).replace(chr(10), ' '))
+print(pgui.empty_message(12).replace(chr(10), ' '))
+")
+  assert_match "$(printf '%s' "$out" | sed -n 1p)" 'no components configured' "nothing to show at all"
+  assert_match "$(printf '%s' "$out" | sed -n 2p)" '1 stopped component hidden' "singular"
+  assert_match "$(printf '%s' "$out" | sed -n 3p)" '12 stopped components hidden' "plural, and says why"
+}
+
 run_tests

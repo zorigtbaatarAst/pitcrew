@@ -463,11 +463,32 @@ GUI is a renderer plus start/stop/restart buttons.
 
 - picks up whichever project `pitcrew use` selected; switch from the header, or
   pin one with `pitcrew-gui -p <name>`
-- `-i N` sets the sample interval (default 2s)
-- only *running* components get a line in the graphs — a dozen flat zeroes for
-  stopped services hides the two you care about
+- components are **grouped by app** by default, so a backend and its frontend
+  sit together under one heading with a `2/2 up · 1.6 GiB` rollup
 - errors surface in a banner with a Retry, never as a window quietly showing
-  stale numbers
+  stale numbers — and a list filtered down to nothing says why it is empty
+
+### Preferences
+
+Editable in-app (**Ctrl+,**) and stored in `~/.config/pitcrew/gui`, in the same
+`key=value` shape as `render` — plain text you can cat, diff and edit over ssh.
+A value this version does not recognise falls back to its default rather than
+crashing, exactly like `render_resolve`.
+
+| key | values | default | |
+|-----|--------|---------|--|
+| `group` | `app` · `role` · `flat` | `app` | how the component list is grouped |
+| `interval` | 1–60 | `2` | seconds between samples |
+| `history` | 30–600 | `120` | samples kept per graph line |
+| `stopped` | `show` · `hide` | `show` | whether stopped components are listed |
+| `plot` | `running` · `all` | `running` | which components get a graph line |
+
+Every one is also a flag for a single run — `pitcrew-gui --group role --interval 5`
+— and an env var, `PITCREW_GUI_GROUP=flat`, which beats the file the same way
+`PITCREW_GRAPH` beats `render`. Unlike the file, a bad **flag** is rejected with
+a message instead of silently falling back: a command line is an explicit
+instruction, and guessing at a typo there is how you end up debugging the wrong
+setting.
 
 It needs the GTK bindings for the **system** python:
 

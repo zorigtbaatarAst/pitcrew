@@ -31,8 +31,6 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 APP_ID = "mn.zb.PitcrewGui"
-HISTORY = 120                     # samples kept per series (~4 min at 2s)
-DEFAULT_INTERVAL = 2
 
 # GNOME palette. Fixed hexes rather than theme colours: a series has to keep the
 # same identity between its line and its legend dot, and stay distinguishable
@@ -119,15 +117,114 @@ def find_pitcrew() -> str | None:
     return None
 
 
+class Setting:
+    """One preference: its choices, its default, and how to read it back.
+
+    `choices` is a list for a pick-one setting, or an (lo, hi) tuple for a
+    number. Either way `coerce` returns the default for anything it does not
+    recognise — see `Settings.load`.
+    """
+
+    def __init__(self, key: str, default, choices, blurb: str):
+        self.key = key
+        self.default = default
+        self.choices = choices
+        self.blurb = blurb
+
+    @property
+    def numeric(self) -> bool:
+        return isinstance(self.choices, tuple)
+
+    def coerce(self, raw):
+        if raw is None:
+            return self.default
+        if not self.numeric:
+            return raw if raw in self.choices else self.default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return self.default
+        lo, hi = self.choices
+        return value if lo <= value <= hi else self.default
+
+
+SETTINGS = (
+    Setting("group", "app", ["app", "role", "flat"],
+            "How the component list is grouped"),
+    Setting("interval", 2, (1, 60),
+            "Seconds between samples"),
+    Setting("history", 120, (30, 600),
+            "Samples kept per graph line"),
+    Setting("stopped", "show", ["show", "hide"],
+            "Whether stopped components are listed"),
+    Setting("plot", "running", ["running", "all"],
+            "Which components get a line in the graphs"),
+)
+SETTINGS_BY_KEY = {setting.key: setting for setting in SETTINGS}
+
+
+class Settings(dict):
+    """`~/.config/pitcrew/gui`, in the same key=value shape as `render`.
+
+    Deliberately the house format rather than GSettings: pitcrew already keeps
+    `render`, `theme` and `current` here as plain text you can cat, diff and
+    edit over ssh, and a schema that has to be compiled and installed would be
+    the one part of this tool you could not just symlink into place.
+
+    A value the running version does not recognise falls back to the default —
+    the file is written by us, so an unknown value means it was hand-edited or
+    written by a newer version, and neither is worth crashing over.
+    """
+
+    def __init__(self, path: Path | None = None):
+        super().__init__((setting.key, setting.default) for setting in SETTINGS)
+        self.path = path or (pitcrew_home() / "gui")
+        self.load()
+
+    def load(self) -> None:
+        raw: dict[str, str] = {}
+        try:
+            for line in self.path.read_text(encoding="utf-8").splitlines():
+                key, sep, value = line.partition("=")
+                if sep:
+                    raw[key.strip()] = value.strip()
+        except OSError:
+            pass                      # no file yet, or unreadable: all defaults
+        for setting in SETTINGS:
+            # An env var wins over the file, matching how PITCREW_GRAPH and
+            # friends override `render`.
+            override = os.environ.get(f"PITCREW_GUI_{setting.key.upper()}")
+            self[setting.key] = setting.coerce(override or raw.get(setting.key))
+
+    def save(self) -> bool:
+        """Rewrite the whole file. Returns False if it could not be written."""
+        body = "".join(f"{setting.key}={self[setting.key]}\n" for setting in SETTINGS)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(body, encoding="utf-8")
+        except OSError:
+            return False              # read-only home; the session still works
+        return True
+
+
 class Series:
     """One component's rolling history."""
 
-    def __init__(self, name: str, color: str):
+    def __init__(self, name: str, color: str, size: int):
         self.name = name
         self.color = color
         self.rgb = rgb(color)
-        self.cpu: deque[float] = deque(maxlen=HISTORY)
-        self.rss: deque[float] = deque(maxlen=HISTORY)
+        self.size = size
+        self.cpu: deque[float] = deque(maxlen=size)
+        self.rss: deque[float] = deque(maxlen=size)
+
+    def resize(self, size: int) -> None:
+        """Change the window without losing what we already have."""
+        if size == self.size:
+            return
+        self.size = size
+        self.cpu = deque(self.cpu, maxlen=size)
+        self.rss = deque(self.rss, maxlen=size)
 
     def push(self, cpu: float | None, rss: float | None) -> None:
         # cpu is null until the stream has a baseline; carry the last known
@@ -171,12 +268,14 @@ class Graph(Gtk.DrawingArea):
         self._floor = floor          # smallest sensible axis ceiling
         self._fmt = fmt
         self._series: list[Series] = []
+        self._history = SETTINGS_BY_KEY["history"].default
         self.set_content_height(180)
         self.set_hexpand(True)
         self.set_draw_func(self._draw)
 
-    def set_series(self, series: list[Series]) -> None:
+    def set_series(self, series: list[Series], history: int) -> None:
         self._series = series
+        self._history = max(2, history)
         self.queue_draw()
 
     def _draw(self, _area, cr, width, height) -> None:
@@ -216,7 +315,7 @@ class Graph(Gtk.DrawingArea):
             # The history is right-anchored: a series that just appeared draws
             # from the right edge inward rather than stretching across the whole
             # window and implying data it does not have.
-            step = plot_w / (HISTORY - 1)
+            step = plot_w / (self._history - 1)
             start_x = pad_left + plot_w - step * (len(points) - 1)
             cr.set_source_rgb(*series.rgb)
             cr.set_line_width(2)
@@ -391,16 +490,47 @@ class Stream:
         self._on_error("pitcrew stopped unexpectedly")
 
 
+def empty_message(total: int) -> str:
+    """Why the component list is empty — never leave it blank and ambiguous."""
+    if not total:
+        return "This project has no components configured."
+    plural = "s" if total != 1 else ""
+    return (f"Nothing is running.\n{total} stopped component{plural} "
+            f"hidden by “Show stopped components”.")
+
+
+def group_of(comp: dict, mode: str) -> tuple[str, str]:
+    """(sort key, heading) for a component under the chosen grouping.
+
+    pitcrew's unit is `<role>-<app>` and the stream already carries `app` and
+    `role` separately, so this never has to parse a component name.
+    """
+    if mode == "app":
+        app = comp.get("app") or comp["name"]
+        return app, app
+    if mode == "role":
+        role = comp.get("role")
+        # Sorted so backends lead, which is the order they start in.
+        return {"be": "0", "fe": "1"}.get(role, "2"), \
+            {"be": "Backends", "fe": "Frontends"}.get(role, "Other")
+    return "", "Components"
+
+
 class Window(Adw.ApplicationWindow):
-    def __init__(self, pitcrew: str, project: str | None, interval: int, **kwargs):
+    def __init__(self, pitcrew: str, project: str | None, settings: Settings, **kwargs):
         super().__init__(**kwargs)
         self._pitcrew = pitcrew
         self._project = project
-        self._interval = interval
+        self._settings = settings
         self._stream: Stream | None = None
         self._series: dict[str, Series] = {}
         self._rows: dict[str, ComponentRow] = {}
         self._dep_rows: dict[str, Adw.ActionRow] = {}
+        self._groups: list[Adw.PreferencesGroup] = []
+        self._group_widgets: dict[str, Adw.PreferencesGroup] = {}
+        # Rebuilding the list is only correct-and-cheap because it happens when
+        # the SHAPE changes, not every frame. This is that shape.
+        self._layout_key: tuple | None = None
 
         self.set_title("pitcrew")
         self.set_default_size(760, 620)
@@ -414,6 +544,7 @@ class Window(Adw.ApplicationWindow):
         header = Adw.HeaderBar()
         header.set_title_widget(Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.WIDE))
         header.pack_start(self._build_project_button())
+        header.pack_end(self._build_menu_button())
 
         self._banner = Adw.Banner(revealed=False)
         self._banner.set_button_label("Retry")
@@ -455,13 +586,32 @@ class Window(Adw.ApplicationWindow):
         self.add_action(action)
         return self._project_button
 
+    def _build_menu_button(self) -> Gtk.Widget:
+        menu = Gio.Menu()
+        menu.append("Preferences", "win.preferences")
+        action = Gio.SimpleAction.new("preferences", None)
+        action.connect("activate", lambda *_: self._show_preferences())
+        self.add_action(action)
+        app = self.get_application()
+        if app is not None:
+            app.set_accels_for_action("win.preferences", ["<Primary>comma"])
+        return Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
+                              tooltip_text="Main menu")
+
     def _build_components(self) -> Gtk.Widget:
-        self._comp_group = Adw.PreferencesGroup(title="Components")
+        self._comp_page = Adw.PreferencesPage()
+        # A filter that hides everything must say so. Without this, turning off
+        # "show stopped" on a stack that is entirely down looks identical to the
+        # app being broken.
+        self._empty_label = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER,
+                                      margin_top=24, margin_bottom=24)
+        self._empty_label.add_css_class("dim-label")
+        self._empty_group = Adw.PreferencesGroup(visible=False)
+        self._empty_group.add(self._empty_label)
         self._dep_group = Adw.PreferencesGroup(title="Dependencies")
-        page = Adw.PreferencesPage()
-        page.add(self._comp_group)
-        page.add(self._dep_group)
-        return page
+        self._comp_page.add(self._empty_group)
+        self._comp_page.add(self._dep_group)
+        return self._comp_page
 
     def _build_resources(self) -> Gtk.Widget:
         self._cpu_graph = Graph("cpu", floor=100, fmt=lambda v: f"{v:.0f}%")
@@ -485,24 +635,98 @@ class Window(Adw.ApplicationWindow):
         scroller.set_child(box)
         return scroller
 
+    # ── preferences ─────────────────────────────────────────────────────────
+    def _show_preferences(self) -> None:
+        dialog = Adw.PreferencesDialog(title="Preferences")
+        page = Adw.PreferencesPage()
+
+        listing = Adw.PreferencesGroup(
+            title="Component list", description="How the Components view is laid out")
+        listing.add(self._choice_row(
+            "group", "Group by", ["app", "role", "flat"],
+            ["App (backend + frontend together)", "Role (backends, then frontends)",
+             "Nothing — one flat list"]))
+        listing.add(self._switch_row(
+            "stopped", "Show stopped components", "hide", "show",
+            "Off lists only what is running, starting, or external"))
+        page.add(listing)
+
+        sampling = Adw.PreferencesGroup(
+            title="Sampling", description="Changing these restarts the stream")
+        sampling.add(self._spin_row("interval", "Interval", "Seconds between samples"))
+        sampling.add(self._spin_row("history", "Graph history", "Samples kept per line"))
+        sampling.add(self._choice_row(
+            "plot", "Plot", ["running", "all"],
+            ["Only running components", "Every component"]))
+        page.add(sampling)
+
+        dialog.add(page)
+        dialog.present(self)
+
+    def _choice_row(self, key: str, title: str, values: list[str], labels: list[str]) -> Adw.ComboRow:
+        row = Adw.ComboRow(title=title, model=Gtk.StringList.new(labels))
+        row.set_selected(values.index(self._settings[key]))
+        row.connect("notify::selected",
+                    lambda r, _p: self._apply(key, values[r.get_selected()]))
+        return row
+
+    def _switch_row(self, key: str, title: str, off: str, on: str, subtitle: str) -> Adw.SwitchRow:
+        row = Adw.SwitchRow(title=title, subtitle=subtitle)
+        row.set_active(self._settings[key] == on)
+        row.connect("notify::active",
+                    lambda r, _p: self._apply(key, on if r.get_active() else off))
+        return row
+
+    def _spin_row(self, key: str, title: str, subtitle: str) -> Adw.SpinRow:
+        lo, hi = SETTINGS_BY_KEY[key].choices
+        row = Adw.SpinRow.new_with_range(lo, hi, 1)
+        row.set_title(title)
+        row.set_subtitle(subtitle)
+        row.set_value(self._settings[key])
+        row.connect("notify::value", lambda r, _p: self._apply(key, int(r.get_value())))
+        return row
+
+    def _apply(self, key: str, value) -> None:
+        """Take a preference, persist it, and make it true on screen right now."""
+        if self._settings.get(key) == value:
+            return
+        self._settings[key] = value
+        if not self._settings.save():
+            self._toast(f"Could not write {self._settings.path} — this session only")
+
+        if key == "interval":
+            self._restart_stream()        # the interval is an argv of the child
+            return
+        if key == "history":
+            for series in self._series.values():
+                series.resize(value)
+            return
+        if key in ("group", "stopped"):
+            self._layout_key = None       # force the next frame to rebuild
+
     # ── stream lifecycle ────────────────────────────────────────────────────
+    def _clear_lists(self) -> None:
+        for group in self._groups:
+            self._comp_page.remove(group)
+        self._groups.clear()
+        self._rows.clear()
+        self._layout_key = None
+        for row in list(self._dep_rows.values()):
+            self._dep_group.remove(row)
+        self._dep_rows.clear()
+
     def _restart_stream(self) -> None:
         if self._stream:
             self._stream.stop()
         self._series.clear()
-        for row in list(self._rows.values()):
-            self._comp_group.remove(row)
-        self._rows.clear()
-        for row in list(self._dep_rows.values()):
-            self._dep_group.remove(row)
-        self._dep_rows.clear()
+        self._clear_lists()
 
         if not self._project:
             self._fail("No project selected — run `pitcrew init <dir>` or `pitcrew use <name>`.")
             return
         self._banner.set_revealed(False)
-        self._stream = Stream(
-            self._pitcrew, self._project, self._interval, self._on_state, self._fail)
+        self._stream = Stream(self._pitcrew, self._project, self._settings["interval"],
+                              self._on_state, self._fail)
         self._stream.start()
 
     def _on_project_chosen(self, action: Gio.SimpleAction, target: GLib.Variant) -> None:
@@ -522,23 +746,94 @@ class Window(Adw.ApplicationWindow):
     def _on_state(self, state: dict) -> None:
         self._banner.set_revealed(False)
         components = state.get("components", [])
+        colors = {c["name"]: SERIES_COLORS[i % len(SERIES_COLORS)]
+                  for i, c in enumerate(components)}
+        history = self._settings["history"]
 
-        for index, comp in enumerate(components):
+        for comp in components:
             name = comp["name"]
-            color = SERIES_COLORS[index % len(SERIES_COLORS)]
             series = self._series.get(name)
             if series is None:
-                series = self._series[name] = Series(name, color)
+                series = self._series[name] = Series(name, colors[name], history)
             series.push(comp.get("cpu"), comp.get("rss"))
 
-            row = self._rows.get(name)
-            if row is None:
-                row = ComponentRow(name, color, self._run_action)
-                self._comp_group.add(row)
-                self._rows[name] = row
-            row.update(comp)
+        self._render_components(components, colors)
+        self._render_deps(state.get("deps", []))
+        self._render_graphs(components, history)
 
-        for dep in state.get("deps", []):
+        summary = state.get("summary", {})
+        counts = [f"{summary[k]} {k}" for k in ("up", "starting", "crashed", "down") if summary.get(k)]
+        self.set_title(f"{state.get('project') or 'pitcrew'} — {' · '.join(counts)}")
+
+    def _render_components(self, components: list[dict], colors: dict[str, str]) -> None:
+        mode = self._settings["group"]
+        total = len(components)
+        if self._settings["stopped"] == "hide":
+            components = [c for c in components
+                          if c.get("state") in ("up", "starting", "external", "crashed")]
+
+        buckets: dict[tuple[str, str], list[dict]] = {}
+        for comp in components:
+            buckets.setdefault(group_of(comp, mode), []).append(comp)
+        ordered = sorted(buckets.items())
+        self._show_empty_state(len(components), total)
+
+        # Rebuild only when the shape changed — a new project, a settings change,
+        # or a component appearing. Otherwise every frame would throw away and
+        # recreate every widget, losing scroll position and focus twice a second.
+        layout_key = (mode, tuple((heading, tuple(c["name"] for c in comps))
+                                  for (_sort, heading), comps in ordered))
+        if layout_key != self._layout_key:
+            self._rebuild_components(ordered, colors)
+            self._layout_key = layout_key
+
+        for (_sort, heading), comps in ordered:
+            for comp in comps:
+                self._rows[comp["name"]].update(comp)
+            group = self._group_widgets.get(heading)
+            if group is not None:
+                group.set_description(self._group_summary(comps))
+
+    def _rebuild_components(self, ordered, colors: dict[str, str]) -> None:
+        for group in self._groups:
+            self._comp_page.remove(group)
+        self._groups.clear()
+        self._rows.clear()
+        self._group_widgets.clear()
+
+        # Lift the dependencies group out once, then put it back last, so it
+        # stays pinned below the components however many groups there are.
+        # AdwPreferencesPage only appends, so ordering means re-adding.
+        self._comp_page.remove(self._dep_group)
+        for (_sort, heading), comps in ordered:
+            group = Adw.PreferencesGroup(title=heading)
+            for comp in comps:
+                row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action)
+                group.add(row)
+                self._rows[comp["name"]] = row
+            self._comp_page.add(group)
+            self._groups.append(group)
+            self._group_widgets[heading] = group
+        self._comp_page.add(self._dep_group)
+
+    def _show_empty_state(self, shown: int, total: int) -> None:
+        if shown:
+            self._empty_group.set_visible(False)
+            return
+        self._empty_label.set_text(empty_message(total))
+        self._empty_group.set_visible(True)
+
+    @staticmethod
+    def _group_summary(comps: list[dict]) -> str:
+        up = sum(1 for c in comps if c.get("state") == "up")
+        rss = sum(c.get("rss") or 0 for c in comps)
+        parts = [f"{up}/{len(comps)} up"]
+        if rss:
+            parts.append(human_bytes(rss))
+        return "  ·  ".join(parts)
+
+    def _render_deps(self, deps: list[dict]) -> None:
+        for dep in deps:
             row = self._dep_rows.get(dep["name"])
             if row is None:
                 row = Adw.ActionRow(title=dep["name"])
@@ -548,17 +843,17 @@ class Window(Adw.ApplicationWindow):
             row.set_subtitle(dep["state"])
         self._dep_group.set_visible(bool(self._dep_rows))
 
-        # Only what is actually running earns a line — a dozen flat zeroes for
-        # stopped services is noise that hides the two you care about.
-        live = {c["name"] for c in components if c.get("state") in ("up", "starting", "external")}
-        plotted = [s for name, s in self._series.items() if name in live]
-        self._cpu_graph.set_series(plotted)
-        self._rss_graph.set_series(plotted)
+    def _render_graphs(self, components: list[dict], history: int) -> None:
+        if self._settings["plot"] == "all":
+            wanted = {c["name"] for c in components}
+        else:
+            # A dozen flat zeroes for stopped services hides the two you care about.
+            wanted = {c["name"] for c in components
+                      if c.get("state") in ("up", "starting", "external")}
+        plotted = [s for name, s in self._series.items() if name in wanted]
+        self._cpu_graph.set_series(plotted, history)
+        self._rss_graph.set_series(plotted, history)
         self._rebuild_legend(plotted)
-
-        summary = state.get("summary", {})
-        counts = [f"{summary[k]} {k}" for k in ("up", "starting", "crashed", "down") if summary.get(k)]
-        self.set_title(f"{state.get('project') or 'pitcrew'} — {' · '.join(counts)}")
 
     def _rebuild_legend(self, series: list[Series]) -> None:
         child = self._legend.get_first_child()
@@ -594,55 +889,91 @@ class Window(Adw.ApplicationWindow):
         if proc.get_successful():
             self._toast(f"{component} {verb}ed")
             return
-        self._toast(f"{verb} {component} failed: {(stderr or '').strip().splitlines()[-1:] or ['see logs']}"[:200])
+        last = (stderr or "").strip().splitlines()
+        self._toast(f"{verb} {component} failed: {last[-1] if last else 'see logs'}"[:200])
 
     def _toast(self, message: str) -> None:
         self._toasts.add_toast(Adw.Toast.new(message))
 
 
 class Application(Adw.Application):
-    def __init__(self, pitcrew: str, project: str | None, interval: int):
+    def __init__(self, pitcrew: str, project: str | None, settings: Settings):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
         self._pitcrew = pitcrew
         self._project = project
-        self._interval = interval
+        self._settings = settings
 
     def do_activate(self) -> None:
         window = self.props.active_window
         if window is None:
-            window = Window(self._pitcrew, self._project, self._interval, application=self)
+            window = Window(self._pitcrew, self._project, self._settings, application=self)
         window.present()
 
 
+USAGE = """usage: pitcrew-gui [-p NAME] [OPTION...]
+
+  -p, --project NAME   project to watch (default: whatever `pitcrew use` selected)
+  -i, --interval N     alias for --interval
+  -h, --help           this
+
+Preferences live in ~/.config/pitcrew/gui and are editable in-app (Ctrl+,).
+Any of them can be overridden for one run:
+"""
+
+
 def main(argv: list[str]) -> int:
+    settings = Settings()
     project = current_project()
-    interval = DEFAULT_INTERVAL
+
+    # Every preference is also a flag, so a launcher or a one-off can pin one
+    # without touching the saved file — the same deal `pitcrew render` offers.
+    overrides: dict[str, object] = {}
     args = argv[1:]
     while args:
         arg = args.pop(0)
+        if arg in ("-h", "--help"):
+            print(USAGE)
+            for setting in SETTINGS:
+                allowed = (f"{setting.choices[0]}-{setting.choices[1]}"
+                           if setting.numeric else "|".join(setting.choices))
+                print(f"  --{setting.key:<10} {allowed:<28} {setting.blurb}"
+                      f" (default: {setting.default})")
+            return 0
         if arg in ("-p", "--project"):
             if not args:
                 print("--project needs a name", file=sys.stderr)
                 return 2
             project = args.pop(0)
-        elif arg in ("-i", "--interval"):
-            if not args or not args[0].isdigit() or int(args[0]) < 1:
-                print("--interval needs whole seconds, at least 1", file=sys.stderr)
+            continue
+        # -i is the one short alias kept, because it shipped documented.
+        key = {"-i": "interval"}.get(arg) or (arg[2:] if arg.startswith("--") else None)
+        if key in SETTINGS_BY_KEY:
+            if not args:
+                print(f"--{key} needs a value", file=sys.stderr)
                 return 2
-            interval = int(args.pop(0))
-        elif arg in ("-h", "--help"):
-            print("usage: pitcrew-gui [-p NAME] [-i SECONDS]")
-            return 0
-        else:
-            print(f"unknown argument: {arg}", file=sys.stderr)
-            return 2
+            raw, setting = args.pop(0), SETTINGS_BY_KEY[key]
+            value = setting.coerce(raw)
+            # A flag is an explicit instruction. Silently substituting the
+            # default for a typo is exactly the "errors pass quietly" failure
+            # the settings FILE is allowed to have and a command line is not.
+            if str(value) != str(raw):
+                allowed = (f"{setting.choices[0]}-{setting.choices[1]}"
+                           if setting.numeric else ", ".join(setting.choices))
+                print(f"--{key}: {raw!r} is not valid (expected {allowed})", file=sys.stderr)
+                return 2
+            overrides[key] = value
+            continue
+        print(f"unknown argument: {arg}", file=sys.stderr)
+        return 2
+
+    settings.update(overrides)
 
     pitcrew = find_pitcrew()
     if not pitcrew:
         # Fail loudly here rather than opening a window that can never populate.
         print("pitcrew not found on $PATH or in ~/.local/bin", file=sys.stderr)
         return 1
-    return Application(pitcrew, project, interval).run([argv[0]])
+    return Application(pitcrew, project, settings).run([argv[0]])
 
 
 if __name__ == "__main__":
