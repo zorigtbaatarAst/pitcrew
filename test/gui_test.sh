@@ -21,8 +21,18 @@ GUI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/gui"
 # The GTK bindings live in the system python, which is what the app shebangs
 # into — not whatever `python3` resolves to on $PATH (a Homebrew or pyenv
 # python has no `gi`). No bindings, no GUI, nothing to test: skip, don't fail.
+# The interpreter with the bindings is not the same one on every OS — that is
+# the whole reason the app re-execs instead of pinning a shebang, and a test
+# file that hardcodes /usr/bin/python3 would silently SKIP everything on macOS
+# and report a green run for a GUI nobody checked.
+PY_WITH_GI=""
+for _candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 python3; do
+  command -v "$_candidate" >/dev/null 2>&1 || continue
+  if "$_candidate" -c 'import gi, cairo' >/dev/null 2>&1; then PY_WITH_GI=$_candidate; break; fi
+done
+
 gui_available() {
-  [ -d "$GUI_DIR/pitcrewgui" ] && /usr/bin/python3 -c 'import gi, cairo' >/dev/null 2>&1
+  [ -d "$GUI_DIR/pitcrewgui" ] && [ -n "$PY_WITH_GI" ]
 }
 
 # The GUI is a package now, so the whole public surface is assembled into one
@@ -39,7 +49,7 @@ for _name in ('platform', 'model', 'registry', 'settings', 'runner', 'widgets',
 "
 
 _drive() { # $1 = python body, with Stream / Counting / GLib in scope
-  /usr/bin/python3 -c "
+  "$PY_WITH_GI" -c "
 import sys
 import gi
 gi.require_version('Gtk', '4.0')
@@ -113,7 +123,7 @@ print(len(frames), 'quiet' if s.reads - after < 20 else f'SPUN({s.reads - after}
 # ── settings and grouping ───────────────────────────────────────────────────
 
 _settings_drive() { # $1 = python body, with Settings/SETTINGS_BY_KEY/group_of in scope
-  /usr/bin/python3 -c "
+  "$PY_WITH_GI" -c "
 import os, pathlib, sys
 import gi
 gi.require_version('Gtk', '4.0')

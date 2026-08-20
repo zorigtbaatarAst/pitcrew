@@ -76,11 +76,33 @@ flags — so a stock macOS has what it needs after the bash upgrade.
 
 ```bash
 git clone https://github.com/<you>/pitcrew ~/.local/share/pitcrew
-~/.local/share/pitcrew/install.sh
+cd ~/.local/share/pitcrew
+./setup.sh            # or: ./setup.sh --yes   to let it install packages
 ```
 
-`install.sh` symlinks `bin/pitcrew` onto your `$PATH` (default
-`~/.local/bin`). Or just symlink it yourself:
+`setup.sh` takes a fresh clone to a working tool on any OS, and is safe to
+re-run after a pull:
+
+1. **dependencies** — reports what this OS needs (`--yes` installs them)
+2. **the command** — symlinks `bin/pitcrew` onto your `$PATH`
+3. **the desktop app** — `.desktop` on Linux, `.app` on macOS; skipped cleanly
+   if the GTK bindings are not there yet
+4. **next** — checks `$PATH`, and tells you the one thing it cannot guess:
+   which checkout you meant
+
+It installs nothing privileged unless you pass `--yes`. `--no-gui` gets you the
+command line only. `make setup` / `make setup YES=1` do the same.
+
+Then point it at something:
+
+```bash
+pitcrew init ~/path/to/your/project   # look at it, write a config
+pitcrew doctor                        # sanity-check what it guessed
+pitcrew                               # the dashboard
+```
+
+If you would rather do it by hand, `install.sh` alone is the whole command-line
+install — it just symlinks `bin/pitcrew` (default `~/.local/bin`):
 
 ```bash
 ln -s "$(pwd)/pitcrew/bin/pitcrew" ~/.local/bin/pitcrew
