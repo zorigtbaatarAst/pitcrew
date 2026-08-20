@@ -468,6 +468,29 @@ GUI is a renderer plus start/stop/restart buttons.
 - errors surface in a banner with a Retry, never as a window quietly showing
   stale numbers — and a list filtered down to nothing says why it is empty
 
+### Projects
+
+A third view manages the registry itself, so a new machine never needs the CLI
+to get started:
+
+- **Add project** runs `pitcrew init` against a folder you pick — same detection,
+  same generated config, and its report shown verbatim. The GUI does not have a
+  second opinion about what is in your repo.
+- **Edit config** opens the project's config in the app. It follows the
+  indirection: a registry entry for a repo that ships its own
+  `pitcrew.config.sh` only sets `PITCREW_ROOT` and sources it, so the editor
+  opens the file in the repo, not the stub that points at it.
+- **Watch** makes a project current; **Forget** drops it from the registry after
+  a confirmation, leaving the checkout alone.
+
+The config is edited **as bash**, not as a form. A pitcrew config is a sourced
+shell script — the autoland one builds its apps from a `for` loop over a
+`declare -A` of ports — and a structured editor that could not round-trip that
+would quietly drop it. Instead the editor refuses to save anything `bash -n`
+rejects (a config that will not parse breaks every pitcrew command for that
+project, including the one that would tell you why), and **Check** runs
+`pitcrew doctor` against it.
+
 ### Preferences
 
 Editable in-app (**Ctrl+,**) and stored in `~/.config/pitcrew/gui`, in the same

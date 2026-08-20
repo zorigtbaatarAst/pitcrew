@@ -190,4 +190,67 @@ print(pgui.empty_message(12).replace(chr(10), ' '))
   assert_match "$(printf '%s' "$out" | sed -n 3p)" '12 stopped components hidden' "plural, and says why"
 }
 
+# ── project registry and config editing ─────────────────────────────────────
+
+test_the_config_editor_follows_the_source_indirection() {
+  gui_available || return 0
+  # A registry entry for a repo that ships its own pitcrew.config.sh only sets
+  # PITCREW_ROOT and sources it — editing that stub would change nothing pitcrew
+  # reads, so the GUI has to open the file with the content in it.
+  local home repo; home=$(mktemp -d); repo=$(mktemp -d)
+  mkdir -p "$home/projects"
+  # $PITCREW_ROOT stays literal on purpose — that is what init writes into the stub.
+  # shellcheck disable=SC2016
+  printf 'PITCREW_ROOT=%s\nsource "$PITCREW_ROOT/pitcrew.config.sh"\n' "$repo" > "$home/projects/stub.sh"
+  printf 'PITCREW_APPS=(a)\n' > "$repo/pitcrew.config.sh"
+  printf 'PITCREW_ROOT=%s\nPITCREW_APPS=(a)\n' "$repo" > "$home/projects/own.sh"
+
+  local out; out=$(PITCREW_HOME=$home _settings_drive "
+print(pgui.project_config_path('stub'))
+print(pgui.project_config_path('own'))
+print(pgui.declared_root(pgui.project_file('own')))
+print(' '.join(pgui.known_projects()))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "$repo/pitcrew.config.sh" "stub resolves into the repo"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "$home/projects/own.sh" "a self-contained entry is edited in place"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "$repo" "PITCREW_ROOT is read without sourcing"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "own stub" "the registry lists both"
+  rm -rf "$home" "$repo"
+}
+
+test_a_quoted_root_survives_being_read_back() {
+  gui_available || return 0
+  # init writes PITCREW_ROOT with printf %q, so a path with a space arrives quoted.
+  local home; home=$(mktemp -d); mkdir -p "$home/projects"
+  printf "PITCREW_ROOT='/tmp/two words'\nPITCREW_APPS=(a)\n" > "$home/projects/spaced.sh"
+  local out; out=$(PITCREW_HOME=$home _settings_drive "
+print(pgui.declared_root(pgui.project_file('spaced')))
+")
+  assert_eq "$out" "/tmp/two words" "the quoting is undone, not carried through"
+  rm -rf "$home"
+}
+
+test_a_config_that_bash_cannot_parse_is_refused() {
+  gui_available || return 0
+  # Saving an unparseable config breaks every pitcrew command for that project,
+  # including the one that would tell you why.
+  local out; out=$(_settings_drive "
+print('ok' if pgui.bash_syntax_error('PITCREW_APPS=(a b)') == '' else 'WRONGLY-REJECTED')
+bad = pgui.bash_syntax_error('if [ 1 ]; then')
+print('rejected' if bad else 'WRONGLY-ACCEPTED')
+print('leaks-tmp-path' if '/tmp' in bad else 'path-hidden')
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "ok" "a valid config saves"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "rejected" "an invalid one does not"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "path-hidden" "and the message names the config, not a temp file"
+}
+
+test_paths_with_shell_punctuation_still_render() {
+  gui_available || return 0
+  # Adw parses subtitles as Pango markup regardless of use-markup, so a checkout
+  # at /srv/a&b rendered as an empty row and a warning nobody reads.
+  local out; out=$(_settings_drive "print(pgui.plain('/srv/a&b <x>'))")
+  assert_eq "$out" "/srv/a&amp;b &lt;x&gt;" "escaped for the markup parser"
+}
+
 run_tests

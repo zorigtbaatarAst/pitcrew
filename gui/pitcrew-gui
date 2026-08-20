@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
+import subprocess
+import tempfile
 import shutil
 import sys
 from collections import deque
@@ -94,6 +98,66 @@ def known_projects() -> list[str]:
     if not directory.is_dir():
         return []
     return sorted(p.stem for p in directory.glob("*.sh"))
+
+
+def plain(text: str) -> str:
+    """Escape text destined for a widget that parses Pango markup.
+
+    AdwPreferencesRow:use-markup covers the TITLE only — subtitles, and group
+    titles and descriptions, are parsed regardless. Paths and app names come out
+    of a config file, so a checkout at /srv/a&b renders as nothing at all
+    (with a warning on stderr nobody is reading) unless it is escaped.
+    """
+    return GLib.markup_escape_text(text)
+
+
+def project_file(name: str) -> Path:
+    return pitcrew_home() / "projects" / f"{name}.sh"
+
+
+def declared_root(path: Path) -> Path | None:
+    """PITCREW_ROOT out of a config file, without sourcing it.
+
+    Mirrors `config_declared_root` in lib/02-config.sh: the value is written
+    with printf %q, so it may be quoted or backslash-escaped.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("PITCREW_ROOT="):
+            continue
+        try:
+            parts = shlex.split(stripped[len("PITCREW_ROOT="):])
+        except ValueError:
+            return None
+        return Path(parts[0]).expanduser() if parts else None
+    return None
+
+
+_SOURCES_OWN_CONFIG = re.compile(r"^\s*(?:\.|source)\s+.*pitcrew\.config\.sh", re.M)
+
+
+def project_config_path(name: str) -> Path:
+    """The file that actually holds this project's config.
+
+    A registry entry for a repo that ships its own `pitcrew.config.sh` only
+    sets PITCREW_ROOT and sources it (see lib/15-registry.sh), so editing the
+    stub would change nothing the tool reads. Follow the indirection to the
+    file with the content in it.
+    """
+    entry = project_file(name)
+    root = declared_root(entry)
+    if root is not None:
+        in_repo = root / "pitcrew.config.sh"
+        try:
+            if in_repo.is_file() and _SOURCES_OWN_CONFIG.search(entry.read_text(encoding="utf-8")):
+                return in_repo
+        except OSError:
+            pass
+    return entry
 
 
 def current_project() -> str | None:
@@ -331,7 +395,8 @@ class ComponentRow(Adw.ActionRow):
     """One component: state, what it is using, and the buttons that act on it."""
 
     def __init__(self, name: str, color: str, on_action) -> None:
-        super().__init__(title=name)
+        # Component names and ports come from a config file, not from us.
+        super().__init__(title=name, use_markup=False)
         self._name = name
         self._on_action = on_action
 
@@ -490,6 +555,261 @@ class Stream:
         self._on_error("pitcrew stopped unexpectedly")
 
 
+class Runner:
+    """One-shot pitcrew commands, run off the main loop with colour turned off.
+
+    pitcrew's human output is themed escape codes; NO_COLOR is its documented
+    way to turn that off (lib/01-core.sh), which beats stripping SGR sequences
+    back out afterwards. stderr is merged in because a failure's explanation is
+    the thing most worth showing.
+    """
+
+    def __init__(self, pitcrew: str):
+        self._pitcrew = pitcrew
+
+    def run(self, args: list[str], on_done) -> None:
+        launcher = Gio.SubprocessLauncher.new(
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        launcher.setenv("NO_COLOR", "1", True)
+        try:
+            proc = launcher.spawnv([self._pitcrew, *args])
+        except GLib.Error as error:
+            on_done(False, f"could not run pitcrew: {error.message}")
+            return
+        proc.communicate_utf8_async(
+            None, None, lambda p, r: self._finish(p, r, on_done))
+
+    @staticmethod
+    def _finish(proc: Gio.Subprocess, result, on_done) -> None:
+        try:
+            _, out, _ = proc.communicate_utf8_finish(result)
+        except GLib.Error as error:
+            on_done(False, error.message)
+            return
+        on_done(proc.get_successful(), (out or "").strip())
+
+
+class OutputView(Gtk.ScrolledWindow):
+    """A monospace sink for whatever a pitcrew command had to say."""
+
+    def __init__(self, height: int = 160, grow: bool = False):
+        # `grow` only where the output IS the content. In the config editor it
+        # sits under the text area and must not steal its room.
+        super().__init__(min_content_height=height, vexpand=grow)
+        self.set_max_content_height(height * 2)
+        self._buffer = Gtk.TextBuffer()
+        view = Gtk.TextView(buffer=self._buffer, editable=False, monospace=True,
+                            top_margin=8, bottom_margin=8, left_margin=8, right_margin=8,
+                            wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        self.set_child(view)
+        self.add_css_class("card")
+
+    def show_text(self, text: str) -> None:
+        self._buffer.set_text(text or "")
+
+
+class InitDialog(Adw.Dialog):
+    """`pitcrew init` with the guessing left where it belongs — in pitcrew.
+
+    Deliberately thin: it collects a directory and a name, shells out, and shows
+    what came back verbatim. Re-implementing the detection would give the GUI a
+    second opinion about a project, and two opinions is one too many.
+    """
+
+    def __init__(self, runner: Runner, on_created):
+        super().__init__(title="Add project", content_width=520)
+        self._runner = runner
+        self._on_created = on_created
+        self._folder: Path | None = None
+
+        self._folder_row = Adw.ActionRow(
+            title="Folder", subtitle="Choose the checkout to look at", use_markup=False)
+        choose = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
+        choose.connect("clicked", self._choose_folder)
+        self._folder_row.add_suffix(choose)
+        self._folder_row.set_activatable_widget(choose)
+
+        self._name_row = Adw.EntryRow(title="Name")
+        self._in_project = Adw.SwitchRow(
+            title="Keep the config in the project",
+            subtitle="Writes pitcrew.config.sh into the checkout, not the registry")
+        self._force = Adw.SwitchRow(
+            title="Replace an existing config",
+            subtitle="Without this, init refuses rather than overwrite")
+
+        group = Adw.PreferencesGroup()
+        for row in (self._folder_row, self._name_row, self._in_project, self._force):
+            group.add(row)
+
+        self._output = OutputView(grow=True)
+        self._output.set_visible(False)
+
+        self._run_button = Gtk.Button(label="Look at it", sensitive=False)
+        self._run_button.add_css_class("suggested-action")
+        self._run_button.connect("clicked", lambda _b: self._run())
+
+        header = Adw.HeaderBar()
+        header.pack_end(self._run_button)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        body.append(group)
+        body.append(self._output)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(Gtk.ScrolledWindow(child=body, propagate_natural_height=True))
+        self.set_child(view)
+
+    def _choose_folder(self, _button) -> None:
+        dialog = Gtk.FileDialog(title="Choose project folder")
+        dialog.select_folder(self.get_root(), None, self._folder_chosen)
+
+    def _folder_chosen(self, dialog: Gtk.FileDialog, result) -> None:
+        try:
+            folder = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return                    # dismissed; not an error worth reporting
+        if folder is None or folder.get_path() is None:
+            return
+        self._folder = Path(folder.get_path())
+        self._folder_row.set_subtitle(plain(str(self._folder)))
+        if not self._name_row.get_text():
+            self._name_row.set_text(self._folder.name)
+        self._run_button.set_sensitive(True)
+
+    def _run(self) -> None:
+        if self._folder is None:
+            return
+        args = ["init", "--name", self._name_row.get_text() or self._folder.name]
+        if self._in_project.get_active():
+            args.append("--in-project")
+        if self._force.get_active():
+            args.append("--force")
+        args.append(str(self._folder))
+
+        self._run_button.set_sensitive(False)
+        self._output.set_visible(True)
+        self._output.show_text("Looking…")
+        self._runner.run(args, self._done)
+
+    def _done(self, ok: bool, output: str) -> None:
+        self._run_button.set_sensitive(True)
+        # init exits non-zero when it recognises nothing, and says why. Show its
+        # own words rather than inventing a friendlier, less useful message.
+        self._output.show_text(output or ("done" if ok else "init failed"))
+        if not ok:
+            return
+        self._run_button.set_label("Done")
+        self._on_created()
+
+
+class ConfigDialog(Adw.Dialog):
+    """The project's config, as the bash file it actually is.
+
+    A form over `pitcrew_app` calls would be nicer to look at and wrong: a config
+    is a sourced shell script that may branch, loop or source something else, and
+    a structured editor that cannot round-trip that would quietly drop it. So:
+    edit the text, and refuse to save something bash cannot even parse.
+    """
+
+    def __init__(self, runner: Runner, name: str, on_saved):
+        super().__init__(title=f"{name} · config", content_width=760, content_height=620)
+        self._runner = runner
+        self._name = name
+        self._on_saved = on_saved
+        self._path = project_config_path(name)
+
+        self._buffer = Gtk.TextBuffer()
+        try:
+            self._buffer.set_text(self._path.read_text(encoding="utf-8"))
+            editable = True
+        except OSError as error:
+            self._buffer.set_text(f"# cannot read {self._path}: {error}")
+            editable = False
+
+        view = Gtk.TextView(buffer=self._buffer, monospace=True, editable=editable,
+                            top_margin=10, bottom_margin=10, left_margin=10, right_margin=10)
+        scroller = Gtk.ScrolledWindow(child=view, vexpand=True)
+        scroller.add_css_class("card")
+
+        self._output = OutputView(height=120)
+        self._output.show_text(str(self._path))
+
+        save = Gtk.Button(label="Save", sensitive=editable)
+        save.add_css_class("suggested-action")
+        save.connect("clicked", lambda _b: self._save())
+        check = Gtk.Button(label="Check")
+        check.connect("clicked", lambda _b: self._check())
+
+        header = Adw.HeaderBar()
+        header.pack_end(save)
+        header.pack_start(check)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        body.append(scroller)
+        body.append(self._output)
+
+        wrapper = Adw.ToolbarView()
+        wrapper.add_top_bar(header)
+        wrapper.set_content(body)
+        self.set_child(wrapper)
+
+    def _text(self) -> str:
+        start, end = self._buffer.get_bounds()
+        return self._buffer.get_text(start, end, False)
+
+    def _save(self) -> None:
+        text = self._text()
+        problem = bash_syntax_error(text)
+        if problem:
+            # Saving a config bash cannot parse breaks every pitcrew command for
+            # this project, including the one that would tell you why.
+            self._output.show_text(f"not saved — bash cannot parse this:\n\n{problem}")
+            return
+        try:
+            self._path.write_text(text, encoding="utf-8")
+        except OSError as error:
+            self._output.show_text(f"could not write {self._path}: {error}")
+            return
+        self._output.show_text(f"saved {self._path}")
+        self._on_saved()
+
+    def _check(self) -> None:
+        problem = bash_syntax_error(self._text())
+        if problem:
+            self._output.show_text(f"bash cannot parse this:\n\n{problem}")
+            return
+        self._output.show_text("running pitcrew doctor…")
+        self._runner.run(["-p", self._name, "doctor"],
+                         lambda ok, out: self._output.show_text(out or "doctor said nothing"))
+
+
+def bash_syntax_error(text: str) -> str:
+    """`bash -n` on a candidate config: the message, or "" if it parses."""
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False,
+                                         encoding="utf-8") as handle:
+            handle.write(text)
+            probe = handle.name
+    except OSError as error:
+        return f"could not write a temporary file to check: {error}"
+    try:
+        result = subprocess.run(["bash", "-n", probe],
+                                capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"could not run bash -n: {error}"
+    finally:
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
+    if result.returncode == 0:
+        return ""
+    return (result.stderr or "bash rejected it").replace(probe, "config").strip()
+
+
 def empty_message(total: int) -> str:
     """Why the component list is empty — never leave it blank and ambiguous."""
     if not total:
@@ -522,6 +842,7 @@ class Window(Adw.ApplicationWindow):
         self._pitcrew = pitcrew
         self._project = project
         self._settings = settings
+        self._runner = Runner(pitcrew)
         self._stream: Stream | None = None
         self._series: dict[str, Series] = {}
         self._rows: dict[str, ComponentRow] = {}
@@ -540,6 +861,8 @@ class Window(Adw.ApplicationWindow):
             self._build_components(), "components", "Components", "view-list-symbolic")
         self._stack.add_titled_with_icon(
             self._build_resources(), "resources", "Resources", "utilities-system-monitor-symbolic")
+        self._stack.add_titled_with_icon(
+            self._build_projects(), "projects", "Projects", "folder-symbolic")
 
         header = Adw.HeaderBar()
         header.set_title_widget(Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.WIDE))
@@ -566,25 +889,28 @@ class Window(Adw.ApplicationWindow):
 
     # ── construction ────────────────────────────────────────────────────────
     def _build_project_button(self) -> Gtk.Widget:
-        projects = known_projects()
         self._project_button = Gtk.MenuButton(
             label=self._project or "no project", tooltip_text="Switch project")
-        if not projects:
-            self._project_button.set_sensitive(False)
-            return self._project_button
+        action = Gio.SimpleAction.new_stateful(
+            "project", GLib.VariantType.new("s"),
+            GLib.Variant.new_string(self._project or ""))
+        action.connect("activate", self._on_project_chosen)
+        self.add_action(action)
+        self._project_action = action
+        self._refresh_project_menu()
+        return self._project_button
+
+    def _refresh_project_menu(self) -> None:
+        """The registry is not fixed at startup — init and forget change it."""
+        projects = known_projects()
+        self._project_button.set_sensitive(bool(projects))
+        self._project_button.set_label(self._project or "no project")
         menu = Gio.Menu()
         for name in projects:
             item = Gio.MenuItem.new(name, None)
             item.set_action_and_target_value("win.project", GLib.Variant.new_string(name))
             menu.append_item(item)
         self._project_button.set_menu_model(menu)
-
-        action = Gio.SimpleAction.new_stateful(
-            "project", GLib.VariantType.new("s"),
-            GLib.Variant.new_string(self._project or ""))
-        action.connect("activate", self._on_project_chosen)
-        self.add_action(action)
-        return self._project_button
 
     def _build_menu_button(self) -> Gtk.Widget:
         menu = Gio.Menu()
@@ -634,6 +960,106 @@ class Window(Adw.ApplicationWindow):
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         scroller.set_child(box)
         return scroller
+
+    def _build_projects(self) -> Gtk.Widget:
+        self._projects_group = Adw.PreferencesGroup(
+            title="Projects", description="Everything pitcrew knows about on this machine")
+        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add project",
+                         valign=Gtk.Align.CENTER)
+        add.add_css_class("flat")
+        add.connect("clicked", lambda _b: self._add_project())
+        self._projects_group.set_header_suffix(add)
+
+        self._projects_page = Adw.PreferencesPage()
+        self._projects_page.add(self._projects_group)
+        self._project_rows: list[Adw.ActionRow] = []
+        self._refresh_projects()
+        return self._projects_page
+
+    def _refresh_projects(self) -> None:
+        for row in self._project_rows:
+            self._projects_group.remove(row)
+        self._project_rows.clear()
+
+        names = known_projects()
+        if not names:
+            row = Adw.ActionRow(
+                title="No projects yet",
+                subtitle="Add one to have pitcrew look at a checkout and write its config")
+            self._projects_group.add(row)
+            self._project_rows.append(row)
+            return
+
+        for name in names:
+            root = declared_root(project_file(name))
+            row = Adw.ActionRow(title=name, use_markup=False,
+                                subtitle=plain(str(root)) if root else "root unknown")
+            if name == self._project:
+                badge = Gtk.Label(label="current", valign=Gtk.Align.CENTER)
+                badge.add_css_class("caption")
+                badge.add_css_class("accent")
+                row.add_prefix(badge)
+            box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+            box.append(self._project_button_for(
+                "document-edit-symbolic", "Edit config", lambda n=name: self._edit_config(n)))
+            box.append(self._project_button_for(
+                "media-playback-start-symbolic", "Watch this project",
+                lambda n=name: self._switch_to(n)))
+            box.append(self._project_button_for(
+                "user-trash-symbolic", "Forget", lambda n=name: self._confirm_forget(n)))
+            row.add_suffix(box)
+            self._projects_group.add(row)
+            self._project_rows.append(row)
+
+    @staticmethod
+    def _project_button_for(icon: str, tooltip: str, action) -> Gtk.Button:
+        button = Gtk.Button(icon_name=icon, tooltip_text=tooltip)
+        button.add_css_class("flat")
+        button.connect("clicked", lambda _b: action())
+        return button
+
+    def _add_project(self) -> None:
+        InitDialog(self._runner, self._project_registry_changed).present(self)
+
+    def _edit_config(self, name: str) -> None:
+        # Saving a config only takes effect on the next read, and the stream is
+        # a long-lived reader — restart it if we are looking at that project.
+        def saved() -> None:
+            self._toast(f"{name} config saved")
+            if name == self._project:
+                self._restart_stream()
+        ConfigDialog(self._runner, name, saved).present(self)
+
+    def _switch_to(self, name: str) -> None:
+        self._project_action.activate(GLib.Variant.new_string(name))
+
+    def _confirm_forget(self, name: str) -> None:
+        dialog = Adw.AlertDialog(
+            heading=f"Forget {name}?",
+            body="pitcrew stops tracking it. The checkout and its files are untouched.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("forget", "Forget")
+        dialog.set_response_appearance("forget", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.connect("response", lambda _d, response: (
+            self._runner.run(["forget", name], lambda ok, out: self._forgotten(ok, out, name))
+            if response == "forget" else None))
+        dialog.present(self)
+
+    def _forgotten(self, ok: bool, output: str, name: str) -> None:
+        if not ok:
+            self._toast(output.splitlines()[-1] if output else f"could not forget {name}")
+            return
+        self._toast(f"forgot {name}")
+        if name == self._project:
+            # Watching a project that no longer exists would just error forever.
+            self._project = current_project()
+            self._restart_stream()
+        self._project_registry_changed()
+
+    def _project_registry_changed(self) -> None:
+        self._refresh_project_menu()
+        self._refresh_projects()
 
     # ── preferences ─────────────────────────────────────────────────────────
     def _show_preferences(self) -> None:
@@ -736,6 +1162,7 @@ class Window(Adw.ApplicationWindow):
         action.set_state(target)
         self._project = name
         self._project_button.set_label(name)
+        self._refresh_projects()
         self._restart_stream()
 
     def _fail(self, message: str) -> None:
@@ -806,7 +1233,7 @@ class Window(Adw.ApplicationWindow):
         # AdwPreferencesPage only appends, so ordering means re-adding.
         self._comp_page.remove(self._dep_group)
         for (_sort, heading), comps in ordered:
-            group = Adw.PreferencesGroup(title=heading)
+            group = Adw.PreferencesGroup(title=plain(heading))
             for comp in comps:
                 row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action)
                 group.add(row)
@@ -836,7 +1263,7 @@ class Window(Adw.ApplicationWindow):
         for dep in deps:
             row = self._dep_rows.get(dep["name"])
             if row is None:
-                row = Adw.ActionRow(title=dep["name"])
+                row = Adw.ActionRow(title=dep["name"], use_markup=False)
                 row.add_prefix(Dot(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1]))
                 self._dep_group.add(row)
                 self._dep_rows[dep["name"]] = row
