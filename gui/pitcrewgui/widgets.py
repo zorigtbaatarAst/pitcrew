@@ -123,6 +123,77 @@ class Graph(Gtk.DrawingArea):
                 cr.line_to(x, y) if index else cr.move_to(x, y)
             cr.stroke()
 
+class Sparkline(Gtk.DrawingArea):
+    """A component's recent memory, in the row you are already looking at.
+
+    The terminal dashboard has drawn one of these per row from the start; the
+    GUI showed a number and made you switch to Resources and find the line in a
+    legend to answer "is this climbing". The samples are already in memory —
+    they were only ever read by the graphs.
+    """
+
+    def __init__(self, width: int = 76, height: int = 22):
+        super().__init__()
+        self._series: Series | None = None
+        self._ceiling = 0.0
+        self.set_content_width(width)
+        self.set_content_height(height)
+        self.set_valign(Gtk.Align.CENTER)
+        self.set_draw_func(self._draw)
+
+    def set_source(self, series: Series | None, ceiling: float) -> None:
+        self._series = series
+        self._ceiling = ceiling or 0.0
+        self.queue_draw()
+
+    def _draw(self, _area, cr, width, height) -> None:
+        series = self._series
+        points = list(series.rss) if series else []
+        if len(points) < 2:
+            return
+        # Scaled to the CAP, not to the series' own range: the question in a
+        # component row is "how close am I to the limit", and a range-scaled
+        # sparkline makes an idle service look as busy as a leaking one.
+        ceiling = self._ceiling or max(points) or 1.0
+        # Fills the width, unlike the Resources graphs, which are right-anchored
+        # so several series share one time axis. A row sparkline is about shape,
+        # and anchoring it would leave a stub for the first four minutes.
+        step = width / max(1, len(points) - 1)
+        start_x = 0.0
+
+        cr.set_source_rgba(*series.rgb, 0.22)
+        cr.move_to(start_x, height)
+        for index, value in enumerate(points):
+            cr.line_to(start_x + step * index, height * (1 - min(value / ceiling, 1.0)))
+        cr.line_to(start_x + step * (len(points) - 1), height)
+        cr.close_path()
+        cr.fill()
+
+        cr.set_source_rgb(*series.rgb)
+        cr.set_line_width(1.5)
+        for index, value in enumerate(points):
+            x = start_x + step * index
+            y = height * (1 - min(value / ceiling, 1.0))
+            cr.line_to(x, y) if index else cr.move_to(x, y)
+        cr.stroke()
+
+
+def human_age(seconds: float | None) -> str:
+    """Compact uptime: 45s, 12m, 2h14m, 3d4h."""
+    if not seconds or seconds < 0:
+        return ""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        hours, rest = divmod(seconds, 3600)
+        return f"{hours}h{rest // 60:02d}m"
+    days, rest = divmod(seconds, 86400)
+    return f"{days}d{rest // 3600:02d}h"
+
+
 class ComponentRow(Adw.ActionRow):
     """One component: state, what it is using, and the buttons that act on it."""
 
@@ -135,6 +206,16 @@ class ComponentRow(Adw.ActionRow):
 
         self._dot = Dot(color)
         self.add_prefix(self._dot)
+
+        self._spark = Sparkline()
+        self._spark.set_visible(False)
+        self.add_suffix(self._spark)
+
+        # A gradle backend sits in `starting` for a minute. Something has to
+        # move, or you cannot tell waiting from stuck.
+        self._spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
+        self._spinner.set_visible(False)
+        self.add_suffix(self._spinner)
 
         self._badge = Gtk.Label(valign=Gtk.Align.CENTER)
         self._badge.add_css_class("caption")
@@ -182,8 +263,16 @@ class ComponentRow(Adw.ActionRow):
     def set_color(self, color: str) -> None:
         self._dot.set_color(color)
 
-    def update(self, comp: dict) -> None:
+    def update(self, comp: dict, series=None, now: float = 0) -> None:
         state = comp.get("state", "down")
+        running = state in ("up", "starting", "external")
+
+        self._spark.set_source(series, comp.get("limit") or 0)
+        self._spark.set_visible(bool(series) and state == "up")
+
+        starting = state == "starting"
+        self._spinner.set_visible(starting)
+        (self._spinner.start if starting else self._spinner.stop)()
         css, _ = STATE_STYLE.get(state, UNKNOWN_STYLE)
         if css != self._badge_class:
             if self._badge_class:
@@ -211,6 +300,13 @@ class ComponentRow(Adw.ActionRow):
         # "2 errors" that you cannot click is a dead end: the lines exist, in a
         # view one tab away, already highlighted.
         self._errors.set_visible(bool(comp.get("errors")) and self._on_show_logs is not None)
+        age = human_age(now - comp["since"]) if comp.get("since") and now else ""
+        if age:
+            # `up` says nothing about whether it has been up three hours or
+            # twenty seconds, which is the whole question when something flaps.
+            bits.append(f"{'starting' if starting else 'up'} {age}")
+        if comp.get("restarts"):
+            bits.append(f"restarted {comp['restarts']}×")
         if state == "crashed" and comp.get("exit") is not None:
             bits.append(f"exit {comp['exit']}")
 
@@ -221,7 +317,6 @@ class ComponentRow(Adw.ActionRow):
             self._open.set_tooltip_text(f"Open {self._url}")
         self.set_subtitle("  ·  ".join(bits))
 
-        running = state in ("up", "starting", "external")
         self._start.set_visible(not running)
         self._stop.set_visible(running)
         self._restart.set_visible(running)

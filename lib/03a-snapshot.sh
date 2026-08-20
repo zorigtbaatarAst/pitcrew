@@ -38,6 +38,7 @@ declare -gA SNAP_PROC_CMD=()           # pid           -> comm
 declare -gA SNAP_HEALTH=()             # app           -> UP|DOWN
 declare -gA SNAP_HEALTH_AT=()          # app           -> epoch secs of last probe
 declare -gA SNAP_DEP=()                # dep container -> up|down
+declare -gA SNAP_SINCE=()              # comp -> epoch seconds its root process started
 declare -gA SNAP_EXIT=()               # comp -> exit status of the last run
 declare -gA SNAP_EXIT_AT=()            # comp -> epoch seconds it ended
 declare -gA _JIFF_PREV=()              # pid           -> CPU-time counter at previous sample
@@ -161,9 +162,27 @@ _walk_tree() {
 # same number `ps -o rss` reports (verified identical to the page), while
 # stat's own rss field runs a little low. One extra single-line read per pid is
 # worth reporting the same figure the user would get from ps.
+PITCREW_BTIME=0
+if [ -r /proc/stat ]; then
+  while read -r _k _v _; do
+    [ "$_k" = btime ] && { PITCREW_BTIME=$_v; break; }
+  done < /proc/stat
+fi
+
+_etime_secs() { # "[[dd-]hh:]mm:ss" → seconds on stdout (the ps collector's clock)
+  local t=$1 d=0 h=0 m=0 sec=0
+  case "$t" in *-*) d=${t%%-*}; t=${t#*-} ;; esac
+  case "$t" in
+    *:*:*) h=${t%%:*}; t=${t#*:}; m=${t%%:*}; sec=${t#*:} ;;
+    *:*)   m=${t%%:*}; sec=${t#*:} ;;
+    *)     sec=$t ;;
+  esac
+  printf '%s' $(( 10#${d:-0} * 86400 + 10#${h:-0} * 3600 + 10#${m:-0} * 60 + 10#${sec:-0} ))
+}
+
 _pid_stat() {
   local pid=$1 line rest
-  _P_RSS=""; _P_JIFF=""; _P_CMD=""
+  _P_RSS=""; _P_JIFF=""; _P_CMD=""; _P_START=""
   read -r line < "/proc/$pid/stat" 2>/dev/null || return 1
   _P_CMD=${line#*(}; _P_CMD=${_P_CMD%)*}
   rest=${line##*') '}
@@ -171,6 +190,10 @@ _pid_stat() {
   local -a f=($rest)
   [ ${#f[@]} -ge 13 ] || return 1
   _P_JIFF=$(( ${f[11]} + ${f[12]} ))
+  # Field 22 of /proc/<pid>/stat, which is f[19] here because `rest` starts at
+  # field 3. Free: this line was already read for the CPU counter.
+  [ ${#f[@]} -ge 20 ] && [ "$PITCREW_BTIME" -gt 0 ] &&
+    _P_START=$(( PITCREW_BTIME + ${f[19]} / PITCREW_CLK_TCK ))
   local sz res
   read -r sz res _ < "/proc/$pid/statm" 2>/dev/null
   [ -n "${res:-}" ] || return 0
@@ -203,6 +226,10 @@ _snapshot_proc() {
     _TREE=()
     _walk_tree "$pid"
     SNAP_PIDS[$c]="${_TREE[*]}"
+    # The root of the tree is the process pitcrew launched; a child restarting
+    # inside it (a gradle daemon, a next.js worker) is not a restart of the
+    # component, so its start time is not the one to report.
+    _pid_stat "$pid" && SNAP_SINCE[$c]=${_P_START:-}
 
     rss_sum=0; jiff_sum=0
     for p in "${_TREE[@]}"; do
@@ -318,28 +345,32 @@ _snapshot_ps() {
   [ "$prev_us" -gt 0 ] && wall_cs=$(( (SNAP_AT_US - prev_us) / 10000 ))
   SNAP_CPU_OK=0; [ "$wall_cs" -gt 0 ] && SNAP_CPU_OK=1
 
-  local -A rss=() cs=() comm=()
+  local -A rss=() cs=() comm=() elapsed=()
   local -A cs_now=()
   _PS_KIDS=()
   local pid ppid r tm cm all_cs=0
-  while read -r pid ppid r tm cm; do
+  while read -r pid ppid r tm et cm; do
     [[ $pid =~ ^[0-9]+$ ]] || continue
     _PS_KIDS[$ppid]+="$pid "
     rss[$pid]=$(( r * 1024 ))
     _cputime_cs "$tm"
     cs[$pid]=$_CS
+    elapsed[$pid]=$et
     all_cs=$(( all_cs + _CS ))
     # macOS prints comm as the full executable path; the dashboard has one
     # narrow column for it, so show what the Linux path shows.
     comm[$pid]=${cm##*/}
-  done < <("${PITCREW_PS[@]}" -e -o pid=,ppid=,rss=,time=,comm= 2>/dev/null)
+  done < <("${PITCREW_PS[@]}" -e -o pid=,ppid=,rss=,time=,etime=,comm= 2>/dev/null)
 
   local c p rss_sum cs_sum d
   for c in "${PITCREW_COMPS[@]}"; do
     _read_pidfile "$c"; pid=$PIDF
     SNAP_PID[$c]=$pid
-    SNAP_RSS[$c]=""; SNAP_CPU[$c]=""; SNAP_PIDS[$c]=""
+    SNAP_RSS[$c]=""; SNAP_CPU[$c]=""; SNAP_PIDS[$c]=""; SNAP_SINCE[$c]=""
     [ -n "$pid" ] && [ -n "${rss[$pid]:-}" ] || continue
+    # etime is "[[dd-]hh:]mm:ss" elapsed, one more field on a ps we already run.
+    [ -n "${elapsed[$pid]:-}" ] &&
+      SNAP_SINCE[$c]=$(( SNAP_NOW_S - $(_etime_secs "${elapsed[$pid]}") ))
 
     _TREE=(); _walk_ps_tree "$pid"
     SNAP_PIDS[$c]="${_TREE[*]}"

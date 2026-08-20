@@ -664,6 +664,19 @@ GUI is a renderer plus start/stop/restart buttons.
   component's log. Not for a crash that was already in progress when you
   started watching, and not twice for a service that flaps. Off with
   `--notify none`
+- every running row carries a **sparkline** of its memory, scaled to its cap —
+  the terminal dashboard has drawn one per row from the start, and the GUI made
+  you switch to Resources and find the line in a legend to answer "is this
+  climbing"
+- rows say **how long** they have been up (`up 2h14m`), how many times they have
+  **restarted** in the current crash streak, and spin while `starting` — a
+  gradle backend sits there for a minute and you could not tell waiting from
+  stuck
+- **click a row** for everything pitcrew knows: pid, uptime, restarts, memory
+  against its cap and where that cap came from, URL, health, log path, and the
+  process tree
+- a **filter box**, because twelve rows plus six headings is a lot of scrolling
+  to answer "is sales up"
 - the port on a running row is a **button**: it opens the real URL, including
   the `--url-path` every backend sits behind, and backends with a configured
   health path say `health ✓`

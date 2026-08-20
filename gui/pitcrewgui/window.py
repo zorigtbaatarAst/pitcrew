@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from .dialogs import ConfigDialog, InitDialog, LimitsDialog
+from .dialogs import ConfigDialog, DetailDialog, InitDialog, LimitsDialog
 from .logview import LogView
 from .model import (
     SERIES_COLORS,
@@ -40,8 +40,11 @@ class Window(Adw.ApplicationWindow):
         # Rebuilding the list is only correct-and-cheap because it happens when
         # the SHAPE changes, not every frame. This is that shape.
         self._layout_key: tuple | None = None
+        self._colors: dict[str, str] = {}
         self._last_components: list[dict] = []
         self._machine_total = 0
+        self._last_at = 0
+        self._last_log_dir: str | None = None
 
         self.set_title("pitcrew")
         # Remembered across runs: reopening at 900x680 on every launch, on the
@@ -262,6 +265,13 @@ class Window(Adw.ApplicationWindow):
                               tooltip_text="Main menu")
 
     def _build_components(self) -> Gtk.Widget:
+        # Twelve rows plus six headings is a lot of scrolling to answer "is
+        # sales up". The terminal dashboard has `/` for exactly this.
+        self._comp_filter = Gtk.SearchEntry(placeholder_text="Filter components",
+                                            margin_top=10, margin_bottom=2,
+                                            margin_start=12, margin_end=12)
+        self._comp_filter.connect("search-changed", lambda _e: self._filter_changed())
+
         self._comp_page = Adw.PreferencesPage()
         # A filter that hides everything must say so. Without this, turning off
         # "show stopped" on a stack that is entirely down looks identical to the
@@ -274,7 +284,16 @@ class Window(Adw.ApplicationWindow):
         self._dep_group = Adw.PreferencesGroup(title="Dependencies")
         self._comp_page.add(self._empty_group)
         self._comp_page.add(self._dep_group)
-        return self._comp_page
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(self._comp_filter)
+        box.append(self._comp_page)
+        return box
+
+    def _filter_changed(self) -> None:
+        self._layout_key = None            # the visible set changed; rebuild
+        if self._last_components:
+            self._render_components(self._last_components, self._colors)
 
     def _build_resources(self) -> Gtk.Widget:
         self._cpu_graph = Graph("cpu", floor=100, fmt=lambda v: f"{v:.0f}%")
@@ -441,6 +460,13 @@ class Window(Adw.ApplicationWindow):
             item.set_action_and_target_value("win.profile", GLib.Variant.new_string(name))
             self._profiles_menu.append_item(item)
 
+    def _show_detail(self, name: str) -> None:
+        comp = next((c for c in self._last_components if c["name"] == name), None)
+        if comp is None or not self._project:
+            return
+        DetailDialog(self._runner, self._project, comp, self._last_log_dir,
+                     self._last_at, self._show_logs_for).present(self)
+
     def _show_logs_for(self, name: str, errors_only: bool = False) -> None:
         """Hand off from a component row (or a crash notification) to its log."""
         self._stack.set_visible_child_name("logs")
@@ -585,8 +611,13 @@ class Window(Adw.ApplicationWindow):
         self._banner.set_revealed(False)
         components = state.get("components", [])
         self._last_components = components
+        # The stream's own clock, not the GUI's: uptime is measured against the
+        # frame that reported it, and the two machines could disagree.
+        self._last_at = state.get("at") or 0
+        self._last_log_dir = state.get("logDir")
         colors = {c["name"]: SERIES_COLORS[i % len(SERIES_COLORS)]
                   for i, c in enumerate(components)}
+        self._colors = colors
         history = self._settings["history"]
 
         for comp in components:
@@ -612,6 +643,10 @@ class Window(Adw.ApplicationWindow):
     def _render_components(self, components: list[dict], colors: dict[str, str]) -> None:
         mode = self._settings["group"]
         total = len(components)
+        needle = self._comp_filter.get_text().strip().lower()
+        if needle:
+            components = [c for c in components
+                          if needle in c["name"].lower() or needle in (c.get("app") or "").lower()]
         if self._settings["stopped"] == "hide":
             components = [c for c in components
                           if c.get("state") in ("up", "starting", "external", "crashed")]
@@ -620,7 +655,7 @@ class Window(Adw.ApplicationWindow):
         for comp in components:
             buckets.setdefault(group_of(comp, mode), []).append(comp)
         ordered = sorted(buckets.items())
-        self._show_empty_state(len(components), total)
+        self._show_empty_state(len(components), total, needle)
 
         # Rebuild only when the shape changed — a new project, a settings change,
         # or a component appearing. Otherwise every frame would throw away and
@@ -631,9 +666,10 @@ class Window(Adw.ApplicationWindow):
             self._rebuild_components(ordered, colors)
             self._layout_key = layout_key
 
+        now = self._last_at
         for (_sort, heading), comps in ordered:
             for comp in comps:
-                self._rows[comp["name"]].update(comp)
+                self._rows[comp["name"]].update(comp, self._series.get(comp["name"]), now)
             group = self._group_widgets.get(heading)
             if group is not None:
                 group.set_description(self._group_summary(comps))
@@ -658,6 +694,8 @@ class Window(Adw.ApplicationWindow):
             for comp in comps:
                 row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action,
                                    self._show_logs_for)
+                row.set_activatable(True)
+                row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
                 group.add(row)
                 self._rows[comp["name"]] = row
             self._comp_page.add(group)
@@ -665,11 +703,14 @@ class Window(Adw.ApplicationWindow):
             self._group_widgets[heading] = group
         self._comp_page.add(self._dep_group)
 
-    def _show_empty_state(self, shown: int, total: int) -> None:
+    def _show_empty_state(self, shown: int, total: int, needle: str = "") -> None:
         if shown:
             self._empty_group.set_visible(False)
             return
-        self._empty_label.set_text(empty_message(total))
+        if needle:
+            self._empty_label.set_text(f"Nothing matches “{needle}”.")
+        else:
+            self._empty_label.set_text(empty_message(total))
         self._empty_group.set_visible(True)
 
     def _group_actions(self, comps: list[dict]) -> Gtk.Widget:

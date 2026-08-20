@@ -9,7 +9,7 @@ from gi.repository import Adw, GLib, Gtk
 from .model import human_bytes, plain
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error
-from .widgets import OutputView
+from .widgets import OutputView, human_age
 
 
 class InitDialog(Adw.Dialog):
@@ -275,3 +275,76 @@ def _size_label(size_bytes: int | None) -> str:
         if number * scale == size_bytes:
             return label
     return ""
+
+
+class DetailDialog(Adw.Dialog):
+    """Everything pitcrew knows about one component.
+
+    Clicking a row used to do nothing, so "why is be-sales down" meant a tab
+    switch and a picker. Facts come from the frame that is already on screen;
+    the start command is asked for once, on open, because it lives in the config
+    and not in the stream — and putting it in the stream would mean shipping
+    every project's shell commands in every frame.
+    """
+
+    def __init__(self, runner: Runner, project: str, comp: dict, log_dir: str | None,
+                 now: float, on_show_logs):
+        super().__init__(title=comp["name"], content_width=560)
+        name = comp["name"]
+
+        facts = Adw.PreferencesGroup(title="State")
+        facts.add(self._row("Status", comp.get("state", "?")))
+        if comp.get("since") and now:
+            facts.add(self._row("Started", f"{human_age(now - comp['since'])} ago"))
+        if comp.get("restarts"):
+            facts.add(self._row("Restarts", f"{comp['restarts']} in this crash streak"))
+        if comp.get("pid"):
+            facts.add(self._row("PID", str(comp["pid"])))
+        if comp.get("exit") is not None:
+            facts.add(self._row("Last exit", str(comp["exit"])))
+        facts.add(self._row("Memory",
+                            f"{human_bytes(comp.get('rss'))} of {human_bytes(comp.get('limit'))} "
+                            f"({comp.get('limitSource', 'role')})"))
+        if comp.get("url"):
+            facts.add(self._link("URL", comp["url"]))
+        if comp.get("health"):
+            facts.add(self._link("Health", comp["health"]))
+        if log_dir:
+            facts.add(self._row("Log", f"{log_dir}/{name}.log"))
+
+        actions = Adw.PreferencesGroup()
+        logs = Adw.ActionRow(title="Show log", activatable=True)
+        logs.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        logs.connect("activated", lambda _r: (on_show_logs(name, False), self.close()))
+        actions.add(logs)
+
+        self._cmd = OutputView(height=120)
+        self._cmd.show_text("reading the start command…")
+        runner.run(["-p", project, "ps"], self._show_ps)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        body.append(facts)
+        body.append(actions)
+        body.append(self._cmd)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(Gtk.ScrolledWindow(child=body, propagate_natural_height=True))
+        self.set_child(view)
+
+    def _show_ps(self, ok: bool, output: str) -> None:
+        self._cmd.show_text(output or ("nothing running" if ok else "could not read process list"))
+
+    @staticmethod
+    def _row(title: str, value: str) -> Adw.ActionRow:
+        return Adw.ActionRow(title=title, subtitle=plain(value), use_markup=False,
+                             subtitle_selectable=True)
+
+    @staticmethod
+    def _link(title: str, url: str) -> Adw.ActionRow:
+        row = Adw.ActionRow(title=title, subtitle=plain(url), use_markup=False,
+                            activatable=True, subtitle_selectable=True)
+        row.add_suffix(Gtk.Image.new_from_icon_name("web-browser-symbolic"))
+        row.connect("activated", lambda _r: Gtk.UriLauncher.new(url).launch(None, None, None, None))
+        return row

@@ -21,6 +21,7 @@ ignore = [
     "E501",      # line length is checked by the formatter's eye, not a hard stop
     "PLR2004",   # magic values: a graph is full of 1024s and 0.45s that ARE the value
     "PLR0913",   # GTK constructors legitimately take many arguments
+    "PLR0917",   # ...and positionally, which is how GObject subclasses read
 ]
 
 [lint.per-file-ignores]

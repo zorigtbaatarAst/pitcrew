@@ -36,7 +36,13 @@ field is removed or changes meaning.
   an **errors → logs** jump, log **filtering**, **group and stack-wide**
   start/stop/restart, **profiles**, **keyboard shortcuts**, and remembered
   window geometry in the desktop app.
-- `url`, `health` and `profileDir` in `status --json`.
+- Per-row **sparklines**, **uptime**, **restart counts**, a **starting**
+  spinner, a **filter box** and a **click-for-detail** dialog in the desktop
+  app's Components view.
+- `url`, `health`, `profileDir`, `since` and `restarts` in `status --json`.
+  Uptime costs no extra fork on either platform: `/proc/<pid>/stat` field 22
+  against `btime` on Linux, one more field on the `ps` the fallback collector
+  already runs elsewhere.
 
 ### Fixed
 - `bundle exec …` apps drew the **node** icon: `*bun*` matched "bundle" and sat

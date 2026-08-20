@@ -117,4 +117,25 @@ test_unconfigured_role_is_n_a_not_down() {
   assert_eq "$(comp_state fe-beonly)" "n/a" "absent role"
 }
 
+test_elapsed_time_parses_the_way_ps_prints_it() {
+  # The macOS path. A Linux developer never runs it by accident, so it has to be
+  # pinned here or it breaks on someone else's machine — ps prints elapsed as
+  # [[dd-]hh:]mm:ss and every field is optional.
+  assert_eq "$(_etime_secs 45)"          "45"     "seconds only"
+  assert_eq "$(_etime_secs 01:30)"       "90"     "mm:ss"
+  assert_eq "$(_etime_secs 2:03:04)"     "7384"   "hh:mm:ss"
+  assert_eq "$(_etime_secs 3-04:05:06)"  "273906" "dd-hh:mm:ss"
+  # Leading zeros must not be read as octal — 08 and 09 are the classic break.
+  assert_eq "$(_etime_secs 00:08:09)"    "489"    "leading zeros are decimal"
+}
+
+test_a_start_time_needs_a_boot_time_to_mean_anything() {
+  # /proc/<pid>/stat counts from BOOT, so without btime the number is not an
+  # epoch at all. Better to report nothing than a timestamp from 1970.
+  [ -r /proc/stat ] || return 0
+  assert_ne "$PITCREW_BTIME" "0" "btime was read at load"
+  # assert_ok takes a COMMAND, not a value and a label — see harness.sh.
+  assert_ok test "$PITCREW_BTIME" -gt 1000000000
+}
+
 run_tests

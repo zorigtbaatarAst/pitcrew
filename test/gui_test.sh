@@ -586,4 +586,37 @@ print(' '.join(missing))
   assert_empty "$out" "icon names the theme does not have"
 }
 
+test_uptime_is_compact_at_every_scale() {
+  gui_available || return 0
+  local out; out=$(_drive "
+from pitcrewgui.widgets import human_age
+print([human_age(n) for n in (None, 0, -5, 45, 90, 3599, 8040, 90000)])
+")
+  assert_eq "$out" "['', '', '', '45s', '1m', '59m', '2h14m', '1d01h']" \
+    "seconds, minutes, hours, days — and nothing at all for unknown"
+}
+
+test_the_component_filter_matches_name_or_app() {
+  gui_available || return 0
+  # Typing "sales" should find be-sales and fe-sales; typing nonsense should
+  # say so rather than showing an empty list that reads as a broken view.
+  local out; out=$(_drive "
+comps = [{'name': 'be-sales', 'app': 'sales', 'role': 'be', 'state': 'up'},
+         {'name': 'fe-sales', 'app': 'sales', 'role': 'fe', 'state': 'up'},
+         {'name': 'be-orders', 'app': 'orders', 'role': 'be', 'state': 'down'}]
+def matching(needle):
+    n = needle.lower()
+    return [c['name'] for c in comps
+            if n in c['name'].lower() or n in (c.get('app') or '').lower()]
+print(' '.join(matching('sales')))
+print(' '.join(matching('orders')))
+print(' '.join(matching('be-')))
+print(matching('zzz'))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "be-sales fe-sales" "an app name finds both roles"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "be-orders" "and one app does not drag in another"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "be-sales be-orders" "a role prefix works too"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "[]" "no match is empty, not everything"
+}
+
 run_tests
