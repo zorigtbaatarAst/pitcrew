@@ -43,9 +43,21 @@ class Graph(Gtk.DrawingArea):
         self._fmt = fmt
         self._series: list[Series] = []
         self._history = SETTINGS_BY_KEY["history"].default
+        self._forced_ceiling: float | None = None
         self.set_content_height(180)
         self.set_hexpand(True)
         self.set_draw_func(self._draw)
+
+    def set_ceiling(self, ceiling: float | None) -> None:
+        """Pin the axis maximum, or None to scale to the data.
+
+        Pinning it to the machine's RAM is the only way to see how much of the
+        box a stack actually costs: auto-scaled, 1.6 GiB and 16 GiB draw the
+        identical picture, which is exactly the question being asked.
+        """
+        if ceiling != self._forced_ceiling:
+            self._forced_ceiling = ceiling
+            self.queue_draw()
 
     def set_series(self, series: list[Series], history: int) -> None:
         self._series = series
@@ -57,8 +69,11 @@ class Graph(Gtk.DrawingArea):
         cr.select_font_face("sans-serif")
         cr.set_font_size(10)
 
-        peak = max((max(getattr(s, self._metric), default=0.0) for s in self._series), default=0.0)
-        ceiling = nice_max(peak, self._floor)
+        if self._forced_ceiling:
+            ceiling = self._forced_ceiling
+        else:
+            peak = max((max(getattr(s, self._metric), default=0.0) for s in self._series), default=0.0)
+            ceiling = nice_max(peak, self._floor)
         labels = [self._fmt(ceiling * (4 - i) / 4) for i in range(5)]
 
         # The gutter is measured, not guessed: "858.3 MiB" is far wider than

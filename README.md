@@ -601,10 +601,20 @@ GUI is a renderer plus start/stop/restart buttons.
 
 - picks up whichever project `pitcrew use` selected; switch from the header, or
   pin one with `pitcrew-gui -p <name>`
+- the header carries a live **`2/12 up`** pill, coloured by the worst thing
+  happening — a crash outranks the nine components that are fine. This used to
+  be the window title, which the view switcher makes invisible
 - a **Logs** view tails any component live, with the lines the error radar
   counts highlighted in place. It learns where logs are from the stream
   (`logDir`) and what counts as an error from `errorPattern`, so it shows the
-  same lines the dashboard counts rather than a second opinion
+  same lines the dashboard counts rather than a second opinion. **All /
+  Backend / Frontend** filters the picker, backends first — they start first,
+  and are what a frontend is usually failing to reach
+- **Resources** says what the project costs against what the box actually has:
+  *"using 1.5 GiB of 31.0 GiB · machine total 11.2 GiB used · 5% cpu · caps
+  commit 108.0 GiB — more than the machine has"*. The memory graph has a
+  **Fit / Machine** scale: auto-scaled, 1.5 GiB and 15 GiB draw the identical
+  picture, which is exactly the question being asked
 - components are **grouped by app** by default, so a backend and its frontend
   sit together under one heading with a `2/2 up · 1.6 GiB` rollup
 - errors surface in a banner with a Retry, never as a window quietly showing

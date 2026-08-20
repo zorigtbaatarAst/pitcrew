@@ -30,6 +30,7 @@ class Window(Adw.ApplicationWindow):
         # the SHAPE changes, not every frame. This is that shape.
         self._layout_key: tuple | None = None
         self._last_components: list[dict] = []
+        self._machine_total = 0
 
         self.set_title("pitcrew")
         self.set_default_size(900, 680)
@@ -51,6 +52,7 @@ class Window(Adw.ApplicationWindow):
         header.set_title_widget(
             Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.NARROW))
         header.pack_start(self._build_project_button())
+        header.pack_start(self._build_running_pill())
         header.pack_end(self._build_menu_button())
 
         self._banner = Adw.Banner(revealed=False)
@@ -96,6 +98,47 @@ class Window(Adw.ApplicationWindow):
             menu.append_item(item)
         self._project_button.set_menu_model(menu)
 
+    def _build_running_pill(self) -> Gtk.Widget:
+        """How much is up, in the header.
+
+        The window TITLE already carried this — and was invisible, because the
+        view switcher occupies the title slot. A count you have to open a tab to
+        read is not a status indicator.
+        """
+        self._running_dot = Dot(STATE_STYLE["down"][1], size=9)
+        self._running_label = Gtk.Label(label="—")
+        self._running_label.add_css_class("caption")
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER, margin_start=6)
+        box.append(self._running_dot)
+        box.append(self._running_label)
+        box.set_tooltip_text("Components up / configured")
+        return box
+
+    def _update_running_pill(self, components: list[dict], summary: dict) -> None:
+        up = summary.get("up", 0) + summary.get("external", 0)
+        starting = summary.get("starting", 0)
+        crashed = summary.get("crashed", 0)
+        total = len(components)
+
+        # Colour by the worst thing happening, not by the count: a crash matters
+        # more than the fact that nine others are fine.
+        if crashed:
+            state = "crashed"
+        elif starting:
+            state = "starting"
+        elif up:
+            state = "up"
+        else:
+            state = "down"
+        self._running_dot.set_color(STATE_STYLE[state][1])
+
+        text = f"{up}/{total} up"
+        if starting:
+            text += f" · {starting} starting"
+        if crashed:
+            text += f" · {crashed} crashed"
+        self._running_label.set_text(text)
+
     def _build_menu_button(self) -> Gtk.Widget:
         menu = Gio.Menu()
         menu.append("RAM caps…", "win.limits")
@@ -134,16 +177,38 @@ class Window(Adw.ApplicationWindow):
             selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4,
             row_spacing=4, column_spacing=16)
 
+        self._scale_toggle = Adw.ToggleGroup(halign=Gtk.Align.END)
+        self._scale_toggle.add(Adw.Toggle(name="fit", label="Fit"))
+        self._scale_toggle.add(Adw.Toggle(name="machine", label="Machine"))
+        self._scale_toggle.set_active_name("fit")
+        self._scale_toggle.connect("notify::active-name", lambda *_: self._apply_scale())
+        self._scale_toggle.set_tooltip_text(
+            "Fit scales to what the project uses; Machine scales to this machine's RAM")
+
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                       margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
         for title, graph in (("CPU", self._cpu_graph), ("Memory", self._rss_graph)):
-            label = Gtk.Label(label=title, halign=Gtk.Align.START)
+            label = Gtk.Label(label=title, halign=Gtk.Align.START, hexpand=True)
             label.add_css_class("heading")
-            box.append(label)
+            if title == "Memory":
+                head = Gtk.Box(spacing=8)
+                head.append(label)
+                head.append(self._scale_toggle)
+                box.append(head)
+            else:
+                box.append(label)
             frame = Gtk.Frame()
             frame.set_child(graph)
             box.append(frame)
         box.append(self._legend)
+
+        # What the project costs, against what the machine actually has. Without
+        # the second number the first one means nothing: 1.6 GiB is nothing on a
+        # 64G workstation and most of a 2G container.
+        self._machine_label = Gtk.Label(halign=Gtk.Align.START, wrap=True, xalign=0)
+        self._machine_label.add_css_class("caption")
+        self._machine_label.add_css_class("dim-label")
+        box.append(self._machine_label)
 
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         scroller.set_child(box)
@@ -394,13 +459,14 @@ class Window(Adw.ApplicationWindow):
                 series = self._series[name] = Series(name, colors[name], history)
             series.push(comp.get("cpu"), comp.get("rss"))
 
-        self._logs.update_sources(state.get("logDir"), [c["name"] for c in components],
-                                  state.get("errorPattern"))
+        self._logs.update_sources(state.get("logDir"), components, state.get("errorPattern"))
         self._render_components(components, colors)
         self._render_deps(state.get("deps", []))
         self._render_graphs(components, history)
 
         summary = state.get("summary", {})
+        self._update_running_pill(components, summary)
+        self._update_machine_summary(components, state.get("machine") or {})
         counts = [f"{summary[k]} {k}" for k in ("up", "starting", "crashed", "down") if summary.get(k)]
         self.set_title(f"{state.get('project') or 'pitcrew'} — {' · '.join(counts)}")
 
@@ -496,6 +562,27 @@ class Window(Adw.ApplicationWindow):
         self._cpu_graph.set_series(plotted, history)
         self._rss_graph.set_series(plotted, history)
         self._rebuild_legend(plotted)
+
+    def _update_machine_summary(self, components: list[dict], machine: dict) -> None:
+        used = sum(c.get("rss") or 0 for c in components)
+        capped = sum(c.get("limit") or 0 for c in components)
+        total = machine.get("memTotal") or 0
+
+        parts = [f"This project is using {human_bytes(used)}"]
+        if total:
+            parts[0] += f" of {human_bytes(total)} on this machine"
+            parts.append(f"machine total {machine.get('memUsed') and human_bytes(machine['memUsed']) or '—'} "
+                         f"used · {machine.get('cpuPercent', 0)}% cpu")
+        if capped:
+            over = " — more than the machine has" if total and capped > total else ""
+            parts.append(f"caps commit {human_bytes(capped)}{over}")
+        self._machine_label.set_text("   ·   ".join(parts))
+        self._machine_total = total
+        self._apply_scale()
+
+    def _apply_scale(self) -> None:
+        machine = self._scale_toggle.get_active_name() == "machine"
+        self._rss_graph.set_ceiling(getattr(self, "_machine_total", 0) if machine else None)
 
     def _rebuild_legend(self, series: list[Series]) -> None:
         child = self._legend.get_first_child()

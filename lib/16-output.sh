@@ -34,6 +34,14 @@ cmd_json() {
   # re-inventing the pattern.
   printf '"logDir":%s,' "$(_json_str "$LOG_DIR")"
   printf '"errorPattern":%s,' "$(_json_str "$PITCREW_ERROR_PATTERN")"
+  # The machine itself. A reader plotting RAM against a per-component cap has no
+  # idea whether 18G of caps is generous or suicidal without knowing what the
+  # box actually has — and pitcrew already measures this for its own gauges.
+  sys_gauges
+  printf '"machine":{"memTotal":%s,"memUsed":%s,"cpuPercent":%s},' \
+    "$(_json_num $(( ${SYS_MEM_TOTAL_KB:-0} * 1024 )))" \
+    "$(_json_num $(( ${SYS_MEM_USED_KB:-0} * 1024 )))" \
+    "$(_json_num "${SYS_CPU_PCT:-0}")"
   printf '"at":%s,' "$(_json_num "${SNAP_NOW_S:-0}")"
   printf '"components":['
   for c in "${PITCREW_COMPS[@]}"; do

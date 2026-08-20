@@ -429,8 +429,8 @@ from pitcrewgui.logview import LogView
 log = pathlib.Path('$dir/be-demo.log')
 errs = []
 view = LogView(errs.append)
-view.update_sources('$dir', ['be-demo'], 'ERROR|FATAL|Exception')
-view._selection_changed()
+view.update_sources('$dir', [{'name': 'be-demo', 'role': 'be', 'app': 'demo'}],
+                    'ERROR|FATAL|Exception')
 loop = GLib.MainLoop()
 
 def more():
@@ -472,12 +472,36 @@ test_the_log_view_says_so_when_there_is_no_log_yet() {
   local out; out=$(_drive "
 from pitcrewgui.logview import LogView
 view = LogView(lambda e: None)
-view.update_sources('$dir', ['be-never'], 'ERROR')
-view._selection_changed()
+view.update_sources('$dir', [{'name': 'be-never', 'role': 'be', 'app': 'never'}], 'ERROR')
 print(view._status.get_text())
 ")
   rm -rf "$dir"
   assert_match "$out" 'has not been started' "it explains the empty pane"
+}
+
+test_the_log_picker_separates_backends_from_frontends() {
+  gui_available || return 0
+  # Backends and frontends fail differently and you are usually after one kind.
+  # Backends lead: they start first, and are what a frontend is failing to reach.
+  local out; out=$(_drive "
+from pitcrewgui.logview import LogView
+comps = [
+    {'name': 'fe-sales', 'role': 'fe', 'app': 'sales'},
+    {'name': 'be-orders', 'role': 'be', 'app': 'orders'},
+    {'name': 'be-sales', 'role': 'be', 'app': 'sales'},
+]
+view = LogView(lambda e: None)
+view.update_sources('/nonexistent', comps, 'ERROR')
+print(' '.join(view._names))
+view._roles.set_active_name('fe'); print(' '.join(view._names))
+view._roles.set_active_name('be'); print(' '.join(view._names))
+view._roles.set_active_name('all')
+print(view._picker.get_model().get_string(0))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "be-orders be-sales fe-sales" "backends first, then by app"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "fe-sales" "the frontend filter narrows it"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "be-orders be-sales" "and so does the backend one"
+  assert_match "$(printf '%s' "$out" | sed -n 4p)" 'be.*orders' "each entry names its role"
 }
 
 run_tests

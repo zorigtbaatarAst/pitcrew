@@ -23,7 +23,8 @@ class LogView(Gtk.Box):
         self._on_error = on_error
         self._log_dir: str | None = None
         self._pattern: re.Pattern[str] | None = None
-        self._names: list[str] = []
+        self._all: list[dict] = []       # every component, with its role
+        self._names: list[str] = []      # what the picker currently offers
         self._current: str | None = None
         self._proc: Gio.Subprocess | None = None
         self._cancel: Gio.Cancellable | None = None
@@ -32,6 +33,15 @@ class LogView(Gtk.Box):
         self._picker = Gtk.DropDown(model=Gtk.StringList.new([]), hexpand=True)
         self._picker.connect("notify::selected", lambda *_: self._selection_changed())
 
+        # Backends and frontends fail differently and you are usually looking for
+        # one kind: a stack trace or a bundler error. Twelve names in one flat
+        # list makes you read every one of them to find out which is which.
+        self._roles = Adw.ToggleGroup()
+        for name, label in (("all", "All"), ("be", "Backend"), ("fe", "Frontend")):
+            self._roles.add(Adw.Toggle(name=name, label=label))
+        self._roles.set_active_name("all")
+        self._roles.connect("notify::active-name", lambda *_: self._refill())
+
         self._follow = Gtk.ToggleButton(icon_name="go-bottom-symbolic", active=True,
                                         tooltip_text="Follow new lines")
         clear = Gtk.Button(icon_name="edit-clear-all-symbolic", tooltip_text="Clear")
@@ -39,6 +49,7 @@ class LogView(Gtk.Box):
 
         bar = Gtk.Box(spacing=8, margin_top=10, margin_bottom=4,
                       margin_start=12, margin_end=12)
+        bar.append(self._roles)
         bar.append(self._picker)
         bar.append(self._follow)
         bar.append(clear)
@@ -64,7 +75,8 @@ class LogView(Gtk.Box):
         self.append(self._status)
 
     # ── what the stream tells us ────────────────────────────────────────────
-    def update_sources(self, log_dir: str | None, names: list[str], pattern: str | None) -> None:
+    def update_sources(self, log_dir: str | None, components: list[dict],
+                       pattern: str | None) -> None:
         if pattern:
             try:
                 self._pattern = re.compile(pattern)
@@ -73,14 +85,32 @@ class LogView(Gtk.Box):
                 # losing the highlight beats losing the whole view.
                 self._pattern = None
         self._log_dir = log_dir
+        if components == self._all:
+            return
+        self._all = components
+        self._refill()
+
+    def _refill(self) -> None:
+        """Rebuild the picker for the selected role, backends first."""
+        role = self._roles.get_active_name() or "all"
+        wanted = [c for c in self._all if role in ("all", c.get("role"))]
+        # Backends lead because they start first and are what a frontend is
+        # usually failing to reach.
+        wanted.sort(key=lambda c: (c.get("role") != "be", c.get("app") or c["name"]))
+        names = [c["name"] for c in wanted]
         if names == self._names:
             return
         self._names = names
-        model = Gtk.StringList.new(names)
-        selected = names.index(self._current) if self._current in names else 0
-        self._picker.set_model(model)
+        self._picker.set_model(Gtk.StringList.new(
+            [f"{c.get('role', '--')}  ·  {c.get('app') or c['name']}" for c in wanted]))
         if names:
-            self._picker.set_selected(selected)
+            self._picker.set_selected(names.index(self._current) if self._current in names else 0)
+            self._selection_changed()
+        else:
+            self._current = None
+            self.stop()
+            self._clear()
+            self._status.set_text(f"no {role} components in this project")
 
     def _selection_changed(self) -> None:
         index = self._picker.get_selected()
