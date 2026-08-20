@@ -438,14 +438,29 @@ comp_cell() { # $1 comp, $2 graph width (0 = no graph column) → R: one aligned
   cell+="$R"
 
   if [[ "$cur" =~ ^[0-9]+$ ]] && [ "$cur" -gt 0 ]; then
-    # The graph's HEIGHT auto-scales to this service's own recent range, and
-    # its COLOUR runs cool-to-hot by cell height. That leaves "how close am I
-    # to the configured cap" without a channel, so it moves to the number —
-    # which is where you look for it anyway.
+    # Height and colour answer two different questions, and the graph is only
+    # readable when each one has its own channel:
+    #
+    #   height  is this MOVING? — scaled to the service's own recent range, so
+    #           a leak climbs and a steady service stays a flat line. Scaled
+    #           from zero instead, a service holding at 1.0G puts every sample
+    #           at the maximum and the graph saturates into a solid block.
+    #   colour  how close to the cap am I? — the same colour as the RAM figure
+    #           beside it, because that is the same question.
+    #
+    # `scale cap` swaps the height back to absolute-against-the-cap for anyone
+    # who wants it, and hands the colour back to the cool-to-hot ramp.
     pct=$(( cur * 100 / ${COMP_MAX_B[$c]:-1} ))
     pct_color "$pct"
     if [ "$gw" -gt 0 ]; then
-      spark "${HIST_MEM[$c]:-}" "$gw" 67108864            # 64M floor
+      case "$PITCREW_GRAPH" in
+        bar) bar "$pct" "$gw" ;;
+        *)   if [ "$PITCREW_GRAPH_SCALE" = cap ]; then
+               spark "${HIST_MEM[$c]:-}" "$gw" "${COMP_MAX_B[$c]:-67108864}" "" abs
+             else
+               spark "${HIST_MEM[$c]:-}" "$gw" 67108864 "$PCOL" range
+             fi ;;
+      esac
       cell+="$R"
     fi
     if [ "$CELL_RAM" = 1 ]; then
@@ -655,9 +670,15 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       [ "$sw" -gt 40 ] && sw=40
       [ "$sw" -lt 4 ] && sw=0          # under four cells it is a smudge, not a trend
 
+      # A gauge is a LEVEL, and a bar is how a level reads at a glance: the
+      # filled part is the number. Drawn as history instead, 1% CPU and 100%
+      # CPU both came out as a full-width line — every sample sat at the same
+      # height, so the shape said nothing and the only real information was
+      # the figure printed after it.
       pct_color "${SYS_CPU_PCT:-0}"
       if [ "$sw" -gt 0 ]; then
-        spark "$HIST_SYS_CPU" "$sw" 100 "$PCOL"
+        if [ "$PITCREW_GAUGE" = bar ]; then bar "${SYS_CPU_PCT:-0}" "$sw"
+        else spark "$HIST_SYS_CPU" "$sw" 100 "$PCOL" abs; fi
         printf -v cpuline '   %bCPU%b %s %b%3s%b%b%%%b' "$C_MUTED" "$RESET" "$R" \
           "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET" "$C_MUTED" "$RESET"
       else
@@ -668,7 +689,11 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
         local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB ))
         pct_color "$mpct"
         R=""
-        [ "$sw" -gt 0 ] && { spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$PCOL"; R="$R "; }
+        if [ "$sw" -gt 0 ]; then
+          if [ "$PITCREW_GAUGE" = bar ]; then bar "$mpct" "$sw"
+          else spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$PCOL" abs; fi
+          R="$R "
+        fi
         printf -v line '   %bRAM%b %s%b%s%b %b/%b %b%s%b' "$C_MUTED" "$RESET" "$R" \
           "$C_TEXT" "$used" "$RESET" "$C_FAINT" "$RESET" "$C_MUTED" "$total" "$RESET"
       else
@@ -747,24 +772,35 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
 
     # A first run used to show twelve rows of dots under a table header. Say
     # what to do instead, centred on its own width rather than a shared guess.
+    # An empty state is centred in the space it has, both ways — it is the
+    # whole content of the screen at that moment, and the footer is pinned to
+    # the bottom, so left at the top of the table area it reads as a stray
+    # line of text under a header rather than as the thing you are meant to
+    # look at. _vcentre spends half the free rows above it.
+    _vcentre() { # $1 rows the message needs
+      local pad=$(( (avail - $1) / 2 ))
+      while [ "$pad" -gt 0 ]; do
+        frame+=$'\e[K\n'; ln=$((ln + 1)); avail=$((avail - 1)); pad=$((pad - 1))
+      done
+    }
     if [ ${#VIEW_APPS[@]} -eq 0 ] && [ -n "$FILTER" ]; then
       local nomatch
       printf -v nomatch '%bnothing matches%b %b %s %b' "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$FILTER" "$RESET"
-      frame+=$'\e[K\n'; ln=$((ln + 1))
+      _vcentre 1
       centre "$W" $(( 16 + ${#FILTER} + 2 )) "$nomatch"
       frame+="$R"$'\e[K\n'; ln=$((ln + 1))
-      avail=$(( avail - 2 ))
+      avail=$(( avail - 1 ))
     elif [ $empty = 1 ]; then
       local msg1 msg2
       printf -v msg1 '%b%s%b' "$C_TEXT$BOLD" "nothing is running yet" "$RESET"
       printf -v msg2 '%bpress%b %b m %b %bfor the menu, or run%b %b pitcrew start %b' \
         "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$RESET" \
         "$C_MUTED" "$RESET" "$C_CAP$C_TEXT" "$RESET"
-      frame+=$'\e[K\n'; ln=$((ln + 1))
+      _vcentre 3
       centre "$W" 22 "$msg1"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
       frame+=$'\e[K\n'; ln=$((ln + 1))
       centre "$W" 46 "$msg2"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
-      avail=$(( avail - 4 ))
+      avail=$(( avail - 3 ))
     else
     scroll_to_selection "$avail"
     local drawn=0
@@ -789,6 +825,10 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
         local nrow rc rsel rnm
         for rc in "be-$app" "fe-$app"; do
           [ -n "${SNAP_STATE[$rc]:-}" ] || continue
+          # one app is TWO rows here, and the budget was only checked before
+          # the app — so on a window with one row left the second component
+          # was drawn anyway and pushed the key hints off the bottom
+          [ $avail -le 0 ] && break
           rsel=0; rnm=$C_SUBTLE
           [ "${VIEW[$SEL]:-}" = "$rc" ] && { rsel=1; rnm="$C_TEXT$BOLD"; }
           rail_color "$app"
@@ -949,8 +989,10 @@ fit_line() {
   local IFS=$'\e'
   # the split on $IFS is the point here, and noglob keeps a service name
   # containing * from being expanded into filenames on the way through
+  set -f                                       # a name containing * must not glob
   # shellcheck disable=SC2206
-  set -f; parts=($s); set +f
+  parts=($s)
+  set +f
   n=${#parts[@]}
   for ((i = 0; i < n; i++)); do
     txt=${parts[i]}

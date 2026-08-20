@@ -386,14 +386,20 @@ test_the_role_survives_a_squeezed_name_column() {
 
 test_the_key_hints_are_on_the_last_row() {
   # six services in a thirty-row window used to leave the footer floating in
-  # the middle of the screen with a third of the terminal blank under it
-  local h
-  for h in 40 30 24 18 14 12 10; do
-    _render_at 160 "$h"
-    _frame_rows
-    assert_eq "$ROWS" "$h" "the frame fills a ${h}-row window"
-    local last; last=$(plain "$FRAME" | tail -n 1)
-    assert_match "$last" 'select' "and the key hints are its last row at ${h} rows"
+  # the middle of the screen with a third of the terminal blank under it.
+  #
+  # Both widths matter: in the narrow layout one app is TWO rows, and the row
+  # budget used to be checked only once per app — so a window with one row
+  # left drew the second component anyway and pushed the hints off the bottom.
+  local h w last
+  for w in 40 90 160; do
+    for h in 40 30 24 18 14 12 10 8 6 5; do
+      _render_at "$w" "$h"
+      _frame_rows
+      assert_eq "$ROWS" "$h" "the frame fills a ${w}x${h} window"
+      last=$(plain "$FRAME" | tail -n 1)
+      assert_match "$last" 'select' "the key hints are the last row at ${w}x${h}"
+    done
   done
 }
 

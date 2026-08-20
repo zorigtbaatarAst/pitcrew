@@ -55,10 +55,17 @@ log_view() { # in-place live log viewer ($1 = optional preselect); assumes alt s
     # A log with four lines in it used to leave the hint bar floating four
     # rows down the screen; push it to the bottom and leave it there.
     while [ "$shown" -lt "$rows" ]; do frame+=$'\e[K\n'; shown=$((shown + 1)); done
-    printf -v line ' %bTab/←→%b switch  %b1-9%b jump  %bx%b stop  %br%b restart  %bEnter%b full log  %bq%b back' \
-      "$BOLD$MAGENTA" "$RESET$DIM$GREY" "$BOLD$MAGENTA" "$RESET$DIM$GREY" \
-      "$BOLD$MAGENTA" "$RESET$DIM$GREY" "$BOLD$MAGENTA" "$RESET$DIM$GREY" \
-      "$BOLD$MAGENTA" "$RESET$DIM$GREY" "$BOLD$MAGENTA" "$RESET$DIM$GREY"
+    # Same rule as the dashboard's key caps: drop the hints that do not fit
+    # rather than let the terminal cut one in half. `q back` is first because
+    # a hint bar you cannot read all of should still tell you the way out.
+    line=" "; local kc cap lbl kvis=1 addw
+    for kc in "q:back" "Tab/←→:switch" "1-9:jump" "x:stop" "r:restart" "Enter:full log"; do
+      cap=${kc%%:*}; lbl=${kc#*:}
+      addw=$(( ${#cap} + 1 + ${#lbl} + 2 ))
+      [ $(( kvis + addw )) -gt "$W" ] && break
+      line+="${BOLD}${MAGENTA}${cap}${RESET}${DIM}${GREY} ${lbl}${RESET}  "
+      kvis=$(( kvis + addw ))
+    done
     frame+="$line$RESET"$'\e[K'
     fit_frame "$frame" "$W" "$H"
     printf '\033[H%b\033[0J' "$FIT"

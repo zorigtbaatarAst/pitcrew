@@ -156,6 +156,10 @@ config_finalize() { # $1 = path to the config file that was just sourced
   [ -n "$PITCREW_ICONS_ENV" ] && PITCREW_ICONS=$PITCREW_ICONS_ENV
   icons_load
   theme_load
+  # Same reason as the theme: a project may pin how it wants to be drawn, and
+  # its config is read after lib/04-meters.sh resolved these from the
+  # environment and the saved preference. Re-resolve now that it has had its say.
+  render_resolve
 
   # what each app is written in, guessed once from its start command
   declare -gA APP_ICON=()

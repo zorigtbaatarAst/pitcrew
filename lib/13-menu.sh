@@ -72,6 +72,7 @@ menu_choices() { # $1 = "overlay" trims entries meaningless inside the watch ove
     $'shell\t🍃  open a configured shell…'
     $'switch\t🗂   switch project…'
     $'theme\t🌈  change theme…'
+    $'render\t📈  graph & gauge style…'
     $'doctor\t🩺  doctor — check my environment'
     $'urls\t🌐  open all frontend URLs'
   )
@@ -156,7 +157,7 @@ ov_stale() {
 #   $1 = the chosen line
 #   $2 = "overlay" when this came from the live dashboard
 dispatch_choice() {
-  local choice=${1%%$'\t'*} mode=${2:-} sel prof running pname shname th
+  local choice=${1%%$'\t'*} mode=${2:-} sel prof running pname shname th rnd rkey rval
   MENU_CLOSE=0
   case "$choice" in
     start-all)     if [ "$mode" = overlay ]; then ov_start all
@@ -202,6 +203,22 @@ dispatch_choice() {
                      PITCREW_THEME_ENV=$th; theme_load
                      if [ "$mode" = overlay ]; then
                        toast "${C_ACCENT}🌈${RESET} theme ${BOLD}$th${RESET}"; MENU_CLOSE=1
+                     fi
+                   fi ;;
+    render)        # one flat list of every setting × every value, each with a
+                   # swatch in the preview pane — the same shape as the theme
+                   # picker, because it is the same kind of choice
+                   rnd=$(render_choices | fzf --height=45% --border=rounded --ansi \
+                        --delimiter=$'\t' --with-nth=2.. \
+                        --prompt='render ❯ ' --pointer='▶' \
+                        --header='live preview · Enter applies and remembers · Esc cancels' \
+                        --preview "'$SELF' render --swatch {1}" --preview-window='down:3' 2>/dev/null) || true
+                   if [ -n "${rnd:-}" ]; then
+                     rkey=${rnd%%$'\t'*}; rval=${rkey#*=}; rkey=${rkey%%=*}
+                     render_save "$rkey" "$rval"
+                     render_set  "$rkey" "$rval"
+                     if [ "$mode" = overlay ]; then
+                       toast "${C_ACCENT}📈${RESET} $rkey ${BOLD}$rval${RESET}"; MENU_CLOSE=1
                      fi
                    fi ;;
     doctor)        cmd_doctor; read -rp "  press Enter…" ;;

@@ -85,6 +85,7 @@ LIB_DIR="$PITCREW_DIR/lib"
 # depending on whose laptop it ran on.
 export PITCREW_HOME="${PITCREW_TEST_HOME:-$(mktemp -d)}"
 export PITCREW_THEME_FILE="$PITCREW_HOME/theme"
+export PITCREW_RENDER_FILE="$PITCREW_HOME/render"
 
 load_pitcrew() { # $1 = project dir (defaults to the bundled fixture)
   local proj=${1:-$PITCREW_DIR/test/fixture}

@@ -93,6 +93,10 @@ Usage:
   pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
   pitcrew doctor                    check the local environment
   pitcrew init [<dir>]              generate a starter pitcrew.config.sh (default: $PWD)
+  pitcrew theme [<name>]            colour palette — bare lists them with swatches
+  pitcrew render [<setting> <value>]
+                                    how the graphs are drawn (graph · scale · gauge);
+                                     bare shows each setting with a live sample
   pitcrew urls | help
 
 Flags (must come before the subcommand):
@@ -129,6 +133,7 @@ case "${1:-}" in
   help|-h|--help) usage; exit 0 ;;
   init)     shift; cmd_init     "$@"; exit $? ;;
   theme)    shift; cmd_theme    "$@"; exit $? ;;
+  render)   shift; cmd_render   "$@"; exit $? ;;
   projects|ls) shift; cmd_projects "$@"; exit $? ;;
   ports)    shift; cmd_ports    "$@"; exit $? ;;
   ps)       shift; cmd_ps       "$@"; exit $? ;;

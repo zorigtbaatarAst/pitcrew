@@ -15,10 +15,228 @@
 # Nothing may ever declare `local R` — that would shadow the global and the
 # caller would silently read a stale frame.
 
-PITCREW_GRAPH="${PITCREW_GRAPH:-block}"           # block | braille
+# ── render settings ─────────────────────────────────────────────────────────
+# How the numbers are DRAWN, as opposed to what they are. Same resolution
+# order as the theme, and for the same reason — a one-off run overrides a
+# project, a project overrides how you like your terminal:
+#
+#   the environment  →  the project config  →  the saved preference  →  default
+#
+#   graph   block | braille | bar   a service's RAM over time
+#   scale   range | cap             what the height of that graph MEANS
+#   gauge   bar   | graph           the CPU/RAM gauges at the top of the frame
+PITCREW_GRAPH_ENV="${PITCREW_GRAPH:-}"
+PITCREW_GRAPH_SCALE_ENV="${PITCREW_GRAPH_SCALE:-}"
+PITCREW_GAUGE_ENV="${PITCREW_GAUGE:-}"
+PITCREW_RENDER_FILE="${PITCREW_RENDER_FILE:-$HOME/.config/pitcrew/render}"
+
+RENDER_KEYS=(graph scale gauge)
+render_values() { # $1 key → the values it accepts
+  case "$1" in
+    graph) R="block braille bar" ;;
+    scale) R="range cap" ;;
+    gauge) R="bar graph" ;;
+    *)     R="" ;;
+  esac
+}
+
+render_get() { # $1 key → R, the value in effect
+  case "$1" in
+    graph) R=$PITCREW_GRAPH ;;
+    scale) R=$PITCREW_GRAPH_SCALE ;;
+    gauge) R=$PITCREW_GAUGE ;;
+    *)     R="" ;;
+  esac
+}
+
+_render_valid() { # $1 key, $2 value
+  local v; render_values "$1"
+  case " $R " in *" $2 "*) return 0 ;; esac
+  return 1
+}
+
+# A preference file is written only by us, so a value that is not in the list
+# means the file was hand-edited or comes from a newer version. Fall back to
+# the default rather than drawing with a setting nothing understands.
+render_resolve() {
+  local key val saved_graph="" saved_scale="" saved_gauge=""
+  if [ -r "$PITCREW_RENDER_FILE" ]; then
+    while IFS='=' read -r key val; do
+      case "$key" in
+        graph) saved_graph=$val ;;
+        scale) saved_scale=$val ;;
+        gauge) saved_gauge=$val ;;
+      esac
+    done < "$PITCREW_RENDER_FILE"
+  fi
+  [ -n "$PITCREW_GRAPH_ENV" ]       && PITCREW_GRAPH=$PITCREW_GRAPH_ENV
+  [ -n "$PITCREW_GRAPH_SCALE_ENV" ] && PITCREW_GRAPH_SCALE=$PITCREW_GRAPH_SCALE_ENV
+  [ -n "$PITCREW_GAUGE_ENV" ]       && PITCREW_GAUGE=$PITCREW_GAUGE_ENV
+  [ -z "${PITCREW_GRAPH:-}" ]       && PITCREW_GRAPH=$saved_graph
+  [ -z "${PITCREW_GRAPH_SCALE:-}" ] && PITCREW_GRAPH_SCALE=$saved_scale
+  [ -z "${PITCREW_GAUGE:-}" ]       && PITCREW_GAUGE=$saved_gauge
+  _render_valid graph "${PITCREW_GRAPH:-}"       || PITCREW_GRAPH=block
+  _render_valid scale "${PITCREW_GRAPH_SCALE:-}" || PITCREW_GRAPH_SCALE=range
+  _render_valid gauge "${PITCREW_GAUGE:-}"       || PITCREW_GAUGE=bar
+  return 0
+}
+
+render_save() { # $1 key, $2 value — rewrite the file with this key replaced
+  _render_valid "$1" "$2" || return 1
+  local k v out="" line
+  mkdir -p "$(dirname "$PITCREW_RENDER_FILE")" 2>/dev/null
+  for k in "${RENDER_KEYS[@]}"; do
+    if [ "$k" = "$1" ]; then v=$2; else render_get "$k"; v=$R; fi
+    out+="$k=$v"$'\n'
+  done
+  printf '%s' "$out" > "$PITCREW_RENDER_FILE"
+  return 0
+}
+
+render_resolve
 PITCREW_HISTORY="${PITCREW_HISTORY:-240}"         # samples kept per component
 PITCREW_ERROR_PATTERN="${PITCREW_ERROR_PATTERN:-ERROR|FATAL|Exception|UnhandledRejection}"
 PITCREW_ERROR_SCAN_MAX="${PITCREW_ERROR_SCAN_MAX:-2000}"   # lines/frame/component ceiling
+
+# ── choosing a render style ─────────────────────────────────────────────────
+# The same shape as `pitcrew theme`: a swatch you can see before you commit to
+# it, and a choice that is remembered. The dashboard is something you look at
+# for hours — how it draws is a preference, not a constant.
+
+RENDER_SAMPLE_STEADY=""     # a service holding its RAM steady
+RENDER_SAMPLE_LEAK=""       # one climbing
+_render_samples() {
+  [ -n "$RENDER_SAMPLE_STEADY" ] && return 0
+  local i
+  for ((i = 0; i < 48; i++)); do
+    RENDER_SAMPLE_STEADY+="$(( 1060003840 + i % 3 * 400000 )) "
+    RENDER_SAMPLE_LEAK+="$(( 600000000 + i * 12000000 )) "
+  done
+  return 0
+}
+
+# The samples are ~1G against a 2G cap, which is what the two scales actually
+# differ about — drawn against the 64M floor instead, BOTH of them saturate and
+# the swatch would sell you a choice it is not making.
+_render_spark() { # $1 history, $2 width, $3 scale → R
+  if [ "$3" = range ]; then spark "$1" "$2" 67108864 "$C_OK" range
+  else                      spark "$1" "$2" 2147483648 "" abs
+  fi
+}
+
+render_swatch() { # $1 "key=value" → one line showing what that setting draws
+  local key=${1%%=*} val=${1#*=} cur mark sample=""
+  local saved_g=$PITCREW_GRAPH saved_s=$PITCREW_GRAPH_SCALE
+  _render_samples
+  render_get "$key"; cur=$R
+  mark="${C_FAINT}○${RESET}"
+  [ "$val" = "$cur" ] && mark="${C_OK}●${RESET}"
+  case "$key" in
+    graph)
+      PITCREW_GRAPH=$val
+      if [ "$val" = bar ]; then bar 62 22
+      else _render_spark "$RENDER_SAMPLE_LEAK" 22 "$PITCREW_GRAPH_SCALE"; fi
+      sample=$R; PITCREW_GRAPH=$saved_g ;;
+    scale)
+      _render_spark "$RENDER_SAMPLE_STEADY" 10 "$val"; sample="$R  "
+      _render_spark "$RENDER_SAMPLE_LEAK" 10 "$val"; sample+=$R ;;
+    gauge)
+      if [ "$val" = bar ]; then bar 34 22; else spark "$RENDER_SAMPLE_LEAK" 22 100 "" abs; fi
+      sample=$R ;;
+    *) printf '  %bno such setting: %s%b\n' "$C_CRIT" "$key" "$RESET"; return 0 ;;
+  esac
+  printf '  %b %b%-8s%b %s  %b%s%b\n' "$mark" "$C_TEXT" "$val" "$RESET" "$sample" \
+    "$C_FAINT" "$(render_describe "$key" "$val")" "$RESET"
+  return 0
+}
+
+# Each line is "key=value<TAB>label", the same contract the action menu uses:
+# fzf shows the label and hands back the whole line, so the choice is made on
+# something unambiguous rather than on what it happens to look like.
+render_choices() {
+  local key val cur mark
+  for key in "${RENDER_KEYS[@]}"; do
+    render_get "$key"; cur=$R
+    render_values "$key"
+    for val in $R; do
+      mark="${C_FAINT}○${RESET}"
+      [ "$val" = "$cur" ] && mark="${C_OK}●${RESET}"
+      printf '%s=%s\t%b  %b%-6s%b %b%-8s%b %b%s%b\n' "$key" "$val" \
+        "$mark" "$C_MUTED" "$key" "$RESET" "$C_TEXT" "$val" "$RESET" \
+        "$C_FAINT" "$(render_describe "$key" "$val")" "$RESET"
+    done
+  done
+}
+
+render_purpose() { # $1 key → what the setting is FOR
+  case "$1" in
+    graph) echo "a service's RAM over time" ;;
+    scale) echo "what the height of that graph means" ;;
+    gauge) echo "the CPU and RAM gauges at the top of the frame" ;;
+  esac
+}
+
+render_describe() { # $1 key, $2 value → the one line that says why you would pick it
+  case "$1=$2" in
+    graph=block)   echo "one cell per sample" ;;
+    graph=braille) echo "two samples per cell — twice the history in the same width" ;;
+    graph=bar)     echo "no history: how full the RAM cap is, right now" ;;
+    scale=range)   echo "height is movement — a steady service stays a flat line" ;;
+    scale=cap)     echo "height is the RAM cap — absolute, and flat for anything well under it" ;;
+    gauge=bar)     echo "a loading bar: the filled part is the number" ;;
+    gauge=graph)   echo "the last few minutes of system load, as history" ;;
+    *)             echo "" ;;
+  esac
+}
+
+# `pitcrew render` — like `pitcrew theme`, it runs before any project config is
+# resolved, so it works from anywhere.
+cmd_render() {
+  local key val
+  case "${1:-list}" in
+    list|"")
+      # every option drawn, not just the one in effect — the point of a swatch
+      # is choosing between them without having to try each one first
+      local vals
+      say ""
+      for key in "${RENDER_KEYS[@]}"; do
+        render_values "$key"; vals=$R
+        say "  ${BOLD}${key}${RESET}   ${C_MUTED}$(render_purpose "$key")${RESET}"
+        for val in $vals; do render_swatch "$key=$val"; done
+        say ""
+      done
+      say "  ${C_MUTED}pitcrew render <setting> <value>   ·   saved to $PITCREW_RENDER_FILE${RESET}"
+      say "" ;;
+    --swatch)
+      [ -n "${2:-}" ] || die "usage: pitcrew render --swatch <setting>=<value>"
+      render_swatch "$2" ;;
+    --reset)
+      rm -f "$PITCREW_RENDER_FILE"
+      PITCREW_GRAPH=""; PITCREW_GRAPH_SCALE=""; PITCREW_GAUGE=""
+      render_resolve
+      ok "render preferences cleared — back to the defaults" ;;
+    *)
+      key=${1%%=*}; val=${1#*=}
+      [ "$val" = "$1" ] && val=${2:-}          # "render graph bar" as well as "render graph=bar"
+      render_values "$key"
+      [ -n "$R" ] || die "no render setting '$key' — try: ${RENDER_KEYS[*]}"
+      [ -n "$val" ] || die "usage: pitcrew render $key <${R// /|}>"
+      _render_valid "$key" "$val" || die "'$val' is not a $key style — try: ${R// /, }"
+      render_save "$key" "$val"
+      render_set "$key" "$val"
+      ok "$key set to ${BOLD}$val${RESET}"
+      render_swatch "$key=$val" ;;
+  esac
+}
+
+render_set() { # $1 key, $2 value — apply it to the running process
+  case "$1" in
+    graph) PITCREW_GRAPH=$2 ;;
+    scale) PITCREW_GRAPH_SCALE=$2 ;;
+    gauge) PITCREW_GAUGE=$2 ;;
+  esac
+  return 0
+}
 
 declare -gA HIST_MEM=() HIST_CPU=()
 declare -gA ERR_COUNT=() ERR_LINES=() ERR_FD=() ERR_PID=() ERR_PARTIAL=()
@@ -110,30 +328,73 @@ _braille_init() {
   return 0
 }
 
-spark() { # $1 history, $2 width in cells, $3 scale floor → R
+# → LVL in 0..$4, from where $1 sits inside the window's own [min, max].
+#
+# This is what stops a busy service from drawing a solid block. Scaled from
+# ZERO, a backend holding steady at 1.0G puts every sample at the window
+# maximum, every cell renders full height in the hottest colour, and the graph
+# becomes a red lump that says nothing except "this service exists". Scaled
+# from the window MINIMUM, the same service draws a calm flat line and only
+# actual movement lifts off it — which is the entire reason to keep history.
+_level_range() { # $1 value, $2 window min, $3 span, $4 steps → LVL
+  local v=$1 mn=$2 span=$3 steps=$4
+  if [ "$v" -le 0 ]; then LVL=0; return 0; fi        # nothing was running then
+  if [ "$span" -le 0 ]; then LVL=1; return 0; fi     # perfectly flat: one pixel
+  LVL=$(( (v - mn) * steps / span ))
+  [ "$LVL" -gt "$steps" ] && LVL=$steps
+  # a running service is never invisible: the bottom of its own range is still
+  # a line, not a gap
+  [ "$LVL" -lt 1 ] && LVL=1
+  return 0
+}
+
+spark() { # $1 history, $2 width in cells, $3 scale floor, $4 colour, $5 scale mode → R
   #
-  # Auto-scaling: the graph is scaled to the maximum of exactly the window it
-  # draws, not to the component's configured RAM cap. Scaling to the cap is
-  # what made every graph a flat line — a backend using 1.0G of an 8G cap sits
-  # at 12%, so every sample lands on level 1 and renders as "▁▁▁▁…".
+  # Two scales, and which one you want depends on the question.
   #
-  # The floor keeps an idle service from being amplified into noise, and it
-  # doubles as a fixed scale: pass a floor the data never exceeds (100 for a
-  # percentage, total RAM for the system gauge) and the graph is absolute.
+  #   range (default)  height is where the sample sits in the window's own
+  #                    recent [min, max]. Answers "is this MOVING?" — a leak
+  #                    climbs off the baseline while a steady service stays a
+  #                    flat line instead of saturating into a solid block.
+  #   abs              height is the sample against a fixed maximum: the floor
+  #                    passed in, or the window peak if the data exceeds it.
+  #                    Answers "how big is this, absolutely?"
   #
-  # Colour comes from each cell's own HEIGHT, not from the series' current
-  # value — the ramp runs cool at the bottom to hot at the top, so a climb is
-  # legible before you read a single number. The newest sample is emboldened so
-  # "now" is distinct from history, and the run-in before the data starts is a
-  # faint baseline rather than blank space, which makes the column read as a
-  # chart area instead of a gap.
-  local hist=$1 w=$2 mx=${3:-1}
+  # Colour: with a fixed colour in $4 the whole graph takes it — that is how a
+  # RAM graph carries "how close to the cap am I", which cell height cannot
+  # say once height means "relative to its own recent range". With no colour
+  # the ramp runs cool at the bottom to hot at the top, which is what the
+  # absolute scale wants.
+  #
+  # The newest sample is emboldened so "now" is distinct from history, and the
+  # run-in before the data starts is a faint baseline rather than blank space,
+  # which makes the column read as a chart area instead of a gap.
+  local hist=$1 w=$2 mx=${3:-1} fixed=${4:-} mode=${5:-abs}
   local -a s=($hist)
-  local n=${#s[@]} need start i a b l r v from lvl
+  local n=${#s[@]} need start i a b l r v from lvl mn=0 span=0
   if [ "$PITCREW_GRAPH" = braille ]; then need=$((w * 2)); else need=$w; fi
   start=$(( n - need ))
   from=$start; [ $from -lt 0 ] && from=0
-  for ((i = from; i < n; i++)); do v=${s[i]}; [ "$v" -gt "$mx" ] && mx=$v; done
+  if [ "$mode" = range ]; then
+    # min and max of exactly the window being drawn, ignoring the samples
+    # taken while the service was not running
+    mn=-1; mx=0
+    for ((i = from; i < n; i++)); do
+      v=${s[i]}; [ "${v:-0}" -le 0 ] && continue
+      [ "$v" -gt "$mx" ] && mx=$v
+      { [ "$mn" -lt 0 ] || [ "$v" -lt "$mn" ]; } && mn=$v
+    done
+    [ "$mn" -lt 0 ] && mn=0
+    span=$(( mx - mn ))
+    # A floor under the span, or the graph amplifies sampling noise into a
+    # mountain range: an eighth of the peak, and never less than an eighth of
+    # the caller's floor, so a 2M helper process is not drawn as a crisis.
+    local minspan=$(( mx / 8 )) floorspan=$(( ${3:-0} / 8 ))
+    [ "$floorspan" -gt "$minspan" ] && minspan=$floorspan
+    [ "$span" -lt "$minspan" ] && span=$minspan
+  else
+    for ((i = from; i < n; i++)); do v=${s[i]}; [ "$v" -gt "$mx" ] && mx=$v; done
+  fi
 
   R=""
   if [ "$PITCREW_GRAPH" = braille ]; then
@@ -141,11 +402,11 @@ spark() { # $1 history, $2 width in cells, $3 scale floor → R
     for ((i = 0; i < need; i += 2)); do
       a=$(( start + i )); b=$(( a + 1 ))
       # a negative index would silently mean "from the end" in bash — guard it
-      if [ $a -ge 0 ]; then _level "${s[a]}" "$mx" 4; l=$LVL; else l=0; fi
-      if [ $b -ge 0 ]; then _level "${s[b]}" "$mx" 4; r=$LVL; else r=0; fi
+      if [ $a -ge 0 ]; then _spark_level "${s[a]}" "$mx" "$mn" "$span" "$mode" 4; l=$LVL; else l=0; fi
+      if [ $b -ge 0 ]; then _spark_level "${s[b]}" "$mx" "$mn" "$span" "$mode" 4; r=$LVL; else r=0; fi
       if [ $b -lt 0 ]; then R+="${C_FAINT}▁"; continue; fi
       lvl=$l; [ $r -gt $lvl ] && lvl=$r
-      R+="${GRAMP[$(( lvl * 4 / 5 ))]}"
+      if [ -n "$fixed" ]; then R+="$fixed"; else R+="${GRAMP[$(( lvl * 4 / 5 ))]}"; fi
       [ $(( i + 2 )) -ge "$need" ] && R+="$BOLD"
       R+="${BRAILLE[$(( _BRAILLE_LMASK[l] + _BRAILLE_RMASK[r] ))]}"
     done
@@ -153,8 +414,8 @@ spark() { # $1 history, $2 width in cells, $3 scale floor → R
     for ((i = 0; i < w; i++)); do
       a=$(( start + i ))
       if [ $a -ge 0 ]; then
-        _level "${s[a]}" "$mx" 7
-        R+="${GRAMP[$(( LVL / 2 ))]}"
+        _spark_level "${s[a]}" "$mx" "$mn" "$span" "$mode" 7
+        if [ -n "$fixed" ]; then R+="$fixed"; else R+="${GRAMP[$(( LVL / 2 ))]}"; fi
         [ $(( i + 1 )) -eq "$w" ] && R+="$BOLD"
         R+="${BARS[$LVL]}"
       else
@@ -163,6 +424,12 @@ spark() { # $1 history, $2 width in cells, $3 scale floor → R
     done
   fi
   R+="$RESET"
+}
+
+_spark_level() { # $1 value, $2 max, $3 min, $4 span, $5 mode, $6 steps → LVL
+  if [ "$5" = range ]; then _level_range "${1:-0}" "$3" "$4" "$6"
+  else                      _level "${1:-0}" "$2" "$6"
+  fi
 }
 
 mem_meter() { # $1 comp → R: one aligned "bar RAM" cell, or a dim "—" if not running

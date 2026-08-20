@@ -299,25 +299,65 @@ instead of a number that happens to be large today. Selecting a service and
 pressing Enter expands its real process tree — the Gradle daemon, the `node`,
 the `esbuild` — each with its own RAM and CPU.
 
-Each graph is scaled to that service's own recent range, not to its RAM cap.
-Scaling to the cap is what makes this kind of graph useless in practice: a
-backend using 1.0G of an 8G cap sits at 12%, every sample lands on the bottom
-row, and you get a flat line for every service you own. The cap still drives
-the *colour* — the graph turns yellow then red as you approach it — so you
-lose nothing by scaling the height to something you can actually read.
+**Height and colour answer two different questions.** The height of a graph is
+where the sample sits in that service's own recent range: it answers *is this
+moving?*, so a leak climbs off the baseline and a service holding steady stays
+a flat line. Scaled from zero instead — or to the RAM cap — a busy service puts
+every sample at the top of the scale and the graph saturates into a solid
+block that says nothing except "this service exists". The colour carries the
+other question, *how close to the cap am I*, and it is the same colour as the
+RAM figure beside it, because it is the same question.
 
-**The frame fits the window, whatever the window is.** The layout has three
-width tiers and three height tiers, and it never draws outside the terminal —
-auto-wrap is off, so a row one column too wide is eaten silently and a frame
-one row too tall scrolls the alt screen and corrupts every repaint after it.
-Wide, the backend and frontend sit side by side. Under `PITCREW_NARROW_AT`
-(110) it is one component per row. Under ~50 columns the sparkline goes and
-the port, RAM and CPU numbers stay — history is the part you can do without.
+Both are settings, not verdicts — `pitcrew render`, or `m` → **graph & gauge
+style** in the menu, with a live swatch of every option:
+
+| Setting | Values | |
+|---|---|---|
+| `graph` | `block` · `braille` · `bar` | one cell per sample · two samples per cell · no history, just how full the cap is |
+| `scale` | `range` · `cap` | height is movement · height is absolute against the RAM cap |
+| `gauge` | `bar` · `graph` | the CPU/RAM gauges as loading bars · as history |
+
+Choices are remembered in `~/.config/pitcrew/render`, and resolve the same way
+the theme does: the environment beats the project's config, which beats your
+saved preference, which beats the default.
+
+```bash
+pitcrew render                  # every setting, every option, drawn
+pitcrew render graph braille    # switch, and remember it
+pitcrew render --reset          # back to the defaults
+```
+
+**The frame fits the window, whatever the window is, and reflows the moment
+it changes.** Auto-wrap is off, so a row one column too wide is eaten silently
+by the terminal and a frame one row too tall scrolls the alt screen and
+corrupts every repaint after it. The layout is therefore a function of the
+real terminal size, re-measured on every `SIGWINCH` and on every return from a
+pager or an `fzf` menu — the two places a resize can happen behind the
+dashboard's back.
+
+The width tiers, and what each one gives up:
+
+| Tier | Columns | Row |
+|---|---|---|
+| `xl` | ≥ 160 | two cells; the graph and the name column stop growing — a wide window buys more history, not a row that sprawls |
+| `lg` | ≥ `PITCREW_NARROW_AT` (110) | backend and frontend side by side |
+| `md` | ≥ ~62 | one component per row, with its sparkline — one readable cell beats two squeezed ones |
+| `sm` | ≥ ~46 | no sparkline. History is cheap to lose; "which port, how much RAM" is not |
+| `xs` | below that | the cascade continues into the numbers: the error count goes, then CPU, then RAM, each buying columns back for the name. A 30-column split still says which service is on which port |
+
 Vertically, a short pane folds the CPU/RAM gauges onto one line and drops the
-legend, and a really short one (a tmux split, a terminal tucked under an
-editor) keeps only the title, the table and the key hints. The service list
-scrolls with the selection instead of stopping at the bottom of the screen,
-and says how many rows are above and below it.
+legend (`PITCREW_COMPACT_AT`), and a really short one — a tmux split, a
+terminal tucked under an editor — keeps only the title, the table and the key
+hints (`PITCREW_MICRO_AT`). The key hints are pinned to the bottom row at
+every size, so they stay where your eye already is instead of drifting down
+the screen as services start. The service list scrolls with the selection
+instead of stopping at the bottom, and says how many rows are above and below
+it.
+
+Under all of that sits one guard: every row of the finished frame is cut to
+the terminal's width before it is painted, colour sequences skipped and closed
+off at the cut. A layout mistake costs you a truncated row, never a corrupted
+screen.
 
 **Actions never leave the dashboard.** Starting, stopping or restarting from
 the menu (`m`) closes the picker and returns you to the live view, where you
@@ -337,17 +377,23 @@ boot report, failure log tails and URL table.
 | `⏎` | expand/collapse that service's process tree |
 | `e` | the error radar's actual matched log lines, not just the count |
 | `l` `r` `s` `m` `q` | logs · restart · stop · menu · quit |
+| `m` → 🌈 / 📈 | change theme · change graph & gauge style, both with live swatches |
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PITCREW_REFRESH` | `1` | seconds between frames; fractions like `0.25` are fine |
-| `PITCREW_GRAPH` | `block` | `block` (▁▂▃) or `braille` (⣀⣤⣶), which packs 2 samples per cell |
+| `PITCREW_GRAPH` | `block` | `block` (▁▂▃), `braille` (⣀⣤⣶) which packs 2 samples per cell, or `bar` |
+| `PITCREW_GRAPH_SCALE` | `range` | `range` (height is movement) or `cap` (absolute against the RAM cap) |
+| `PITCREW_GAUGE` | `bar` | the system CPU/RAM gauges: `bar` (a loading bar) or `graph` (history) |
+| `PITCREW_RENDER_FILE` | `~/.config/pitcrew/render` | where `pitcrew render` remembers those three |
 | `PITCREW_HISTORY` | `240` | samples kept per component |
 | `PITCREW_THEME` | `default` | `default` (Catppuccin Mocha), `tokyonight`, `rosepine`, `gruvbox`, `mono`, or your own |
 | `PITCREW_THEME_FILE` | `~/.config/pitcrew/theme` | where `pitcrew theme <name>` remembers your choice |
 | `PITCREW_COLOR` | auto | `truecolor` / `16` / `none` — detected from `$COLORTERM`, override to force |
 | `PITCREW_ICONS` | `unicode` | `nerd` adds language and docker glyphs (needs a patched font) |
 | `PITCREW_NARROW_AT` | `110` | below this width, one component per row instead of two columns |
+| `PITCREW_XL_AT` | `160` | above this width the table stops growing (it is already at its caps) |
+| `PITCREW_COLS` / `PITCREW_LINES` | auto | pin the frame size instead of measuring the terminal — for recordings, screenshots and scripts |
 | `PITCREW_COMPACT_AT` | `24` | below this height, the gauges fold onto one line and the legend goes |
 | `PITCREW_MICRO_AT` | `12` | below this height, only the title, the table and the key hints survive |
 | `PITCREW_MOUSE` | `0` | `1` enables click-to-select / click-again-to-expand / wheel |

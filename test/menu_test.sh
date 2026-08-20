@@ -75,4 +75,30 @@ test_cancelling_the_theme_picker_changes_nothing() {
   rm -f "$pref"
 }
 
+test_choosing_a_render_style_actually_changes_it() {
+  # the same shape as the theme picker, and the same failure mode if it is
+  # wired up wrong: the option appears to do nothing
+  local pref; pref=$(mktemp)
+  ( PITCREW_RENDER_FILE=$pref
+    fzf() { printf 'graph=braille\tsome label\n'; }    # stand in for the picker
+    dispatch_choice "$(menu_choices overlay | grep '^render')" overlay
+    assert_eq "$PITCREW_GRAPH" braille "the running dashboard switched style"
+    assert_match "$(cat "$pref")" 'graph=braille' "and the choice was remembered"
+    assert_eq "$MENU_CLOSE" 1 "menu closes so the dashboard repaints"
+  )
+  rm -f "$pref"
+}
+
+test_cancelling_the_render_picker_changes_nothing() {
+  local pref; pref=$(mktemp)
+  ( PITCREW_RENDER_FILE=$pref
+    fzf() { return 1; }                           # Esc
+    local before=$PITCREW_GRAPH
+    dispatch_choice "$(menu_choices overlay | grep '^render')" overlay
+    assert_eq "$PITCREW_GRAPH" "$before" "style untouched"
+    assert_empty "$(cat "$pref")" "nothing remembered"
+  )
+  rm -f "$pref"
+}
+
 run_tests
