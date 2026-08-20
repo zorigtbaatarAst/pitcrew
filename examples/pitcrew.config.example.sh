@@ -124,6 +124,8 @@ pitcrew_doctor_extra() {
 # PITCREW_COLOR=truecolor    # truecolor | 16 | none — detected from $COLORTERM
 # PITCREW_ICONS=nerd         # unicode (default) | nerd — needs a patched font
 # PITCREW_NARROW_AT=110      # below this width, one component per row
+# PITCREW_COMPACT_AT=24      # below this height, fold the gauges, drop the legend
+# PITCREW_MICRO_AT=12        # below this height, title + table + keys and nothing else
 # PITCREW_MOUSE=1            # click to select, click again to expand, wheel scrolls
 #
 # What the error radar (the ⚡ counter, and the `e` key) treats as an error.

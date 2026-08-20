@@ -306,6 +306,19 @@ row, and you get a flat line for every service you own. The cap still drives
 the *colour* — the graph turns yellow then red as you approach it — so you
 lose nothing by scaling the height to something you can actually read.
 
+**The frame fits the window, whatever the window is.** The layout has three
+width tiers and three height tiers, and it never draws outside the terminal —
+auto-wrap is off, so a row one column too wide is eaten silently and a frame
+one row too tall scrolls the alt screen and corrupts every repaint after it.
+Wide, the backend and frontend sit side by side. Under `PITCREW_NARROW_AT`
+(110) it is one component per row. Under ~50 columns the sparkline goes and
+the port, RAM and CPU numbers stay — history is the part you can do without.
+Vertically, a short pane folds the CPU/RAM gauges onto one line and drops the
+legend, and a really short one (a tmux split, a terminal tucked under an
+editor) keeps only the title, the table and the key hints. The service list
+scrolls with the selection instead of stopping at the bottom of the screen,
+and says how many rows are above and below it.
+
 **Actions never leave the dashboard.** Starting, stopping or restarting from
 the menu (`m`) closes the picker and returns you to the live view, where you
 watch components go `○ down → ◐ starting → ● up` in place; a one-line toast
@@ -335,6 +348,8 @@ boot report, failure log tails and URL table.
 | `PITCREW_COLOR` | auto | `truecolor` / `16` / `none` — detected from `$COLORTERM`, override to force |
 | `PITCREW_ICONS` | `unicode` | `nerd` adds language and docker glyphs (needs a patched font) |
 | `PITCREW_NARROW_AT` | `110` | below this width, one component per row instead of two columns |
+| `PITCREW_COMPACT_AT` | `24` | below this height, the gauges fold onto one line and the legend goes |
+| `PITCREW_MICRO_AT` | `12` | below this height, only the title, the table and the key hints survive |
 | `PITCREW_MOUSE` | `0` | `1` enables click-to-select / click-again-to-expand / wheel |
 | `PITCREW_ERROR_PATTERN` | `ERROR\|FATAL\|Exception\|UnhandledRejection` | what the error radar counts |
 | `PITCREW_HEALTH_INTERVAL` | `5` | seconds between health probes (×3 once a service reports UP) |
