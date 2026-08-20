@@ -17,6 +17,29 @@ project.
 
 ![status](https://img.shields.io/badge/status-early-yellow)
 
+## Contents
+
+- [Why](#why)
+- [Platforms](#platforms)
+- [Install](#install)
+- [Projects](#projects)
+- [What `init` works out for you](#what-init-works-out-for-you)
+- [Quick start](#quick-start)
+- [Commands](#commands)
+- [Config](#config)
+- [Scripting it](#scripting-it)
+- [Two projects, one machine](#two-projects-one-machine)
+- [Starting in waves](#starting-in-waves)
+- [RAM caps](#ram-caps)
+- [Dashboard](#dashboard)
+- [Desktop app](#desktop-app)
+- [How it works](#how-it-works)
+- [Not (yet) supported](#not-yet-supported)
+- [When something dies](#when-something-dies)
+- [What pitcrew runs](#what-pitcrew-runs)
+- [Development](#development)
+- [License](#license)
+
 ## Why
 
 Most process launchers (`overmind`, `foreman`, `mprocs`, a `docker-compose`
@@ -311,6 +334,32 @@ done
 ```
 
 It exits quietly on SIGPIPE, so closing the reader is a normal way to stop it.
+
+### The JSON contract
+
+`status --json` has consumers now — the desktop app, status lines, CI gates — so
+it is versioned and its whole key set is pinned by `test/output_test.sh`. A
+renamed or dropped field fails there rather than in your dashboard.
+
+| | |
+|---|---|
+| top level | `schema` `project` `root` `collector` `at` `logDir` `errorPattern` `machine` `components` `deps` `summary` |
+| component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` |
+| machine | `memTotal` `memUsed` `cpuPercent` |
+| dep | `name` `state` |
+| summary | `up` `starting` `crashed` `external` `down` |
+
+`schema` is **1**. Adding a field is backwards compatible and does not bump it;
+removing one or changing what it means does. Bytes are bytes, `cpu` is an
+integer percent, and anything unknown is `null` — never `0`.
+
+`pitcrew doctor --json` is the same idea for the environment, and is a **gate**:
+it exits non-zero when the caps do not fit the machine or ports clash with
+another registered project, so CI can run it directly.
+
+```bash
+pitcrew doctor --json | jq -r '.capsWarning // "ok"'
+```
 
 ## Two projects, one machine
 
@@ -767,6 +816,15 @@ a syntax error is not something to relaunch forever, because the log you need
 ends up buried under a thousand identical boot attempts. Press `r` on a
 component to clear its give-up and try again.
 
+## What pitcrew runs
+
+`pitcrew init` reads a repository and **writes shell commands** into a config;
+`pitcrew up` **executes them**. That is the whole point, and it means a pitcrew
+config is exactly as trusted as the repository it was generated from — treat one
+that arrived from somewhere else the way you would treat any other script before
+running it. `pitcrew edit` shows you the file, and `pitcrew doctor` runs no
+project commands at all.
+
 ## Development
 
 `make check` is lint + tests, and it is green — `make lint` fails on anything
@@ -774,7 +832,7 @@ shellcheck rates **warning** or above. It used to run at `style`, where 58
 findings (43 of them cosmetic) meant it always failed, so nobody read it. It had
 been hiding two real bugs the whole time: `*bun*` shadowing `*bundle*`, so every
 `bundle exec rails` app drew the node icon, and a `rail_color` `local` line that
-read the *caller's* `$app` — the exact trap `lib/07-start.sh` already documents.
+read the *caller's* `$app` — the exact trap `lib/07a-start.sh` already documents.
 Anything below warning is either fixed or annotated at the line with why.
 
 ```bash

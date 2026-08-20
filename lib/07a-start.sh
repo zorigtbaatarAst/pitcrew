@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/07-start.sh — bringing components up, and the live wait-dashboard shown
+# lib/07a-start.sh — bringing components up, and the live wait-dashboard shown
 # while they boot. Every component is a plain background process (wrapped in
 # `systemd-run --user --scope` for a RAM cap when systemd is available, a
 # bare backgrounded `bash -c` otherwise) with its own log file and pidfile —
@@ -33,7 +33,7 @@ rotate_log() { # $1 comp — keep the previous run's output instead of erasing i
   # name=value in one `local ...` command against the PRE-statement scope, so
   # `f="$LOG_DIR/$c.log"` on the same line reads the CALLER's $c. It happened
   # to work only because launch_process has a variable of the same name — see
-  # the identical note in be_health (lib/03-state.sh).
+  # the identical note in be_health (lib/03b-state.sh).
   local c=$1
   local f="$LOG_DIR/$c.log" i
   [ -s "$f" ] || { : > "$f"; return 0; }

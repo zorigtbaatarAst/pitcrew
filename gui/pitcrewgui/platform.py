@@ -72,7 +72,7 @@ def _bash_candidates() -> tuple[str, ...]:
 def _bash_major(command: str) -> int:
     try:
         result = subprocess.run([command, "-c", "echo ${BASH_VERSINFO[0]}"],
-                                capture_output=True, text=True, timeout=5)
+                                capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.SubprocessError):
         return 0
     return int(result.stdout.strip()) if result.stdout.strip().isdigit() else 0

@@ -11,6 +11,7 @@ from gi.repository import Gio, GLib
 
 from .platform import bash5, missing_bash_message
 
+
 class Stream:
     """Owns the `pitcrew json --watch` child and turns its stdout into dicts.
 
@@ -162,7 +163,7 @@ def bash_syntax_error(text: str) -> str:
         return missing_bash_message()
     try:
         result = subprocess.run([bash, "-n", probe],
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.SubprocessError) as error:
         return f"could not run bash -n: {error}"
     finally:

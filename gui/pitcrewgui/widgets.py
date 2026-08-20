@@ -5,8 +5,16 @@ from __future__ import annotations
 import cairo
 from gi.repository import Adw, Gtk
 
-from .model import SERIES_COLORS, STATE_STYLE, UNKNOWN_STYLE, human_bytes, nice_max, rgb
+from .model import (
+    STATE_STYLE,
+    UNKNOWN_STYLE,
+    Series,
+    human_bytes,
+    nice_max,
+    rgb,
+)
 from .settings import SETTINGS_BY_KEY
+
 
 class Dot(Gtk.DrawingArea):
     """A filled circle in a series' colour — ties a row or legend to its line."""

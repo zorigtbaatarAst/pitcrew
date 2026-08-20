@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/07a-supervise.sh — optional auto-restart for components that die.
+# lib/07b-supervise.sh — optional auto-restart for components that die.
 #
 # Scope, deliberately: this runs inside the live dashboard's frame loop, not in
 # a daemon. pitcrew has no session and nothing to attach to, and adding a

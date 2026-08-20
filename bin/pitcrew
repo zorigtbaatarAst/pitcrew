@@ -54,6 +54,13 @@ for ((_hop = 0; _hop < 40; _hop++)); do
     *)  SELF="$(dirname "$SELF")/$_target" ;;
   esac
 done
+# Read, not baked in: the file is the single place a release number lives, and
+# `pitcrew --version` is how someone reporting a bug tells you what they ran.
+PITCREW_VERSION=$(cat "$(dirname "$SELF")/../VERSION" 2>/dev/null) || PITCREW_VERSION=unknown
+case "${1:-}" in
+  --version|-V) printf 'pitcrew %s\n' "${PITCREW_VERSION:-unknown}"; exit 0 ;;
+esac
+
 LIB_DIR="$(cd "$(dirname "$SELF")/../lib" 2>/dev/null && pwd)" || true
 [ -n "$LIB_DIR" ] && [ -d "$LIB_DIR" ] || {
   printf 'pitcrew: cannot locate its own lib/ from %s\n' "${BASH_SOURCE[0]}" >&2
@@ -79,6 +86,8 @@ Usage:
   pitcrew stop --deps                       also stop non-protected deps
   pitcrew restart <app>...
   pitcrew status [--json]           one-shot dashboard, or machine-readable state
+  pitcrew doctor [--json]           check the environment; --json exits non-zero if it is wrong
+  pitcrew --version
   pitcrew limit [<component> <size|default>]
                                      per-component RAM caps (no args = show them)
   pitcrew json [--watch [--interval N]]
@@ -185,7 +194,7 @@ case "${1:-watch}" in
   stale)   shift;  cmd_stale "$@" ;;
   profile) shift;  cmd_profile "$@" ;;
   shell)   shift;  cmd_shell "$@" ;;
-  doctor)          cmd_doctor ;;
+  doctor)  shift; if [ "${1:-}" = --json ]; then cmd_doctor_json; exit $?; else cmd_doctor; fi ;;
   urls)            cmd_urls ;;
   *)               die "unknown command '${1}' — try: pitcrew help" ;;
 esac

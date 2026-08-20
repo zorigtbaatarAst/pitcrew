@@ -6,10 +6,11 @@ from pathlib import Path
 
 from gi.repository import Adw, GLib, Gtk
 
-from .model import human_bytes
+from .model import human_bytes, plain
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error
 from .widgets import OutputView
+
 
 class InitDialog(Adw.Dialog):
     """`pitcrew init` with the guessing left where it belongs — in pitcrew.

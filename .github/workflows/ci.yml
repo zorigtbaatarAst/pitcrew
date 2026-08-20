@@ -74,10 +74,18 @@ jobs:
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: install the GUI dependencies, using our own installer
         run: make gui-deps YES=1
+      # The python half had no static analysis until ruff's first run found
+      # three undefined names, one of them a live NameError on a code path no
+      # test could reach. `make lint` skips ruff when it is absent, so CI is
+      # where it is actually enforced.
+      - name: install ruff
+        run: pipx install ruff || pip install --user ruff
       # --yes exits non-zero if anything is still missing, but say it loudly:
       # a silent "installed" that did not is the failure worth catching here.
       - name: and they really are importable now
         run: ./gui/install-deps.sh | tee /dev/stderr | grep -q 'Nothing to install'
+      - name: lint (shellcheck + ruff)
+        run: make lint
       - name: gui tests
         run: make test T=gui
       - name: the launcher finds an interpreter and runs

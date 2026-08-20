@@ -7,7 +7,7 @@
 # a box where you cannot install anything, so a missing shellcheck is a notice,
 # not a failure. CI installs it, so nothing is skipped there.
 set -u
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 rc=0
 echo "── parse check"
@@ -24,6 +24,26 @@ if ! command -v shellcheck >/dev/null 2>&1; then
   printf '\033[33m⚠\033[0m shellcheck not installed — skipping (dnf install ShellCheck / apt install shellcheck)\n'
   exit $rc
 fi
+# ── python ──────────────────────────────────────────────────────────────────
+# The GUI had no static analysis at all until this was added, and ruff's first
+# run found three undefined names — one of them a live NameError on the "add
+# project" folder picker that no test could reach. Same deal as shellcheck: a
+# missing ruff is a notice, not a failure, because pitcrew has to stay usable on
+# a box where you cannot install anything. CI installs it.
+if [ -d gui/pitcrewgui ]; then
+  echo "── python"
+  if command -v ruff >/dev/null 2>&1; then
+    ( cd gui && ruff check . ) || rc=1
+    [ $rc -eq 0 ] && printf '  \033[32m✓\033[0m ruff\n'
+  elif [ -x "$HOME/.local/bin/ruff" ]; then
+    ( cd gui && "$HOME/.local/bin/ruff" check . ) || rc=1
+    [ $rc -eq 0 ] && printf '  \033[32m✓\033[0m ruff\n'
+  else
+    printf '\033[33m⚠\033[0m ruff not installed — skipping (pip install ruff)\n'
+  fi
+  echo
+fi
+
 echo "── shellcheck"
 # SC1090/SC1091: sourced paths are computed at runtime, by design.
 # SC2034: lib files define variables consumed by other lib files.

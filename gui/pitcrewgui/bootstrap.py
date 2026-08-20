@@ -21,7 +21,7 @@ GUARD = "PITCREW_GUI_REEXEC"
 def _has_bindings(interpreter: str) -> bool:
     try:
         result = subprocess.run([interpreter, "-c", "import gi, cairo"],
-                                capture_output=True, timeout=15)
+                                capture_output=True, timeout=15, check=False)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
@@ -34,8 +34,8 @@ def ensure_bindings(script: str, argv: list[str]) -> None:
     import blow up somewhere less explicable.
     """
     try:
-        import gi  # noqa: F401
         import cairo  # noqa: F401
+        import gi  # noqa: F401
         return
     except ImportError:
         pass

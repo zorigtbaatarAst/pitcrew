@@ -7,6 +7,8 @@
 # be used by a human watching it, which is a low ceiling for a tool this
 # opinionated about being correct.
 
+PITCREW_JSON_SCHEMA=1
+
 _json_str() { # $1 → a JSON string literal, with the two characters that matter escaped
   local v=${1//\\/\\\\}
   printf '"%s"' "${v//\"/\\\"}"
@@ -26,6 +28,11 @@ cmd_json() {
   err_scan
   local c app role port first=1 up=0 starting=0 crashed=0 external=0 down=0 st
   printf '{'
+  # A version, because this object has consumers now: the desktop app, status
+  # lines, CI gates. Bump it when a field is REMOVED or changes meaning; adding
+  # one is backwards compatible and does not. test/output_test.sh pins the whole
+  # key set, so neither can happen by accident.
+  printf '"schema":%s,' "$PITCREW_JSON_SCHEMA"
   printf '"project":%s,' "$(_json_str "${PITCREW_PROJECT_NAME:-}")"
   printf '"root":%s,' "$(_json_str "$ROOT")"
   printf '"collector":%s,' "$(_json_str "$PITCREW_COLLECTOR")"

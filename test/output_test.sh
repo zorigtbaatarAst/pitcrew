@@ -17,16 +17,31 @@ test_json_is_valid_and_has_the_documented_shape() {
   local out; out=$(cmd_json)
   printf '%s' "$out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
     || { _t_bad "output is not valid JSON"; return; }
+
+  # The EXACT key set, not a substring match. This object has consumers — the
+  # desktop app, a status line, a CI gate — so a renamed or dropped field is a
+  # breaking change and has to fail here rather than in someone's dashboard.
+  # Adding a field is fine: add it to the list in the same commit, and bump
+  # PITCREW_JSON_SCHEMA only when something is removed or changes meaning.
   local keys; keys=$(printf '%s' "$out" | python3 -c '
 import json,sys
-d=json.load(sys.stdin)
+d = json.load(sys.stdin)
 print(" ".join(sorted(d)))
-c=d["components"][0]
-print(" ".join(sorted(c)))
-print(" ".join(sorted(d["summary"])))')
-  assert_match "$keys" 'components'  "top level"
-  assert_match "$keys" 'cpu errors'  "per component"
-  assert_match "$keys" 'crashed down external' "summary counts every state"
+print(" ".join(sorted(d["components"][0])))
+print(" ".join(sorted(d["summary"])))
+print(" ".join(sorted(d["machine"])))
+print(" ".join(sorted(d["deps"][0])) if d["deps"] else "name state")
+print(d["schema"])')
+
+  assert_eq "$(printf '%s' "$keys" | sed -n 1p)" \
+    "at collector components deps errorPattern logDir machine project root schema summary" "top level"
+  assert_eq "$(printf '%s' "$keys" | sed -n 2p)" \
+    "app cpu errors exit limit limitSource name pid port role rss state" "per component"
+  assert_eq "$(printf '%s' "$keys" | sed -n 3p)" \
+    "crashed down external starting up" "summary counts every state"
+  assert_eq "$(printf '%s' "$keys" | sed -n 4p)" "cpuPercent memTotal memUsed" "machine gauges"
+  assert_eq "$(printf '%s' "$keys" | sed -n 5p)" "name state" "per dependency"
+  assert_eq "$(printf '%s' "$keys" | sed -n 6p)" "1" "schema version is declared"
 }
 
 test_json_reports_the_real_component_model() {
@@ -133,6 +148,35 @@ for line in sys.stdin:
         json.loads(line); n+=1
 print(n)' 2>/dev/null)
   assert_eq "$n" 2 "each line parses on its own"
+}
+
+test_doctor_json_is_a_gate_not_a_reformat() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  # Not a scrape of doctor's prose: that is arranged for a human reading it
+  # once, and a changed glyph would break every consumer.
+  local out; out=$(cmd_doctor_json 2>/dev/null || true)
+  printf '%s' "$out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
+    || { _t_bad "doctor --json is not valid JSON"; return; }
+  local keys; keys=$(printf '%s' "$out" | python3 -c '
+import json,sys
+d = json.load(sys.stdin)
+print(" ".join(sorted(d)))
+print(" ".join(sorted(d["tools"])))')
+  assert_eq "$(printf '%s' "$keys" | sed -n 1p)" \
+    "bash capsEnforced capsFit capsWarning collector deps os portClashes schema tools version" \
+    "the whole key set, pinned like status --json"
+  assert_eq "$(printf '%s' "$keys" | sed -n 2p)" "docker fzf lsof" "tools it looks for"
+}
+
+test_doctor_json_fails_when_the_caps_do_not_fit() {
+  # The point of --json is that CI can gate on it directly. A machine too small
+  # for the configured caps has to be a non-zero exit, not a field nobody reads.
+  # sys_gauges has to be stubbed, not the variable: cmd_doctor_json snapshots
+  # first, and snapshot re-reads the real machine over anything set here.
+  local rc
+  rc=$( ( sys_gauges() { SYS_MEM_TOTAL_KB=$((1024 * 1024)); }   # a 1G machine
+          cmd_doctor_json >/dev/null 2>&1; echo $? ) )
+  assert_eq "$rc" "1" "a machine too small for the caps is a non-zero exit"
 }
 
 trap 'err_close; rm -rf "$LOG_DIR"' EXIT

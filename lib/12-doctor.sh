@@ -6,6 +6,7 @@
 cmd_doctor() {
   banner
   say "${BOLD}pitcrew runtime${RESET} ${GREY}(${PITCREW_OS})${RESET}"
+  ok "version ${PITCREW_VERSION:-unknown}"
   command -v bash >/dev/null && ok "bash   $BASH_VERSION"
   command -v lsof >/dev/null && ok "lsof   present ${GREY}(port → pid lookups)${RESET}" \
     || warn "lsof missing — falls back to ss (Linux) or port checks will be limited"
@@ -92,4 +93,61 @@ cmd_doctor() {
   fi
   [ -n "$avail" ] && say "  ${GREY}∙${RESET} ${avail}G RAM available · caps: backend $PITCREW_BE_MAX · frontend $PITCREW_FE_MAX"
   echo
+}
+
+# `doctor --json` — the same facts, for a machine.
+#
+# Deliberately NOT a reformat of the prose above: that output is arranged for a
+# human reading it once, and scraping it would break the first time a glyph
+# changed. This emits the checks themselves, so CI can gate on `capsFit` or
+# `portClashes` without knowing what the pretty version looks like.
+cmd_doctor_json() {
+  snapshot
+  local dep deps_json="" first=1 clashes
+  for dep in "${PITCREW_DEPS[@]:-}"; do
+    [ -n "$dep" ] || continue
+    [ $first = 1 ] || deps_json+=","
+    first=0
+    deps_json+="$(printf '{"name":%s,"running":%s}' \
+      "$(_json_str "$dep")" "$(container_running "$dep" && echo true || echo false)")"
+  done
+
+  ram_preflight "${PITCREW_COMPS[@]}"
+
+  # port_conflicts only means anything for a project in the registry — an
+  # in-repo config has no name to compare the others against.
+  local me=""
+  case "$PITCREW_CFG" in
+    "$PROJECTS_DIR"/*) me=${PITCREW_CFG##*/}; me=${me%.sh} ;;
+  esac
+  clashes=0
+  [ -n "$me" ] && clashes=$(port_conflicts "$me" 2>/dev/null | grep -c . || true)
+
+  printf '{'
+  printf '"schema":%s,' "$PITCREW_JSON_SCHEMA"
+  printf '"version":%s,' "$(_json_str "${PITCREW_VERSION:-unknown}")"
+  printf '"os":%s,' "$(_json_str "$PITCREW_OS")"
+  printf '"bash":%s,' "$(_json_str "$BASH_VERSION")"
+  printf '"collector":%s,' "$(_json_str "$PITCREW_COLLECTOR")"
+  printf '"capsEnforced":%s,' "$(_caps_enforced && echo true || echo false)"
+  printf '"capsFit":%s,' "$([ -z "$RAM_WARN" ] && echo true || echo false)"
+  printf '"capsWarning":%s,' "$(_json_str "${RAM_WARN:-}")"
+  printf '"portClashes":%s,' "$(_json_num "${clashes:-0}")"
+  printf '"tools":{"lsof":%s,"fzf":%s,"docker":%s},' \
+    "$(command -v lsof  >/dev/null 2>&1 && echo true || echo false)" \
+    "$(command -v fzf   >/dev/null 2>&1 && echo true || echo false)" \
+    "$(command -v docker >/dev/null 2>&1 && echo true || echo false)"
+  printf '"deps":[%s]' "$deps_json"
+  printf '}\n'
+  # Exit non-zero when something a CI job should care about is wrong, so
+  # `pitcrew doctor --json` can BE the gate rather than needing one wrapped
+  # around it.
+  [ -z "$RAM_WARN" ] && [ "${clashes:-0}" -eq 0 ]
+}
+
+_caps_enforced() {
+  case "$PITCREW_OS" in
+    macos|bsd) return 1 ;;
+    *) systemctl --user is-system-running >/dev/null 2>&1 ;;
+  esac
 }

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .platform import pitcrew_home
 
+
 class Setting:
     """One preference: its choices, its default, and how to read it back.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/03-state.sh — is a component up/starting/crashed/down/n-a right now?
+# lib/03b-state.sh — is a component up/starting/crashed/down/n-a right now?
 #
 # No terminal multiplexer involved: every started component has a pidfile at
 # .pitcrew/logs/<comp>.pid. A live pid + open port = up. A live pid with the

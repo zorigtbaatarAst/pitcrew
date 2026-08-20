@@ -1,0 +1,36 @@
+# Ruff config for the GUI.
+#
+# The bash half of this tool is gated at shellcheck-warning; this is the same
+# bargain for the python half, which had no static analysis at all until it was
+# found to contain three undefined names — one of them a live NameError on the
+# "add project" folder picker, which no test could reach.
+line-length = 100
+target-version = "py310"          # the oldest python a supported distro ships
+
+[lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes — undefined names, unused imports: the ones that bite
+    "I",         # import order
+    "B",         # bugbear
+    "UP",        # pyupgrade
+    "PL",        # pylint subset
+    "FURB",      # modernisation
+]
+ignore = [
+    "E501",      # line length is checked by the formatter's eye, not a hard stop
+    "PLR2004",   # magic values: a graph is full of 1024s and 0.45s that ARE the value
+    "PLR0913",   # GTK constructors legitimately take many arguments
+]
+
+[lint.per-file-ignores]
+# Deliberate: the version pins must run before any gi.repository import, and
+# bootstrap must stay importable on an interpreter with no bindings at all.
+"pitcrewgui/__init__.py" = ["F401"]
+# Every import in bootstrap is deferred ON PURPOSE: it runs before we know
+# whether `gi` is importable, so hoisting them to the top would break the one
+# thing this module exists to do.
+"pitcrewgui/bootstrap.py" = ["PLC0415"]
+# The CLI parser returns early per bad flag. Seven early returns read better
+# than one nested tree, and the alternative is a state variable.
+"pitcrewgui/app.py" = ["PLR0911"]

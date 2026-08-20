@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .platform import pitcrew_home
 
+
 def known_projects() -> list[str]:
     """Registered project names, read straight from the registry directory.
 
@@ -44,7 +45,7 @@ def declared_root(path: Path) -> Path | None:
         return Path(parts[0]).expanduser() if parts else None
     return None
 
-_SOURCES_OWN_CONFIG = re.compile(r"^\s*(?:\.|source)\s+.*pitcrew\.config\.sh", re.M)
+_SOURCES_OWN_CONFIG = re.compile(r"^\s*(?:\.|source)\s+.*pitcrew\.config\.sh", re.MULTILINE)
 
 def project_config_path(name: str) -> Path:
     """The file that actually holds this project's config.

@@ -6,12 +6,21 @@ from gi.repository import Adw, Gio, GLib, Gtk
 
 from .dialogs import ConfigDialog, InitDialog, LimitsDialog
 from .logview import LogView
-from .model import (SERIES_COLORS, STATE_STYLE, UNKNOWN_STYLE, Series, empty_message,
-                    group_of, human_bytes, plain)
+from .model import (
+    SERIES_COLORS,
+    STATE_STYLE,
+    UNKNOWN_STYLE,
+    Series,
+    empty_message,
+    group_of,
+    human_bytes,
+    plain,
+)
 from .registry import current_project, declared_root, known_projects, project_file
 from .runner import Runner, Stream
-from .settings import SETTINGS, SETTINGS_BY_KEY, Settings
-from .widgets import ComponentRow, Dot, Graph, OutputView
+from .settings import SETTINGS_BY_KEY, Settings
+from .widgets import ComponentRow, Dot, Graph
+
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, pitcrew: str, project: str | None, settings: Settings, **kwargs):
