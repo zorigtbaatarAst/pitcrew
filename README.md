@@ -257,6 +257,7 @@ The dashboard is for looking at. For everything else:
 
 ```bash
 pitcrew status --json     # the whole state, for a status line or a CI gate
+pitcrew json --watch      # the same object once per interval, as NDJSON
 pitcrew wait sales --timeout 90   # block until it is up
 pitcrew ps                # everything running, across every registered project
 pitcrew ports             # every port every project claims, and any clashes
@@ -274,6 +275,20 @@ pitcrew status --json | jq -r '.summary | "\(.up) up, \(.crashed) crashed"'
 
 Numbers that are not known come through as `null`, never `0` — a stopped
 service has no RSS, and a status line should not plot a zero for it.
+
+That includes **cpu**, which is a *delta* between two samples: a one-shot
+`status --json` has nothing to subtract and reports `null`, not a `0` that a
+consumer could not tell apart from an idle service. To get real cpu you need
+one process sampling repeatedly, which is what `json --watch` is:
+
+```bash
+# one JSON object per line, forever; first line has null cpu, the rest are real
+pitcrew json --watch --interval 5 | while read -r frame; do
+  jq -r '"\(.summary.up) up  \(.summary.crashed) crashed"' <<<"$frame"
+done
+```
+
+It exits quietly on SIGPIPE, so closing the reader is a normal way to stop it.
 
 ## Two projects, one machine
 
@@ -430,6 +445,39 @@ Graphs are coloured by each cell's **height**, cool at the bottom to hot at
 the top, so a climb is legible before you read a number. Height auto-scales to
 the series; how close a service is to its configured RAM cap moves to the
 colour of the number, which is where you look for it anyway.
+
+## Desktop app (Linux + GNOME)
+
+`gui/` is a GTK4 / libadwaita front-end, laid out like GNOME System Monitor: a
+component list, and a Resources view of live CPU and memory graphs.
+
+```bash
+make install-gui     # symlink + .desktop + icon into ~/.local
+pitcrew-gui          # or launch "pitcrew" from the app grid
+```
+
+It owns **no** measurement logic. Every number on screen arrives over
+`pitcrew json --watch`, the same snapshot the terminal dashboard draws, so the
+two can never disagree and a fix in `lib/03a-snapshot.sh` lands in both. The
+GUI is a renderer plus start/stop/restart buttons.
+
+- picks up whichever project `pitcrew use` selected; switch from the header, or
+  pin one with `pitcrew-gui -p <name>`
+- `-i N` sets the sample interval (default 2s)
+- only *running* components get a line in the graphs — a dozen flat zeroes for
+  stopped services hides the two you care about
+- errors surface in a banner with a Retry, never as a window quietly showing
+  stale numbers
+
+It needs the GTK bindings for the **system** python:
+
+```bash
+sudo dnf install python3-gobject python3-cairo gtk4 libadwaita   # Fedora
+sudo apt install python3-gi python3-gi-cairo gir1.2-adw-1        # Debian/Ubuntu
+```
+
+The terminal dashboard stays the primary interface — it is the one that works
+over ssh, which a GTK app never will.
 
 ## How it works
 

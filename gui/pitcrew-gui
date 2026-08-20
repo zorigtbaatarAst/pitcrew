@@ -23,6 +23,7 @@ import sys
 from collections import deque
 from pathlib import Path
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -57,7 +58,9 @@ def rgb(hex_color: str) -> tuple[float, float, float]:
 
 
 def human_bytes(n: float | None) -> str:
-    if not n:
+    """Bytes for humans. None means "we have no reading"; 0 means zero — an axis
+    label of "—" at the bottom of a graph is a bug, not a blank."""
+    if n is None:
         return "—"
     value = float(n)
     for unit in ("B", "KiB", "MiB", "GiB"):
@@ -68,9 +71,13 @@ def human_bytes(n: float | None) -> str:
 
 
 def nice_max(observed: float, floor: float) -> float:
-    """A round axis ceiling at or above what we've seen, never below `floor`."""
-    target = max(observed, floor)
-    step = 10 ** max(0, len(str(int(target))) - 2)
+    """A round axis ceiling above what we've seen, never below `floor`.
+
+    Rounded up to a multiple of FOUR steps so the four gridline labels land on
+    whole steps — otherwise a ceiling of 130 prints 98%/65%/32% down the side.
+    """
+    target = max(observed, floor, 1.0)
+    step = 4 * 10 ** max(0, len(str(int(target))) - 2)
     return max(floor, (int(target / step) + 1) * step)
 
 
@@ -174,28 +181,32 @@ class Graph(Gtk.DrawingArea):
 
     def _draw(self, _area, cr, width, height) -> None:
         fg = self.get_color()        # follows the theme; grid is the same ink, faded
-        pad_left, pad_right, pad_top, pad_bottom = 52, 8, 10, 18
+        cr.select_font_face("sans-serif")
+        cr.set_font_size(10)
+
+        peak = max((max(getattr(s, self._metric), default=0.0) for s in self._series), default=0.0)
+        ceiling = nice_max(peak, self._floor)
+        labels = [self._fmt(ceiling * (4 - i) / 4) for i in range(5)]
+
+        # The gutter is measured, not guessed: "858.3 MiB" is far wider than
+        # "100%", and a fixed padding silently clipped the leading digit off
+        # every memory label.
+        gutter = max(cr.text_extents(text).width for text in labels)
+        pad_left, pad_right, pad_top, pad_bottom = gutter + 16, 8, 10, 18
         plot_w = width - pad_left - pad_right
         plot_h = height - pad_top - pad_bottom
         if plot_w <= 0 or plot_h <= 0:
             return
 
-        peak = max((max(getattr(s, self._metric), default=0.0) for s in self._series), default=0.0)
-        ceiling = nice_max(peak, self._floor)
-
         cr.set_line_width(1)
-        cr.select_font_face("sans-serif")
-        cr.set_font_size(10)
-        for i in range(5):
+        for i, label in enumerate(labels):
             y = pad_top + plot_h * i / 4
             cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.10)
             cr.move_to(pad_left, y)
             cr.line_to(pad_left + plot_w, y)
             cr.stroke()
-            label = self._fmt(ceiling * (4 - i) / 4)
             cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
-            extents = cr.text_extents(label)
-            cr.move_to(pad_left - 8 - extents.width, y + 3)
+            cr.move_to(pad_left - 8 - cr.text_extents(label).width, y + 3)
             cr.show_text(label)
 
         for series in self._series:
@@ -209,7 +220,7 @@ class Graph(Gtk.DrawingArea):
             start_x = pad_left + plot_w - step * (len(points) - 1)
             cr.set_source_rgb(*series.rgb)
             cr.set_line_width(2)
-            cr.set_line_join(1)  # round
+            cr.set_line_join(cairo.LINE_JOIN_ROUND)
             for index, value in enumerate(points):
                 x = start_x + step * index
                 y = pad_top + plot_h * (1 - min(value / ceiling, 1.0))

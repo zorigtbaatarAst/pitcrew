@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=pitcrew
+GenericName=Dev Stack Monitor
+Comment=Live view of your local dev stack — components, CPU and memory
+Exec=@BIN@
+Icon=mn.zb.PitcrewGui
+Categories=System;Monitor;
+Keywords=pitcrew;services;stack;monitor;dev;
+Terminal=false
+StartupNotify=true
+# Must equal the GTK application_id, or the Shell shows a generic cog and
+# refuses to group the live window with this launcher.
+StartupWMClass=mn.zb.PitcrewGui

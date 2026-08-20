@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- pitcrew-gui app icon: the component list the app itself shows — a status
+     dot and a load bar per service. Reads at 32px because it is three shapes. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d4657"/>
+      <stop offset="1" stop-color="#242b38"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <rect x="8.5" y="8.5" width="111" height="111" rx="25.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.10"/>
+
+  <!-- one row per service: state dot + how much it is using -->
+  <g>
+    <circle cx="34" cy="42" r="6" fill="#33d17a"/>
+    <rect x="48" y="37" width="52" height="10" rx="5" fill="#33d17a" fill-opacity="0.85"/>
+  </g>
+  <g>
+    <circle cx="34" cy="64" r="6" fill="#f6d32d"/>
+    <rect x="48" y="59" width="34" height="10" rx="5" fill="#f6d32d" fill-opacity="0.85"/>
+  </g>
+  <g>
+    <circle cx="34" cy="86" r="6" fill="#77767b"/>
+    <rect x="48" y="81" width="16" height="10" rx="5" fill="#77767b" fill-opacity="0.7"/>
+  </g>
+</svg>
