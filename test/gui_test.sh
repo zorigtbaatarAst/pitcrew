@@ -321,4 +321,90 @@ print(bool(pgui.missing_bindings_message()))
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and there is an install hint when none work"
 }
 
+# ── the dependency installer ────────────────────────────────────────────────
+#
+# Only the Fedora path can actually be run here, so these check the tables and,
+# more importantly, that nothing privileged happens without being asked.
+
+_deps() { # source the tables without running anything
+  PITCREW_DEPS_LIB=1 bash -c "source '$GUI_DIR/install-deps.sh'; $1"
+}
+
+test_every_supported_package_manager_has_a_real_plan() {
+  [ -r "$GUI_DIR/install-deps.sh" ] || return 0
+  local m pkgs cmd
+  for m in dnf apt pacman zypper apk brew msys2; do
+    pkgs=$(_deps "packages_for $m")
+    cmd=$(_deps "install_command_for $m '$pkgs'")
+    assert_ne "$pkgs" "" "$m: has packages"
+    assert_ne "$cmd" "" "$m: has an install command"
+    # openSUSE calls it typelib-1_0-Adw-1, hence the case-insensitive match.
+    assert_match "$pkgs" '[Aa]dw' "$m: installs libadwaita"
+  done
+  assert_empty "$(_deps "packages_for freedos")" "an unknown manager promises nothing"
+  assert_empty "$(_deps "install_command_for freedos x")" "and offers no command"
+}
+
+test_homebrew_is_never_run_as_root() {
+  [ -r "$GUI_DIR/install-deps.sh" ] || return 0
+  # Homebrew refuses to run under sudo and says so rudely; a plan that used it
+  # would fail on every Mac.
+  local cmd; cmd=$(_deps "install_command_for brew 'gtk4'")
+  assert_not_match "$cmd" 'sudo' "brew install runs unprivileged"
+  assert_not_match "$(_deps "install_command_for msys2 'x'")" 'sudo' "MSYS2 has no sudo either"
+  assert_match "$(_deps "install_command_for dnf 'x'")" 'sudo' "but a system manager does need it"
+}
+
+test_macos_is_the_only_platform_told_to_install_bash() {
+  [ -r "$GUI_DIR/install-deps.sh" ] || return 0
+  # Everywhere else already ships bash 5; macOS is stuck on 3.2, which pitcrew
+  # refuses to run under.
+  assert_eq "$(_deps "bash5_package_for brew")" "bash" "macOS gets bash"
+  local m
+  for m in dnf apt pacman zypper apk msys2; do
+    assert_empty "$(_deps "bash5_package_for $m")" "$m does not need it"
+  done
+}
+
+test_nothing_privileged_runs_until_it_is_asked_to() {
+  [ -r "$GUI_DIR/install-deps.sh" ] || return 0
+  # The whole safety property: running the installer must PRINT the command, not
+  # execute it. Both probes are stubbed to "missing" so the plan is non-empty.
+  local out
+  out=$(PITCREW_DEPS_LIB=1 PITCREW_PKG=dnf bash -c "
+    source '$GUI_DIR/install-deps.sh'
+    have_bindings() { return 1; }
+    have_bash5() { return 0; }
+    main" 2>&1)
+  assert_match "$out" 'sudo dnf install' "it shows exactly what it would run"
+  assert_not_match "$out" 'running…' "and does not run it"
+  assert_match "$out" 'Re-run with --yes' "saying how to consent"
+}
+
+test_an_unknown_platform_says_so_instead_of_all_clear() {
+  [ -r "$GUI_DIR/install-deps.sh" ] || return 0
+  # The empty package list for an unrecognised manager used to look exactly like
+  # "nothing missing", sending someone away believing they were ready to go.
+  local out
+  out=$(PITCREW_DEPS_LIB=1 PITCREW_PKG=freedos bash -c "
+    source '$GUI_DIR/install-deps.sh'
+    have_bindings() { return 1; }
+    have_bash5() { return 1; }
+    main --dry-run" 2>&1)
+  assert_not_match "$out" 'Nothing to install' "it does not claim all-clear"
+  assert_match "$out" 'MISSING' "it says what is missing"
+}
+
+test_dry_run_succeeds_even_when_things_are_missing() {
+  [ -r "$GUI_DIR/install-deps.sh" ] || return 0
+  # So it is usable as a report in a script without failing the script.
+  local rc
+  rc=$(PITCREW_DEPS_LIB=1 PITCREW_PKG=unknown bash -c "
+    source '$GUI_DIR/install-deps.sh'
+    have_bindings() { return 1; }
+    have_bash5() { return 1; }
+    main --dry-run >/dev/null 2>&1; echo \$?")
+  assert_eq "$rc" "0" "--dry-run reports without failing"
+}
+
 run_tests

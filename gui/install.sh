@@ -125,14 +125,11 @@ case "$PLATFORM" in
 esac
 
 if ! have_bindings >/dev/null; then
+  # One place knows package names per OS, and it is not this file.
   echo
   echo "warning: no python here can import the GTK bindings yet." >&2
-  case "$PLATFORM" in
-    macos) echo "  brew install pygobject3 gtk4 libadwaita" >&2 ;;
-    linux) echo "  fedora: sudo dnf install python3-gobject python3-cairo gtk4 libadwaita" >&2
-           echo "  debian: sudo apt install python3-gi python3-gi-cairo gir1.2-adw-1" >&2 ;;
-    *)     echo "  install PyGObject, GTK 4 and libadwaita for your platform" >&2 ;;
-  esac
+  echo "  see what this OS needs:  make gui-deps" >&2
+  echo "  or install it:           make gui-deps YES=1" >&2
 fi
 
 echo

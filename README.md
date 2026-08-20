@@ -554,18 +554,35 @@ a message instead of silently falling back: a command line is an explicit
 instruction, and guessing at a typo there is how you end up debugging the wrong
 setting.
 
-It needs PyGObject, GTK 4 and libadwaita for *some* python on the box — the
-launcher finds it, so it does not matter which:
+### Dependencies
 
 ```bash
-sudo dnf install python3-gobject python3-cairo gtk4 libadwaita   # Fedora
-sudo apt install python3-gi python3-gi-cairo gir1.2-adw-1        # Debian/Ubuntu
-brew install pygobject3 gtk4 libadwaita                          # macOS
+make gui-deps          # what does this OS need, and what would install it
+make gui-deps YES=1    # go ahead and install it
 ```
 
-On macOS you also need **bash 5** (`brew install bash`, ahead of `/bin/bash` on
-`$PATH`) — pitcrew refuses to run under the 3.2 Apple ships, and the config
-editor validates with the same bash rather than whichever one is first.
+`gui/install-deps.sh` detects the package manager and knows what each one calls
+PyGObject, pycairo, GTK 4 and libadwaita — plus **bash 5** on macOS, where the
+system bash is 3.2 and pitcrew refuses to run under it.
+
+| | |
+|---|---|
+| detected | `dnf` `apt` `pacman` `zypper` `apk` `brew` MSYS2 `pacman` |
+| override | `PITCREW_PKG=apt make gui-deps` |
+
+**It will not install anything unless you say so.** The default prints the exact
+command and stops; `YES=1` is the opt-in. A script that installs system packages
+the moment you run it is a script people learn not to run — and `sudo` is not
+something an installer should help itself to.
+
+Two constraints the script lives under, both of which rule out the obvious
+implementation: it cannot be written in python-with-`gi` (the bindings are what
+it installs) and it cannot use bash 5 (that is what it installs on macOS), so it
+is bash 3.2 throughout.
+
+Only the Fedora path has actually been run. The other tables are written from
+the documented package names and are unverified — which is the other reason the
+command is printed before anything happens.
 
 The terminal dashboard stays the primary interface — it is the one that works
 over ssh, which a GTK app never will.
