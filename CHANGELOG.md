@@ -36,6 +36,10 @@ field is removed or changes meaning.
   an **errors → logs** jump, log **filtering**, **group and stack-wide**
   start/stop/restart, **profiles**, **keyboard shortcuts**, and remembered
   window geometry in the desktop app.
+- A **share-of-memory ring** and **click-to-mute legend entries** on the
+  Resources view.
+- A **hover readout** on the Resources graphs and **self-folding groups** in
+  the Components view.
 - Per-row **sparklines**, **uptime**, **restart counts**, a **starting**
   spinner, a **filter box** and a **click-for-detail** dialog in the desktop
   app's Components view.

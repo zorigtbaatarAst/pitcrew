@@ -12,16 +12,18 @@ from .model import (
     UNKNOWN_STYLE,
     Series,
     empty_message,
+    group_is_idle,
     group_of,
     human_bytes,
     plain,
+    share_slices,
 )
 from .notify import CrashWatcher
 from .profiles import profile_names
 from .registry import current_project, declared_root, known_projects, project_file
 from .runner import Runner, Stream
 from .settings import SETTINGS_BY_KEY, Settings
-from .widgets import ComponentRow, Dot, Graph
+from .widgets import ComponentRow, Dot, Graph, ShareChart
 
 
 class Window(Adw.ApplicationWindow):
@@ -31,20 +33,7 @@ class Window(Adw.ApplicationWindow):
         self._project = project
         self._settings = settings
         self._runner = Runner(pitcrew)
-        self._stream: Stream | None = None
-        self._series: dict[str, Series] = {}
-        self._rows: dict[str, ComponentRow] = {}
-        self._dep_rows: dict[str, Adw.ActionRow] = {}
-        self._groups: list[Adw.PreferencesGroup] = []
-        self._group_widgets: dict[str, Adw.PreferencesGroup] = {}
-        # Rebuilding the list is only correct-and-cheap because it happens when
-        # the SHAPE changes, not every frame. This is that shape.
-        self._layout_key: tuple | None = None
-        self._colors: dict[str, str] = {}
-        self._last_components: list[dict] = []
-        self._machine_total = 0
-        self._last_at = 0
-        self._last_log_dir: str | None = None
+        self._init_state()
 
         self.set_title("pitcrew")
         # Remembered across runs: reopening at 900x680 on every launch, on the
@@ -95,6 +84,29 @@ class Window(Adw.ApplicationWindow):
         if settings["tab"] in ("components", "resources", "logs", "projects"):
             self._stack.set_visible_child_name(settings["tab"])
         self._restart_stream()
+
+    def _init_state(self) -> None:
+        """Everything the frame loop reads, in one place rather than scattered
+        through a constructor that also builds the entire UI."""
+        self._stream: Stream | None = None
+        self._series: dict[str, Series] = {}
+        self._rows: dict[str, ComponentRow] = {}
+        self._dep_rows: dict[str, Adw.ActionRow] = {}
+        self._groups: list[Adw.PreferencesGroup] = []
+        self._group_widgets: dict[str, Adw.PreferencesGroup] = {}
+        self._group_toggles: dict[str, Gtk.Button] = {}
+        self._group_rows: dict[str, list] = {}
+        self._collapsed: dict[str, bool] = {}
+        self._pinned: set[str] = set()          # headings the user has toggled
+        self._colors: dict[str, str] = {}
+        self._hidden: set[str] = set()          # series muted from the legend
+        # Rebuilding the list is only correct-and-cheap because it happens when
+        # the SHAPE changes, not every frame. This is that shape.
+        self._layout_key: tuple | None = None
+        self._last_components: list[dict] = []
+        self._last_log_dir: str | None = None
+        self._machine_total = 0
+        self._last_at = 0
 
     # ── keyboard ────────────────────────────────────────────────────────────
     def _install_shortcuts(self) -> None:
@@ -325,6 +337,14 @@ class Window(Adw.ApplicationWindow):
             frame = Gtk.Frame()
             frame.set_child(graph)
             box.append(frame)
+        share_label = Gtk.Label(label="Share of memory", halign=Gtk.Align.START)
+        share_label.add_css_class("heading")
+        box.append(share_label)
+        self._share = ShareChart()
+        share_frame = Gtk.Frame()
+        share_frame.set_child(self._share)
+        box.append(share_frame)
+
         box.append(self._legend)
 
         # What the project costs, against what the machine actually has. Without
@@ -667,9 +687,13 @@ class Window(Adw.ApplicationWindow):
             self._layout_key = layout_key
 
         now = self._last_at
+        auto = self._settings["collapse"] == "auto"
         for (_sort, heading), comps in ordered:
             for comp in comps:
                 self._rows[comp["name"]].update(comp, self._series.get(comp["name"]), now)
+            if heading not in self._pinned:
+                self._collapsed[heading] = auto and group_is_idle(comps)
+            self._apply_collapse(heading)
             group = self._group_widgets.get(heading)
             if group is not None:
                 group.set_description(self._group_summary(comps))
@@ -680,6 +704,8 @@ class Window(Adw.ApplicationWindow):
         self._groups.clear()
         self._rows.clear()
         self._group_widgets.clear()
+        self._group_toggles = {}
+        self._group_rows: dict[str, list] = {}
 
         # Lift the dependencies group out once, then put it back last, so it
         # stays pinned below the components however many groups there are.
@@ -690,7 +716,7 @@ class Window(Adw.ApplicationWindow):
             # Starting "sales" means both its roles. Doing that one row at a
             # time is the commonest thing anyone does here, so it belongs on
             # the heading rather than in a menu.
-            group.set_header_suffix(self._group_actions(comps))
+            group.set_header_suffix(self._group_actions(heading, comps))
             for comp in comps:
                 row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action,
                                    self._show_logs_for)
@@ -698,6 +724,7 @@ class Window(Adw.ApplicationWindow):
                 row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
                 group.add(row)
                 self._rows[comp["name"]] = row
+                self._group_rows.setdefault(heading, []).append(row)
             self._comp_page.add(group)
             self._groups.append(group)
             self._group_widgets[heading] = group
@@ -713,10 +740,21 @@ class Window(Adw.ApplicationWindow):
             self._empty_label.set_text(empty_message(total))
         self._empty_group.set_visible(True)
 
-    def _group_actions(self, comps: list[dict]) -> Gtk.Widget:
+    def _group_actions(self, heading: str, comps: list[dict]) -> Gtk.Widget:
         names = [c["name"] for c in comps]
         running = [c for c in comps if c.get("state") in ("up", "starting", "external")]
         box = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+
+        # Six headings and twelve rows is a lot of scrolling to reach the two
+        # apps you are actually working on. A group with nothing running folds
+        # by default; the heading keeps its summary and its buttons, so a folded
+        # group is still readable and still actionable.
+        toggle = Gtk.Button(icon_name="pan-down-symbolic", tooltip_text="Collapse")
+        toggle.add_css_class("flat")
+        toggle.connect("clicked", lambda _b, h=heading: self._toggle_group(h))
+        box.append(toggle)
+        self._group_toggles[heading] = toggle
+
         if len(running) < len(comps):
             box.append(self._icon_button("media-playback-start-symbolic", "Start all",
                                          lambda: self._run_action("start", *names)))
@@ -726,6 +764,23 @@ class Window(Adw.ApplicationWindow):
             box.append(self._icon_button("media-playback-stop-symbolic", "Stop all",
                                          lambda: self._run_action("stop", *names)))
         return box
+
+    def _toggle_group(self, heading: str) -> None:
+        # An explicit click wins over the automatic rule for the rest of the
+        # session: having a group you just opened fold itself again on the next
+        # frame would be maddening.
+        self._collapsed[heading] = not self._collapsed.get(heading, False)
+        self._pinned.add(heading)
+        self._apply_collapse(heading)
+
+    def _apply_collapse(self, heading: str) -> None:
+        folded = self._collapsed.get(heading, False)
+        for row in self._group_rows.get(heading, []):
+            row.set_visible(not folded)
+        toggle = self._group_toggles.get(heading)
+        if toggle is not None:
+            toggle.set_icon_name("pan-end-symbolic" if folded else "pan-down-symbolic")
+            toggle.set_tooltip_text("Expand" if folded else "Collapse")
 
     @staticmethod
     def _icon_button(icon: str, tooltip: str, action) -> Gtk.Button:
@@ -764,10 +819,19 @@ class Window(Adw.ApplicationWindow):
             # A dozen flat zeroes for stopped services hides the two you care about.
             wanted = {c["name"] for c in components
                       if c.get("state") in ("up", "starting", "external")}
-        plotted = [s for name, s in self._series.items() if name in wanted]
+        # The legend still lists a muted series — hiding its own off-switch is
+        # how a toggle becomes a trap.
+        listed = [s for name, s in self._series.items() if name in wanted]
+        plotted = [s for s in listed if s.name not in self._hidden]
         self._cpu_graph.set_series(plotted, history)
         self._rss_graph.set_series(plotted, history)
-        self._rebuild_legend(plotted)
+        self._rebuild_legend(listed)
+
+        by_name = {c["name"]: c for c in components}
+        colour = {s.name: s.rgb for s in plotted}
+        rows, total = share_slices((s.name, by_name.get(s.name, {}).get("rss") or 0)
+                                   for s in plotted)
+        self._share.set_slices(((n, v, colour[n]) for n, v in rows), total)
 
     def _update_machine_summary(self, components: list[dict], machine: dict) -> None:
         used = sum(c.get("rss") or 0 for c in components)
@@ -802,7 +866,21 @@ class Window(Adw.ApplicationWindow):
             label = Gtk.Label(label=item.name)
             label.add_css_class("caption")
             box.append(label)
-            self._legend.append(box)
+
+            # The legend is the natural place to mute a series: twelve
+            # overlapping lines are unreadable, and the entry naming one is
+            # exactly where you reach to say "not that one".
+            button = Gtk.Button(child=box, tooltip_text=f"Show or hide {item.name}")
+            button.add_css_class("flat")
+            if item.name in self._hidden:
+                button.set_opacity(0.4)
+            button.connect("clicked", lambda _b, n=item.name: self._toggle_series(n))
+            self._legend.append(button)
+
+    def _toggle_series(self, name: str) -> None:
+        self._hidden.symmetric_difference_update({name})
+        if self._last_components:
+            self._render_graphs(self._last_components, self._settings["history"])
 
     # ── actions ─────────────────────────────────────────────────────────────
     def _run_action(self, verb: str, *components: str) -> None:

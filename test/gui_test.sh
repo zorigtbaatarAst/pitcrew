@@ -619,4 +619,57 @@ print(matching('zzz'))
   assert_eq "$(printf '%s' "$out" | sed -n 4p)" "[]" "no match is empty, not everything"
 }
 
+test_hovering_a_graph_reads_the_nearest_sample() {
+  gui_available || return 0
+  # With a few minutes of history the line only occupies the right edge of the
+  # plot. Rejecting a hover over the empty left half would mean the readout
+  # shows nothing for most of the widget, which is when you most want it.
+  local out; out=$(_drive "
+from pitcrewgui.model import hover_index
+print(hover_index(0, 800, 5, 20),        # left of every sample
+      hover_index(850, 800, 5, 20),      # exactly on one
+      hover_index(9999, 800, 5, 20),     # right of every sample
+      hover_index(500, 0, 5, 0),         # nothing plotted yet
+      hover_index(500, 0, 0, 4))         # a one-sample series has no step
+")
+  assert_eq "$out" "0 10 19 0 0" "clamped into the series at both ends"
+}
+
+test_a_group_folds_only_when_nothing_wants_attention() {
+  gui_available || return 0
+  # Folding away the one group that just crashed would be exactly backwards.
+  local out; out=$(_drive "
+from pitcrewgui.model import group_is_idle
+print(group_is_idle([{'state': 'down'}, {'state': 'down'}]),
+      group_is_idle([{'state': 'down'}, {'state': 'up'}]),
+      group_is_idle([{'state': 'down'}, {'state': 'crashed'}]),
+      group_is_idle([{'state': 'down'}, {'state': 'starting'}]),
+      group_is_idle([{'state': 'down'}, {'state': 'external'}]),
+      group_is_idle([]))
+")
+  assert_eq "$out" "True False False False False True" \
+    "all-down folds; up, crashed, starting and external all keep it open"
+}
+
+test_the_share_ring_ranks_and_totals_what_is_running() {
+  gui_available || return 0
+  # The line graphs are bad at "which of these twelve is the problem" — a 3 GiB
+  # frontend and a 300 MiB worker are both just lines. The ring answers it, so
+  # the order has to be biggest-first and the total has to be the sum of what
+  # is actually drawn.
+  local out; out=$(_drive "
+from pitcrewgui.model import share_slices
+rows, total = share_slices([('a', 100), ('b', 300), ('c', 0), ('d', None)])
+print(rows)
+print(total)
+print(share_slices([]))
+print(round(rows[0][1] / total * 100))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "[('b', 300.0), ('a', 100.0)]" \
+    "biggest first, and nothing for a component using nothing"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "400.0" "the total is the sum of the slices"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "([], 0)" "an idle stack draws no ring"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "75" "shares are of the drawn total"
+}
+
 run_tests

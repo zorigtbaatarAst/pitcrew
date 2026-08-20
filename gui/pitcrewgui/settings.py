@@ -49,6 +49,8 @@ SETTINGS = (
             "Whether stopped components are listed"),
     Setting("plot", "running", ["running", "all"],
             "Which components get a line in the graphs"),
+    Setting("collapse", "auto", ["auto", "never"],
+            "Fold up groups where nothing is running"),
     Setting("notify", "crash", ["crash", "none"],
             "Send a desktop notification when a component crashes"),
     # Window geometry is a preference like any other, and lives in the same file

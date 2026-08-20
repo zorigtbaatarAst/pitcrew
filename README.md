@@ -676,7 +676,21 @@ GUI is a renderer plus start/stop/restart buttons.
   against its cap and where that cap came from, URL, health, log path, and the
   process tree
 - a **filter box**, because twelve rows plus six headings is a lot of scrolling
-  to answer "is sales up"
+  to answer "is sales up" — and groups with **nothing running fold themselves**,
+  keeping their summary and their buttons. Clicking a fold pins it for the
+  session, so a group you just opened does not shut on the next frame.
+  `--collapse never` turns the automatic part off
+- a **share-of-memory ring** ranks what is actually eating the stack, with the
+  project total in the middle. The line graphs answer "is this climbing"; they
+  are bad at "which of these twelve is the problem", because a 3 GiB frontend
+  and a 300 MiB worker are both just lines
+- **click a legend entry to mute its line.** It drops out of both graphs and
+  the ring, and stays listed (dimmed) so you can bring it back — hiding a
+  toggle's own off-switch is how a toggle becomes a trap
+- the Resources graphs have a **hover readout**: a crosshair, a dot on every
+  series, and a panel naming each one and its value at that sample. It reads
+  the *nearest* sample rather than nothing, because early on the line only
+  occupies the right edge of the plot
 - the port on a running row is a **button**: it opens the real URL, including
   the `--url-path` every backend sits behind, and backends with a configured
   health path say `health ✓`

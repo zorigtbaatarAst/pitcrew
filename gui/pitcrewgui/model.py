@@ -107,3 +107,37 @@ def group_of(comp: dict, mode: str) -> tuple[str, str]:
         return {"be": "0", "fe": "1"}.get(role, "2"), \
             {"be": "Backends", "fe": "Frontends"}.get(role, "Other")
     return "", "Components"
+
+
+def hover_index(x: float, start_x: float, step: float, count: int) -> int:
+    """Which sample the pointer is nearest, clamped into the series.
+
+    Clamped rather than rejected: with a few minutes of history the line only
+    occupies the right edge of the plot, and hovering the empty left half should
+    read the first sample rather than showing nothing at all.
+    """
+    if count <= 0:
+        return 0
+    index = round((x - start_x) / step) if step else 0
+    return max(0, min(index, count - 1))
+
+
+def group_is_idle(comps: list[dict]) -> bool:
+    """True when nothing in a group wants attention.
+
+    `crashed` counts as wanting attention — folding away the one group that
+    just died would be exactly backwards.
+    """
+    return not any(c.get("state") in ("up", "starting", "external", "crashed") for c in comps)
+
+
+def share_slices(pairs) -> tuple[list[tuple[str, float]], float]:
+    """(name, bytes) pairs as ring slices: biggest first, with the total.
+
+    Components using nothing are dropped rather than drawn as zero-width
+    slices, which would only add entries to the key for things that are not
+    there.
+    """
+    rows = [(name, float(value)) for name, value in pairs if value]
+    rows.sort(key=lambda row: row[1], reverse=True)
+    return rows, sum(value for _name, value in rows)

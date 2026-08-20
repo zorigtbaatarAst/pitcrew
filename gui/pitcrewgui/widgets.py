@@ -9,6 +9,7 @@ from .model import (
     STATE_STYLE,
     UNKNOWN_STYLE,
     Series,
+    hover_index,
     human_bytes,
     nice_max,
     rgb,
@@ -52,9 +53,27 @@ class Graph(Gtk.DrawingArea):
         self._series: list[Series] = []
         self._history = SETTINGS_BY_KEY["history"].default
         self._forced_ceiling: float | None = None
+        # Geometry from the last paint, so the pointer can be mapped back to a
+        # sample without re-deriving the layout (which depends on the measured
+        # label gutter, and would drift if computed twice).
+        self._geom: dict | None = None
+        self._hover_x: float | None = None
         self.set_content_height(180)
         self.set_hexpand(True)
         self.set_draw_func(self._draw)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self._on_motion)
+        motion.connect("leave", lambda _c: self._set_hover(None))
+        self.add_controller(motion)
+
+    def _on_motion(self, _controller, x: float, _y: float) -> None:
+        self._set_hover(x)
+
+    def _set_hover(self, x: float | None) -> None:
+        if x != self._hover_x:
+            self._hover_x = x
+            self.queue_draw()
 
     def set_ceiling(self, ceiling: float | None) -> None:
         """Pin the axis maximum, or None to scale to the data.
@@ -94,6 +113,9 @@ class Graph(Gtk.DrawingArea):
         if plot_w <= 0 or plot_h <= 0:
             return
 
+        self._geom = {"pad_left": pad_left, "pad_top": pad_top,
+                      "plot_w": plot_w, "plot_h": plot_h, "ceiling": ceiling}
+
         cr.set_line_width(1)
         for i, label in enumerate(labels):
             y = pad_top + plot_h * i / 4
@@ -122,6 +144,66 @@ class Graph(Gtk.DrawingArea):
                 y = pad_top + plot_h * (1 - min(value / ceiling, 1.0))
                 cr.line_to(x, y) if index else cr.move_to(x, y)
             cr.stroke()
+
+        self._draw_hover(cr, fg, pad_left, pad_top, plot_w, plot_h, ceiling)
+
+    def _draw_hover(self, cr, fg, pad_left, pad_top, plot_w, plot_h, ceiling) -> None:
+        """A crosshair and every series' value where the pointer is.
+
+        A spike you can see but not measure is half an answer: the graph shows
+        that something happened, and the readout says what and how much.
+        """
+        if self._hover_x is None or not self._series:
+            return
+        x = min(max(self._hover_x, pad_left), pad_left + plot_w)
+
+        readings = []
+        for series in self._series:
+            points = getattr(series, self._metric)
+            if len(points) < 2:
+                continue
+            step = plot_w / (self._history - 1)
+            start_x = pad_left + plot_w - step * (len(points) - 1)
+            index = hover_index(x, start_x, step, len(points))
+            value = points[index]
+            readings.append((series, value,
+                             start_x + step * index,
+                             pad_top + plot_h * (1 - min(value / ceiling, 1.0))))
+        if not readings:
+            return
+
+        line_x = readings[0][2]
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.35)
+        cr.set_line_width(1)
+        cr.move_to(line_x, pad_top)
+        cr.line_to(line_x, pad_top + plot_h)
+        cr.stroke()
+        for series, _value, px, py in readings:
+            cr.set_source_rgb(*series.rgb)
+            cr.arc(px, py, 3, 0, 2 * 3.141592653589793)
+            cr.fill()
+
+        # The panel flips to the other side of the crosshair near the right
+        # edge, so the numbers never fall off the widget.
+        cr.select_font_face("sans-serif")
+        cr.set_font_size(11)
+        rows = [(s, f"{s.name}  {self._fmt(v)}") for s, v, _px, _py in readings]
+        text_w = max(cr.text_extents(t).width for _s, t in rows)
+        box_w, box_h = text_w + 26, len(rows) * 15 + 10
+        box_x = line_x + 10 if line_x + 10 + box_w < pad_left + plot_w else line_x - 10 - box_w
+        box_y = min(pad_top + 4, pad_top + plot_h - box_h)
+
+        cr.set_source_rgba(0, 0, 0, 0.72)
+        cr.rectangle(box_x, box_y, box_w, box_h)
+        cr.fill()
+        for row, (series, text) in enumerate(rows):
+            y = box_y + 18 + row * 15
+            cr.set_source_rgb(*series.rgb)
+            cr.arc(box_x + 9, y - 4, 3.5, 0, 2 * 3.141592653589793)
+            cr.fill()
+            cr.set_source_rgb(0.92, 0.92, 0.92)
+            cr.move_to(box_x + 18, y)
+            cr.show_text(text)
 
 class Sparkline(Gtk.DrawingArea):
     """A component's recent memory, in the row you are already looking at.
@@ -192,6 +274,91 @@ def human_age(seconds: float | None) -> str:
         return f"{hours}h{rest // 60:02d}m"
     days, rest = divmod(seconds, 86400)
     return f"{days}d{rest // 3600:02d}h"
+
+
+class ShareChart(Gtk.DrawingArea):
+    """Who is eating the stack, as a share of it.
+
+    The line graphs answer "is this climbing"; they are bad at "which of these
+    twelve is the problem", because a 3 GiB frontend and a 300 MiB cron worker
+    are both just lines. A ring answers that in one look, and the slices reuse
+    the series colours so it reads against the legend and the row sparklines
+    without a second key.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._slices: list[tuple[str, float, tuple[float, float, float]]] = []
+        self._total = 0.0
+        self.set_content_height(190)
+        self.set_hexpand(True)
+        self.set_draw_func(self._draw)
+
+    def set_slices(self, slices, total: float) -> None:
+        self._slices = list(slices)
+        self._total = total
+        self.queue_draw()
+
+    def _draw(self, _area, cr, width, height) -> None:
+        fg = self.get_color()
+        cr.select_font_face("sans-serif")
+        cr.set_font_size(11)
+
+        if not self._slices or self._total <= 0:
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
+            text = "nothing running"
+            cr.move_to((width - cr.text_extents(text).width) / 2, height / 2)
+            cr.show_text(text)
+            return
+
+        tau = 6.283185307179586
+        outer = min(height, 150) / 2 - 6
+        inner = outer * 0.58
+        cx, cy = 12 + outer, height / 2
+
+        angle = -tau / 4                       # start at twelve o'clock
+        for _name, value, rgb_ in self._slices:
+            sweep = tau * value / self._total
+            cr.set_source_rgb(*rgb_)
+            cr.move_to(cx, cy)
+            cr.arc(cx, cy, outer, angle, angle + sweep)
+            cr.close_path()
+            cr.fill()
+            angle += sweep
+
+        # Punch the middle out AFTER the slices: a ring reads as proportion,
+        # where a full pie invites reading the radius as a magnitude too.
+        # CLEAR leaves real transparency, so the hole shows the themed window
+        # behind it and stays right in both light and dark.
+        cr.set_operator(cairo.OPERATOR_CLEAR)
+        cr.arc(cx, cy, inner, 0, tau)
+        cr.fill()
+        cr.set_operator(cairo.OPERATOR_OVER)
+
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.92)
+        cr.set_font_size(13)
+        total = human_bytes(self._total)
+        cr.move_to(cx - cr.text_extents(total).width / 2, cy + 4)
+        cr.show_text(total)
+
+        # A legend beside the ring rather than labels on it: twelve components
+        # means twelve slices, and callouts on thin slices overlap into mush.
+        cr.set_font_size(11)
+        left = cx + outer + 22
+        top = cy - min(len(self._slices), 8) * 8
+        for row, (name, value, rgb_) in enumerate(self._slices[:8]):
+            y = top + row * 17
+            cr.set_source_rgb(*rgb_)
+            cr.arc(left, y - 4, 4, 0, tau)
+            cr.fill()
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85)
+            cr.move_to(left + 12, y)
+            cr.show_text(f"{name}   {human_bytes(value)}   "
+                         f"{value / self._total * 100:.0f}%")
+        if len(self._slices) > 8:
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
+            cr.move_to(left + 12, top + 8 * 17)
+            cr.show_text(f"+{len(self._slices) - 8} more")
 
 
 class ComponentRow(Adw.ActionRow):
