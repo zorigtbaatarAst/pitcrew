@@ -50,6 +50,12 @@ _ALL_CS_PREV=0                         # every process's CPU time, previous samp
 declare -gA _PS_KIDS=()                # ppid          -> "pid pid" (fallback collector only)
 SNAP_AT_US=0
 SNAP_NOW_S=0
+# Whether SNAP_CPU holds a real measurement. CPU% is a DELTA between two
+# samples, so the first snapshot in a process has no baseline and reports 0 —
+# indistinguishable from a genuinely idle service. A one-shot command (`status
+# --json`) only ever takes one snapshot, so without this flag its `cpu` field
+# would be a structural zero pretending to be a reading.
+SNAP_CPU_OK=0
 
 # ── time, without forking `date` ────────────────────────────────────────────
 # $EPOCHREALTIME is a bash-5 builtin ("1755600000.123456"). It honors
@@ -181,6 +187,7 @@ _snapshot_proc() {
   # Zero on the first frame, which correctly yields 0% rather than a spike.
   local wall_jiff=0
   [ "$prev_us" -gt 0 ] && wall_jiff=$(( (SNAP_AT_US - prev_us) * PITCREW_CLK_TCK / 1000000 ))
+  SNAP_CPU_OK=0; [ "$wall_jiff" -gt 0 ] && SNAP_CPU_OK=1
 
   local -A jiff_now=()
   local c app role pid p rss_sum jiff_sum
@@ -308,6 +315,7 @@ _snapshot_ps() {
   # first frame, which correctly yields 0% rather than a spike.
   local wall_cs=0
   [ "$prev_us" -gt 0 ] && wall_cs=$(( (SNAP_AT_US - prev_us) / 10000 ))
+  SNAP_CPU_OK=0; [ "$wall_cs" -gt 0 ] && SNAP_CPU_OK=1
 
   local -A rss=() cs=() comm=()
   local -A cs_now=()

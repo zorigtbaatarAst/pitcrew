@@ -1,0 +1,616 @@
+#!/usr/bin/python3
+#
+# pitcrew-gui — a desktop front-end for pitcrew, in the shape of GNOME System
+# Monitor: a component list and a Resources view of live CPU/RAM graphs.
+#
+# It owns NO measurement logic. Everything on screen comes from
+# `pitcrew json --watch`, which is the same snapshot the terminal dashboard
+# draws — so the two can never disagree, and a fix in lib/03a-snapshot.sh lands
+# in both. The GUI is a renderer and a set of buttons, nothing more.
+#
+# The interpreter is pinned to /usr/bin/python3 rather than `env python3` on
+# purpose: a Homebrew or pyenv python earlier on $PATH has no `gi`, and the
+# failure (ModuleNotFoundError at launch, from the app grid, with no terminal
+# attached) is invisible. The system python is the one with the GTK bindings.
+"""GTK4/libadwaita front-end over `pitcrew json --watch`."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+from collections import deque
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+
+APP_ID = "mn.zb.PitcrewGui"
+HISTORY = 120                     # samples kept per series (~4 min at 2s)
+DEFAULT_INTERVAL = 2
+
+# GNOME palette. Fixed hexes rather than theme colours: a series has to keep the
+# same identity between its line and its legend dot, and stay distinguishable
+# from its neighbours in both light and dark.
+SERIES_COLORS = (
+    "#3584e4", "#33d17a", "#f6d32d", "#ff7800",
+    "#e01b24", "#9141ac", "#00b8c4", "#986a44",
+)
+
+# state -> (libadwaita css class for the badge, dot colour)
+STATE_STYLE = {
+    "up":       ("success",   "#33d17a"),
+    "starting": ("warning",   "#f6d32d"),
+    "crashed":  ("error",     "#e01b24"),
+    "external": ("accent",    "#3584e4"),
+    "down":     ("dim-label", "#77767b"),
+}
+UNKNOWN_STYLE = ("dim-label", "#77767b")
+
+
+def rgb(hex_color: str) -> tuple[float, float, float]:
+    return tuple(int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+
+def human_bytes(n: float | None) -> str:
+    if not n:
+        return "—"
+    value = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024:
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TiB"
+
+
+def nice_max(observed: float, floor: float) -> float:
+    """A round axis ceiling at or above what we've seen, never below `floor`."""
+    target = max(observed, floor)
+    step = 10 ** max(0, len(str(int(target))) - 2)
+    return max(floor, (int(target / step) + 1) * step)
+
+
+def pitcrew_home() -> Path:
+    return Path(os.environ.get("PITCREW_HOME", Path.home() / ".config" / "pitcrew"))
+
+
+def known_projects() -> list[str]:
+    """Registered project names, read straight from the registry directory.
+
+    Deliberately not parsed out of `pitcrew projects` — that output is themed,
+    colourised and meant for a human, so scraping it would break the first time
+    someone changed a glyph.
+    """
+    directory = pitcrew_home() / "projects"
+    if not directory.is_dir():
+        return []
+    return sorted(p.stem for p in directory.glob("*.sh"))
+
+
+def current_project() -> str | None:
+    marker = pitcrew_home() / "current"
+    try:
+        name = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return name or None
+
+
+def find_pitcrew() -> str | None:
+    found = shutil.which("pitcrew")
+    if found:
+        return found
+    # The app grid launches with a minimal $PATH that often lacks ~/.local/bin,
+    # which is exactly where install.sh puts the symlink.
+    fallback = Path.home() / ".local" / "bin" / "pitcrew"
+    if fallback.is_file() and os.access(fallback, os.X_OK):
+        return str(fallback)
+    return None
+
+
+class Series:
+    """One component's rolling history."""
+
+    def __init__(self, name: str, color: str):
+        self.name = name
+        self.color = color
+        self.rgb = rgb(color)
+        self.cpu: deque[float] = deque(maxlen=HISTORY)
+        self.rss: deque[float] = deque(maxlen=HISTORY)
+
+    def push(self, cpu: float | None, rss: float | None) -> None:
+        # cpu is null until the stream has a baseline; carry the last known
+        # value rather than drawing a phantom drop to zero.
+        self.cpu.append(float(cpu) if cpu is not None else (self.cpu[-1] if self.cpu else 0.0))
+        self.rss.append(float(rss or 0))
+
+
+class Dot(Gtk.DrawingArea):
+    """A filled circle in a series' colour — ties a row or legend to its line."""
+
+    def __init__(self, color: str, size: int = 12):
+        super().__init__()
+        self._rgb = rgb(color)
+        self.set_content_width(size)
+        self.set_content_height(size)
+        self.set_valign(Gtk.Align.CENTER)
+        self.set_draw_func(self._draw)
+
+    def set_color(self, color: str) -> None:
+        self._rgb = rgb(color)
+        self.queue_draw()
+
+    def _draw(self, _area, cr, width, height) -> None:
+        radius = min(width, height) / 2
+        cr.set_source_rgb(*self._rgb)
+        cr.arc(width / 2, height / 2, radius, 0, 2 * 3.141592653589793)
+        cr.fill()
+
+
+class Graph(Gtk.DrawingArea):
+    """Multi-series line graph — the Resources-tab idea, drawn with Cairo.
+
+    GTK ships no chart widget, so this is the same approach gnome-system-monitor
+    takes: a DrawingArea and a draw func over a fixed-length history.
+    """
+
+    def __init__(self, metric: str, floor: float, fmt):
+        super().__init__()
+        self._metric = metric        # "cpu" or "rss" — the Series attribute to plot
+        self._floor = floor          # smallest sensible axis ceiling
+        self._fmt = fmt
+        self._series: list[Series] = []
+        self.set_content_height(180)
+        self.set_hexpand(True)
+        self.set_draw_func(self._draw)
+
+    def set_series(self, series: list[Series]) -> None:
+        self._series = series
+        self.queue_draw()
+
+    def _draw(self, _area, cr, width, height) -> None:
+        fg = self.get_color()        # follows the theme; grid is the same ink, faded
+        pad_left, pad_right, pad_top, pad_bottom = 52, 8, 10, 18
+        plot_w = width - pad_left - pad_right
+        plot_h = height - pad_top - pad_bottom
+        if plot_w <= 0 or plot_h <= 0:
+            return
+
+        peak = max((max(getattr(s, self._metric), default=0.0) for s in self._series), default=0.0)
+        ceiling = nice_max(peak, self._floor)
+
+        cr.set_line_width(1)
+        cr.select_font_face("sans-serif")
+        cr.set_font_size(10)
+        for i in range(5):
+            y = pad_top + plot_h * i / 4
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.10)
+            cr.move_to(pad_left, y)
+            cr.line_to(pad_left + plot_w, y)
+            cr.stroke()
+            label = self._fmt(ceiling * (4 - i) / 4)
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
+            extents = cr.text_extents(label)
+            cr.move_to(pad_left - 8 - extents.width, y + 3)
+            cr.show_text(label)
+
+        for series in self._series:
+            points = getattr(series, self._metric)
+            if len(points) < 2:
+                continue
+            # The history is right-anchored: a series that just appeared draws
+            # from the right edge inward rather than stretching across the whole
+            # window and implying data it does not have.
+            step = plot_w / (HISTORY - 1)
+            start_x = pad_left + plot_w - step * (len(points) - 1)
+            cr.set_source_rgb(*series.rgb)
+            cr.set_line_width(2)
+            cr.set_line_join(1)  # round
+            for index, value in enumerate(points):
+                x = start_x + step * index
+                y = pad_top + plot_h * (1 - min(value / ceiling, 1.0))
+                cr.line_to(x, y) if index else cr.move_to(x, y)
+            cr.stroke()
+
+
+class ComponentRow(Adw.ActionRow):
+    """One component: state, what it is using, and the buttons that act on it."""
+
+    def __init__(self, name: str, color: str, on_action) -> None:
+        super().__init__(title=name)
+        self._name = name
+        self._on_action = on_action
+
+        self._dot = Dot(color)
+        self.add_prefix(self._dot)
+
+        self._badge = Gtk.Label(valign=Gtk.Align.CENTER)
+        self._badge.add_css_class("caption")
+        self._badge_class = ""
+        self.add_suffix(self._badge)
+
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self._start = self._button(box, "media-playback-start-symbolic", "start", "Start")
+        self._restart = self._button(box, "view-refresh-symbolic", "restart", "Restart")
+        self._stop = self._button(box, "media-playback-stop-symbolic", "stop", "Stop")
+        self.add_suffix(box)
+
+    def _button(self, box: Gtk.Box, icon: str, verb: str, tooltip: str) -> Gtk.Button:
+        button = Gtk.Button(icon_name=icon, tooltip_text=tooltip)
+        button.add_css_class("flat")
+        button.connect("clicked", lambda _b: self._on_action(verb, self._name))
+        box.append(button)
+        return button
+
+    def set_color(self, color: str) -> None:
+        self._dot.set_color(color)
+
+    def update(self, comp: dict) -> None:
+        state = comp.get("state", "down")
+        css, _ = STATE_STYLE.get(state, UNKNOWN_STYLE)
+        if css != self._badge_class:
+            if self._badge_class:
+                self._badge.remove_css_class(self._badge_class)
+            self._badge.add_css_class(css)
+            self._badge_class = css
+        self._badge.set_text(state)
+
+        bits = [human_bytes(comp.get("rss"))]
+        cpu = comp.get("cpu")
+        bits.append("cpu —" if cpu is None else f"{cpu}% cpu")
+        if comp.get("port"):
+            bits.append(f":{comp['port']}")
+        if comp.get("errors"):
+            bits.append(f"{comp['errors']} errors")
+        if state == "crashed" and comp.get("exit") is not None:
+            bits.append(f"exit {comp['exit']}")
+        self.set_subtitle("  ·  ".join(bits))
+
+        running = state in ("up", "starting", "external")
+        self._start.set_visible(not running)
+        self._stop.set_visible(running)
+        self._restart.set_visible(running)
+
+
+class Stream:
+    """Owns the `pitcrew json --watch` child and turns its stdout into dicts.
+
+    A long-lived child, not a poll loop: CPU% is a delta between consecutive
+    snapshots, so only one process sampling repeatedly can report it. A GUI that
+    ran `status --json` on a timer would get null cpu forever.
+    """
+
+    def __init__(self, pitcrew: str, project: str | None, interval: int, on_state, on_error):
+        self._argv = [pitcrew]
+        if project:
+            self._argv += ["-p", project]
+        self._argv += ["json", "--watch", "--interval", str(interval)]
+        self._on_state = on_state
+        self._on_error = on_error
+        self._proc: Gio.Subprocess | None = None
+        self._stderr_tail: list[str] = []
+        self._stopping = False
+
+    def start(self) -> None:
+        try:
+            self._proc = Gio.Subprocess.new(
+                self._argv,
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            )
+        except GLib.Error as error:
+            self._on_error(f"cannot start pitcrew: {error.message}")
+            return
+        self._read(Gio.DataInputStream.new(self._proc.get_stdout_pipe()), self._on_line)
+        self._read(Gio.DataInputStream.new(self._proc.get_stderr_pipe()), self._on_stderr)
+        self._proc.wait_check_async(None, self._on_exit)
+
+    def stop(self) -> None:
+        self._stopping = True
+        if self._proc:
+            self._proc.force_exit()
+
+    def _read(self, stream: Gio.DataInputStream, handler) -> None:
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, handler)
+
+    def _on_line(self, stream: Gio.DataInputStream, result) -> None:
+        raw = self._finish_line(stream, result)
+        if raw is None:
+            return
+        try:
+            self._on_state(json.loads(raw))
+        except json.JSONDecodeError as error:
+            # Never silently: a malformed frame means the contract broke.
+            self._on_error(f"malformed state from pitcrew: {error}")
+        self._read(stream, self._on_line)
+
+    def _on_stderr(self, stream: Gio.DataInputStream, result) -> None:
+        raw = self._finish_line(stream, result)
+        if raw is None:
+            return
+        if raw.strip():
+            self._stderr_tail = (self._stderr_tail + [raw.strip()])[-5:]
+        self._read(stream, self._on_stderr)
+
+    def _finish_line(self, stream: Gio.DataInputStream, result) -> str | None:
+        try:
+            data, _ = stream.read_line_finish(result)
+        except GLib.Error as error:
+            if not self._stopping:
+                self._on_error(f"stream read failed: {error.message}")
+            return None
+        if data is None:                      # EOF; _on_exit explains why
+            return None
+        return data.decode("utf-8", "replace")
+
+    def _on_exit(self, proc: Gio.Subprocess, result) -> None:
+        if self._stopping:
+            return
+        try:
+            proc.wait_check_finish(result)
+        except GLib.Error as error:
+            detail = " — ".join(self._stderr_tail) if self._stderr_tail else error.message
+            self._on_error(f"pitcrew stopped: {detail}")
+            return
+        self._on_error("pitcrew stopped unexpectedly")
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, pitcrew: str, project: str | None, interval: int, **kwargs):
+        super().__init__(**kwargs)
+        self._pitcrew = pitcrew
+        self._project = project
+        self._interval = interval
+        self._stream: Stream | None = None
+        self._series: dict[str, Series] = {}
+        self._rows: dict[str, ComponentRow] = {}
+        self._dep_rows: dict[str, Adw.ActionRow] = {}
+
+        self.set_title("pitcrew")
+        self.set_default_size(760, 620)
+
+        self._stack = Adw.ViewStack()
+        self._stack.add_titled_with_icon(
+            self._build_components(), "components", "Components", "view-list-symbolic")
+        self._stack.add_titled_with_icon(
+            self._build_resources(), "resources", "Resources", "utilities-system-monitor-symbolic")
+
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.WIDE))
+        header.pack_start(self._build_project_button())
+
+        self._banner = Adw.Banner(revealed=False)
+        self._banner.set_button_label("Retry")
+        self._banner.connect("button-clicked", lambda _b: self._restart_stream())
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self._banner)
+        content.append(self._stack)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(content)
+
+        self._toasts = Adw.ToastOverlay()
+        self._toasts.set_child(view)
+        self.set_content(self._toasts)
+
+        self._restart_stream()
+
+    # ── construction ────────────────────────────────────────────────────────
+    def _build_project_button(self) -> Gtk.Widget:
+        projects = known_projects()
+        self._project_button = Gtk.MenuButton(
+            label=self._project or "no project", tooltip_text="Switch project")
+        if not projects:
+            self._project_button.set_sensitive(False)
+            return self._project_button
+        menu = Gio.Menu()
+        for name in projects:
+            item = Gio.MenuItem.new(name, None)
+            item.set_action_and_target_value("win.project", GLib.Variant.new_string(name))
+            menu.append_item(item)
+        self._project_button.set_menu_model(menu)
+
+        action = Gio.SimpleAction.new_stateful(
+            "project", GLib.VariantType.new("s"),
+            GLib.Variant.new_string(self._project or ""))
+        action.connect("activate", self._on_project_chosen)
+        self.add_action(action)
+        return self._project_button
+
+    def _build_components(self) -> Gtk.Widget:
+        self._comp_group = Adw.PreferencesGroup(title="Components")
+        self._dep_group = Adw.PreferencesGroup(title="Dependencies")
+        page = Adw.PreferencesPage()
+        page.add(self._comp_group)
+        page.add(self._dep_group)
+        return page
+
+    def _build_resources(self) -> Gtk.Widget:
+        self._cpu_graph = Graph("cpu", floor=100, fmt=lambda v: f"{v:.0f}%")
+        self._rss_graph = Graph("rss", floor=512 * 1024 ** 2, fmt=human_bytes)
+        self._legend = Gtk.FlowBox(
+            selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4,
+            row_spacing=4, column_spacing=16)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                      margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+        for title, graph in (("CPU", self._cpu_graph), ("Memory", self._rss_graph)):
+            label = Gtk.Label(label=title, halign=Gtk.Align.START)
+            label.add_css_class("heading")
+            box.append(label)
+            frame = Gtk.Frame()
+            frame.set_child(graph)
+            box.append(frame)
+        box.append(self._legend)
+
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.set_child(box)
+        return scroller
+
+    # ── stream lifecycle ────────────────────────────────────────────────────
+    def _restart_stream(self) -> None:
+        if self._stream:
+            self._stream.stop()
+        self._series.clear()
+        for row in list(self._rows.values()):
+            self._comp_group.remove(row)
+        self._rows.clear()
+        for row in list(self._dep_rows.values()):
+            self._dep_group.remove(row)
+        self._dep_rows.clear()
+
+        if not self._project:
+            self._fail("No project selected — run `pitcrew init <dir>` or `pitcrew use <name>`.")
+            return
+        self._banner.set_revealed(False)
+        self._stream = Stream(
+            self._pitcrew, self._project, self._interval, self._on_state, self._fail)
+        self._stream.start()
+
+    def _on_project_chosen(self, action: Gio.SimpleAction, target: GLib.Variant) -> None:
+        name = target.get_string()
+        if name == self._project:
+            return
+        action.set_state(target)
+        self._project = name
+        self._project_button.set_label(name)
+        self._restart_stream()
+
+    def _fail(self, message: str) -> None:
+        self._banner.set_title(message)
+        self._banner.set_revealed(True)
+
+    # ── rendering ───────────────────────────────────────────────────────────
+    def _on_state(self, state: dict) -> None:
+        self._banner.set_revealed(False)
+        components = state.get("components", [])
+
+        for index, comp in enumerate(components):
+            name = comp["name"]
+            color = SERIES_COLORS[index % len(SERIES_COLORS)]
+            series = self._series.get(name)
+            if series is None:
+                series = self._series[name] = Series(name, color)
+            series.push(comp.get("cpu"), comp.get("rss"))
+
+            row = self._rows.get(name)
+            if row is None:
+                row = ComponentRow(name, color, self._run_action)
+                self._comp_group.add(row)
+                self._rows[name] = row
+            row.update(comp)
+
+        for dep in state.get("deps", []):
+            row = self._dep_rows.get(dep["name"])
+            if row is None:
+                row = Adw.ActionRow(title=dep["name"])
+                row.add_prefix(Dot(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1]))
+                self._dep_group.add(row)
+                self._dep_rows[dep["name"]] = row
+            row.set_subtitle(dep["state"])
+        self._dep_group.set_visible(bool(self._dep_rows))
+
+        # Only what is actually running earns a line — a dozen flat zeroes for
+        # stopped services is noise that hides the two you care about.
+        live = {c["name"] for c in components if c.get("state") in ("up", "starting", "external")}
+        plotted = [s for name, s in self._series.items() if name in live]
+        self._cpu_graph.set_series(plotted)
+        self._rss_graph.set_series(plotted)
+        self._rebuild_legend(plotted)
+
+        summary = state.get("summary", {})
+        counts = [f"{summary[k]} {k}" for k in ("up", "starting", "crashed", "down") if summary.get(k)]
+        self.set_title(f"{state.get('project') or 'pitcrew'} — {' · '.join(counts)}")
+
+    def _rebuild_legend(self, series: list[Series]) -> None:
+        child = self._legend.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._legend.remove(child)
+            child = nxt
+        for item in series:
+            box = Gtk.Box(spacing=6)
+            box.append(Dot(item.color, size=10))
+            label = Gtk.Label(label=item.name)
+            label.add_css_class("caption")
+            box.append(label)
+            self._legend.append(box)
+
+    # ── actions ─────────────────────────────────────────────────────────────
+    def _run_action(self, verb: str, component: str) -> None:
+        argv = [self._pitcrew, "-p", self._project, verb, component]
+        try:
+            proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as error:
+            self._toast(f"{verb} {component} failed: {error.message}")
+            return
+        self._toast(f"{verb}ing {component}…")
+        proc.communicate_utf8_async(None, None, lambda p, r: self._on_action_done(p, r, verb, component))
+
+    def _on_action_done(self, proc: Gio.Subprocess, result, verb: str, component: str) -> None:
+        try:
+            _, _, stderr = proc.communicate_utf8_finish(result)
+        except GLib.Error as error:
+            self._toast(f"{verb} {component} failed: {error.message}")
+            return
+        if proc.get_successful():
+            self._toast(f"{component} {verb}ed")
+            return
+        self._toast(f"{verb} {component} failed: {(stderr or '').strip().splitlines()[-1:] or ['see logs']}"[:200])
+
+    def _toast(self, message: str) -> None:
+        self._toasts.add_toast(Adw.Toast.new(message))
+
+
+class Application(Adw.Application):
+    def __init__(self, pitcrew: str, project: str | None, interval: int):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self._pitcrew = pitcrew
+        self._project = project
+        self._interval = interval
+
+    def do_activate(self) -> None:
+        window = self.props.active_window
+        if window is None:
+            window = Window(self._pitcrew, self._project, self._interval, application=self)
+        window.present()
+
+
+def main(argv: list[str]) -> int:
+    project = current_project()
+    interval = DEFAULT_INTERVAL
+    args = argv[1:]
+    while args:
+        arg = args.pop(0)
+        if arg in ("-p", "--project"):
+            if not args:
+                print("--project needs a name", file=sys.stderr)
+                return 2
+            project = args.pop(0)
+        elif arg in ("-i", "--interval"):
+            if not args or not args[0].isdigit() or int(args[0]) < 1:
+                print("--interval needs whole seconds, at least 1", file=sys.stderr)
+                return 2
+            interval = int(args.pop(0))
+        elif arg in ("-h", "--help"):
+            print("usage: pitcrew-gui [-p NAME] [-i SECONDS]")
+            return 0
+        else:
+            print(f"unknown argument: {arg}", file=sys.stderr)
+            return 2
+
+    pitcrew = find_pitcrew()
+    if not pitcrew:
+        # Fail loudly here rather than opening a window that can never populate.
+        print("pitcrew not found on $PATH or in ~/.local/bin", file=sys.stderr)
+        return 1
+    return Application(pitcrew, project, interval).run([argv[0]])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

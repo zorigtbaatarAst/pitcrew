@@ -16,6 +16,11 @@ _json_num() { # a number, or null when we genuinely do not know
   case "${1:-}" in ''|*[!0-9-]*) printf 'null' ;; *) printf '%s' "$1" ;; esac
 }
 
+_json_cpu() { # SNAP_CPU is meaningless without a previous sample — say null, not 0
+  [ "${SNAP_CPU_OK:-0}" = 1 ] || { printf 'null'; return; }
+  _json_num "${1:-}"
+}
+
 cmd_json() {
   snapshot
   err_scan
@@ -38,7 +43,7 @@ cmd_json() {
     printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s}' \
       "$(_json_str "$c")" "$(_json_str "$app")" "$(_json_str "$role")" "$(_json_str "$st")" \
       "$(_json_num "$port")" "$(_json_num "${SNAP_PID[$c]:-}")" \
-      "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_num "${SNAP_CPU[$c]:-}")" \
+      "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_cpu "${SNAP_CPU[$c]:-}")" \
       "$(_json_num "${ERR_COUNT[$c]:-0}")" "$(_json_num "${SNAP_EXIT[$c]:-}")"
   done
   printf '],"deps":['
@@ -54,6 +59,34 @@ cmd_json() {
     "$up" "$starting" "$crashed" "$external" "$down"
   err_close
   return 0
+}
+
+# NDJSON stream: one state object per line, forever, until the reader goes away.
+#
+# This exists because CPU% is a delta and `status --json` is one-shot, so its
+# `cpu` is always null (see _json_cpu). A GUI, a status line or a recorder wants
+# real CPU, and the only honest way to get it is to keep ONE process taking
+# repeated samples — exactly what the dashboard does. Line-buffered and flushed
+# per frame so a reader blocked on read() wakes on every sample.
+cmd_json_watch() { # [--interval N]
+  local interval=${PITCREW_JSON_INTERVAL:-2}
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --interval) [ $# -ge 2 ] || die "--interval needs a value"; interval=$2; shift 2 ;;
+      --interval=*) interval=${1#*=}; shift ;;
+      *) die "json --watch: unknown argument [$1]" ;;
+    esac
+  done
+  case "$interval" in ''|*[!0-9]*) die "--interval needs whole seconds, got [$interval]" ;; esac
+  [ "$interval" -ge 1 ] || die "--interval must be at least 1 second"
+
+  # SIGPIPE is the normal way this ends (the GUI exits, the pipe closes). Exit
+  # quietly on it rather than leaving a bash error on someone's terminal.
+  trap 'exit 0' PIPE
+  while :; do
+    cmd_json || return $?
+    sleep "$interval"
+  done
 }
 
 # Exit codes are the whole point: 0 everything came up, 1 timed out, 2 something

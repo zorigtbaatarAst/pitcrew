@@ -88,5 +88,52 @@ test_wait_is_explicit_about_ports_it_does_not_own() {
   assert_eq "$rc" 1 "--strict refuses it outright"
 }
 
+# ── cpu% honesty and the NDJSON stream ──────────────────────────────────────
+#
+# CPU% is a delta between two samples. A one-shot `status --json` only ever
+# takes one, so it has nothing to subtract and used to report 0 — a structural
+# zero that a status line could not tell apart from an idle service.
+
+test_json_cpu_helper_reports_unknown_rather_than_a_fake_zero() {
+  local saved=${SNAP_CPU_OK:-0}
+  SNAP_CPU_OK=0
+  assert_eq "$(_json_cpu 42)" "null" "no baseline: null, never 0"
+  SNAP_CPU_OK=1
+  assert_eq "$(_json_cpu 42)" "42"   "with a baseline the reading passes through"
+  assert_eq "$(_json_cpu '')"  "null" "a component with no process is still null"
+  SNAP_CPU_OK=$saved
+}
+
+test_snapshot_marks_cpu_usable_only_after_a_second_sample() {
+  SNAP_AT_US=0                       # as if this were a fresh one-shot process
+  snapshot
+  assert_eq "$SNAP_CPU_OK" 0 "first sample has no baseline to delta against"
+  snapshot
+  assert_eq "$SNAP_CPU_OK" 1 "second sample can"
+}
+
+test_json_watch_validates_its_interval_before_looping_forever() {
+  assert_fails cmd_json_watch --interval 0
+  assert_fails cmd_json_watch --interval abc
+  assert_fails cmd_json_watch --interval
+  assert_fails cmd_json_watch --nonsense
+}
+
+test_json_watch_emits_one_object_per_line() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  # Two frames is enough to prove it is a stream of whole objects and not one
+  # pretty-printed blob a line reader would choke on.
+  local out; out=$( ( cmd_json_watch --interval 1 & sleep 2.5; kill %1 2>/dev/null ) 2>/dev/null | head -2 )
+  local n; n=$(printf '%s\n' "$out" | python3 -c '
+import json,sys
+n=0
+for line in sys.stdin:
+    line=line.strip()
+    if line:
+        json.loads(line); n+=1
+print(n)' 2>/dev/null)
+  assert_eq "$n" 2 "each line parses on its own"
+}
+
 trap 'err_close; rm -rf "$LOG_DIR"' EXIT
 run_tests
