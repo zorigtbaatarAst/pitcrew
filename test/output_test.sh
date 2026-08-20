@@ -34,9 +34,9 @@ print(" ".join(sorted(d["deps"][0])) if d["deps"] else "name state")
 print(d["schema"])')
 
   assert_eq "$(printf '%s' "$keys" | sed -n 1p)" \
-    "at collector components deps errorPattern logDir machine project root schema summary" "top level"
+    "at collector components deps errorPattern logDir machine profileDir project root schema summary" "top level"
   assert_eq "$(printf '%s' "$keys" | sed -n 2p)" \
-    "app cpu errors exit limit limitSource name pid port role rss state" "per component"
+    "app cpu errors exit health limit limitSource name pid port role rss state url" "per component"
   assert_eq "$(printf '%s' "$keys" | sed -n 3p)" \
     "crashed down external starting up" "summary counts every state"
   assert_eq "$(printf '%s' "$keys" | sed -n 4p)" "cpuPercent memTotal memUsed" "machine gauges"

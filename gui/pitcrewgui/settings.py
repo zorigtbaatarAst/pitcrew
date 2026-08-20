@@ -49,6 +49,14 @@ SETTINGS = (
             "Whether stopped components are listed"),
     Setting("plot", "running", ["running", "all"],
             "Which components get a line in the graphs"),
+    Setting("notify", "crash", ["crash", "none"],
+            "Send a desktop notification when a component crashes"),
+    # Window geometry is a preference like any other, and lives in the same file
+    # rather than pulling in GSettings for three integers.
+    Setting("width", 900, (600, 5000), "Remembered window width"),
+    Setting("height", 680, (400, 4000), "Remembered window height"),
+    Setting("tab", "components", ["components", "resources", "logs", "projects"],
+            "The view to open on"),
 )
 SETTINGS_BY_KEY = {setting.key: setting for setting in SETTINGS}
 

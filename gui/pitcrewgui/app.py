@@ -24,6 +24,10 @@ class Application(Adw.Application):
         window = self.props.active_window
         if window is None:
             window = Window(self._pitcrew, self._project, self._settings, application=self)
+            # The "Show logs" button on a crash notification is an APP action:
+            # it has to work when the notification is clicked long after the
+            # window lost focus.
+            window._crashes.install_action()
         window.present()
 
 USAGE = """usage: pitcrew-gui [-p NAME] [OPTION...]

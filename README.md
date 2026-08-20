@@ -659,6 +659,23 @@ GUI is a renderer plus start/stop/restart buttons.
   same lines the dashboard counts rather than a second opinion. **All /
   Backend / Frontend** filters the picker, backends first — they start first,
   and are what a frontend is usually failing to reach
+- **it tells you when something crashes** — a desktop notification on any
+  `up → crashed` transition, with a *Show logs* button that opens that
+  component's log. Not for a crash that was already in progress when you
+  started watching, and not twice for a service that flaps. Off with
+  `--notify none`
+- the port on a running row is a **button**: it opens the real URL, including
+  the `--url-path` every backend sits behind, and backends with a configured
+  health path say `health ✓`
+- **`n` errors** is a button too — it jumps to that component's log with
+  errors-only on
+- group headings **start / restart / stop a whole app**, and the menu has
+  **Start everything**, **Stop everything**, and your saved **Profiles**
+- the log view has a **filter box** and an **errors-only** toggle, both of
+  which work on a live tail
+- **keyboard**: `Ctrl+1…4` for views, `/` to filter the log, `Ctrl+M` for RAM
+  caps, `Ctrl+Enter` to start everything, `?` for the list
+- window size and last view are remembered
 - **Resources** says what the project costs against what the box actually has:
   *"using 1.5 GiB of 31.0 GiB · machine total 11.2 GiB used · 5% cpu · caps
   commit 108.0 GiB — more than the machine has"*. The memory graph has a

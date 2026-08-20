@@ -16,6 +16,8 @@ from .model import (
     human_bytes,
     plain,
 )
+from .notify import CrashWatcher
+from .profiles import profile_names
 from .registry import current_project, declared_root, known_projects, project_file
 from .runner import Runner, Stream
 from .settings import SETTINGS_BY_KEY, Settings
@@ -42,13 +44,19 @@ class Window(Adw.ApplicationWindow):
         self._machine_total = 0
 
         self.set_title("pitcrew")
-        self.set_default_size(900, 680)
+        # Remembered across runs: reopening at 900x680 on every launch, on the
+        # tab you were not using, is a small insult repeated daily.
+        self.set_default_size(settings["width"], settings["height"])
+        self.connect("close-request", self._remember_geometry)
+
+        self._crashes = CrashWatcher(kwargs.get("application"), self._show_logs_for)
+        self._crashes.enabled = settings["notify"] == "crash"
 
         self._stack = Adw.ViewStack()
         self._stack.add_titled_with_icon(
             self._build_components(), "components", "Components", "view-list-symbolic")
         self._stack.add_titled_with_icon(
-            self._build_resources(), "resources", "Resources", "utilities-system-monitor-symbolic")
+            self._build_resources(), "resources", "Resources", "power-profile-performance-symbolic")
         self._stack.add_titled_with_icon(
             self._build_logs(), "logs", "Logs", "text-x-generic-symbolic")
         self._stack.add_titled_with_icon(
@@ -80,7 +88,75 @@ class Window(Adw.ApplicationWindow):
         self._toasts.set_child(view)
         self.set_content(self._toasts)
 
+        self._install_shortcuts()
+        if settings["tab"] in ("components", "resources", "logs", "projects"):
+            self._stack.set_visible_child_name(settings["tab"])
         self._restart_stream()
+
+    # ── keyboard ────────────────────────────────────────────────────────────
+    def _install_shortcuts(self) -> None:
+        """A GUI you must reach for the mouse in is one you open twice.
+
+        The terminal dashboard is entirely keyboard-driven; this is the same
+        vocabulary where it maps, and GTK conventions where it does not.
+        """
+        app = self.get_application()
+        if app is None:
+            return
+
+        views = ("components", "resources", "logs", "projects")
+        switch = Gio.SimpleAction.new("view", GLib.VariantType.new("s"))
+        switch.connect("activate", lambda _a, t: self._stack.set_visible_child_name(t.get_string()))
+        self.add_action(switch)
+
+        focus = Gio.SimpleAction.new("focusfilter", None)
+        focus.connect("activate", lambda *_: self._focus_filter())
+        self.add_action(focus)
+
+        shortcuts = Gio.SimpleAction.new("shortcuts", None)
+        shortcuts.connect("activate", lambda *_: self._show_shortcuts())
+        self.add_action(shortcuts)
+
+        for index, view in enumerate(views, start=1):
+            app.set_accels_for_action(f"win.view::{view}", [f"<Primary>{index}"])
+        app.set_accels_for_action("win.focusfilter", ["slash", "<Primary>f"])
+        app.set_accels_for_action("win.shortcuts", ["<Primary>question", "question"])
+        app.set_accels_for_action("win.limits", ["<Primary>m"])
+        app.set_accels_for_action("win.up", ["<Primary>Return"])
+        app.set_accels_for_action("win.stopall", ["<Primary><Shift>Return"])
+
+    def _focus_filter(self) -> None:
+        if self._stack.get_visible_child_name() == "logs":
+            self._logs.focus_filter()
+        else:
+            self._stack.set_visible_child_name("logs")
+            self._logs.focus_filter()
+
+    def _show_shortcuts(self) -> None:
+        dialog = Adw.Dialog(title="Keyboard shortcuts", content_width=460)
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup(title="Shortcuts")
+        for keys, what in (
+            ("Ctrl+1 … Ctrl+4", "Components / Resources / Logs / Projects"),
+            ("/  or  Ctrl+F", "Filter the log"),
+            ("Ctrl+M", "RAM caps"),
+            ("Ctrl+,", "Preferences"),
+            ("Ctrl+Enter", "Start everything"),
+            ("Ctrl+Shift+Enter", "Stop everything"),
+            ("?", "This list"),
+        ):
+            group.add(Adw.ActionRow(title=what, subtitle=keys, use_markup=False))
+        page.add(group)
+        dialog.set_child(page)
+        dialog.present(self)
+
+    def _remember_geometry(self, *_args) -> bool:
+        width, height = self.get_default_size()
+        self._settings["width"] = max(600, width)
+        self._settings["height"] = max(400, height)
+        self._settings["tab"] = self._stack.get_visible_child_name() or "components"
+        self._settings.save()
+        return False        # let the window close
 
     # ── construction ────────────────────────────────────────────────────────
     def _build_project_button(self) -> Gtk.Widget:
@@ -150,8 +226,29 @@ class Window(Adw.ApplicationWindow):
 
     def _build_menu_button(self) -> Gtk.Widget:
         menu = Gio.Menu()
+
+        stack_section = Gio.Menu()
+        stack_section.append("Start everything", "win.up")
+        stack_section.append("Stop everything", "win.stopall")
+        menu.append_section(None, stack_section)
+
+        self._profiles_menu = Gio.Menu()
+        menu.append_submenu("Profiles", self._profiles_menu)
+
+        for name, handler in (("up", lambda: self._run_action("start", "all")),
+                              ("stopall", lambda: self._run_action("stop", "all"))):
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", lambda *_a, h=handler: h())
+            self.add_action(act)
+
+        profile_action = Gio.SimpleAction.new("profile", GLib.VariantType.new("s"))
+        profile_action.connect(
+            "activate", lambda _a, t: self._run_action("start", f"@{t.get_string()}"))
+        self.add_action(profile_action)
+
         menu.append("RAM caps…", "win.limits")
         menu.append("Preferences", "win.preferences")
+        menu.append("Keyboard shortcuts", "win.shortcuts")
         limits = Gio.SimpleAction.new("limits", None)
         limits.connect("activate", lambda *_: self._show_limits())
         self.add_action(limits)
@@ -327,6 +424,28 @@ class Window(Adw.ApplicationWindow):
         self._refresh_project_menu()
         self._refresh_projects()
 
+    def _refresh_profiles(self, profile_dir: str | None) -> None:
+        names = profile_names(profile_dir)
+        if names == getattr(self, "_profile_names", None):
+            return
+        self._profile_names = names
+        self._profiles_menu.remove_all()
+        if not names:
+            # An empty submenu looks broken. Say why it is empty instead.
+            item = Gio.MenuItem.new("No saved profiles", None)
+            item.set_action_and_target_value("win.noop", None)
+            self._profiles_menu.append_item(item)
+            return
+        for name in names:
+            item = Gio.MenuItem.new(f"Start @{name}", None)
+            item.set_action_and_target_value("win.profile", GLib.Variant.new_string(name))
+            self._profiles_menu.append_item(item)
+
+    def _show_logs_for(self, name: str, errors_only: bool = False) -> None:
+        """Hand off from a component row (or a crash notification) to its log."""
+        self._stack.set_visible_child_name("logs")
+        self._logs.show_component(name, errors_only)
+
     def _show_limits(self) -> None:
         if not self._project:
             self._toast("no project selected")
@@ -357,6 +476,9 @@ class Window(Adw.ApplicationWindow):
         listing.add(self._switch_row(
             "stopped", "Show stopped components", "hide", "show",
             "Off lists only what is running, starting, or external"))
+        listing.add(self._switch_row(
+            "notify", "Notify when something crashes", "none", "crash",
+            "A desktop notification for an up → crashed transition"))
         page.add(listing)
 
         sampling = Adw.PreferencesGroup(
@@ -409,6 +531,9 @@ class Window(Adw.ApplicationWindow):
             for series in self._series.values():
                 series.resize(value)
             return
+        if key == "notify":
+            self._crashes.enabled = value == "crash"
+            return
         if key in ("group", "stopped"):
             self._layout_key = None       # force the next frame to rebuild
 
@@ -427,6 +552,9 @@ class Window(Adw.ApplicationWindow):
         if self._stream:
             self._stream.stop()
         self._logs.stop()          # its file belongs to the project we are leaving
+        # A component already crashed in the project you just switched TO is not
+        # news — only a crash you were watching happen is.
+        self._crashes.reset()
         self._series.clear()
         self._clear_lists()
 
@@ -469,6 +597,8 @@ class Window(Adw.ApplicationWindow):
             series.push(comp.get("cpu"), comp.get("rss"))
 
         self._logs.update_sources(state.get("logDir"), components, state.get("errorPattern"))
+        self._refresh_profiles(state.get("profileDir"))
+        self._crashes.check(components)
         self._render_components(components, colors)
         self._render_deps(state.get("deps", []))
         self._render_graphs(components, history)
@@ -521,8 +651,13 @@ class Window(Adw.ApplicationWindow):
         self._comp_page.remove(self._dep_group)
         for (_sort, heading), comps in ordered:
             group = Adw.PreferencesGroup(title=plain(heading))
+            # Starting "sales" means both its roles. Doing that one row at a
+            # time is the commonest thing anyone does here, so it belongs on
+            # the heading rather than in a menu.
+            group.set_header_suffix(self._group_actions(comps))
             for comp in comps:
-                row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action)
+                row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action,
+                                   self._show_logs_for)
                 group.add(row)
                 self._rows[comp["name"]] = row
             self._comp_page.add(group)
@@ -536,6 +671,27 @@ class Window(Adw.ApplicationWindow):
             return
         self._empty_label.set_text(empty_message(total))
         self._empty_group.set_visible(True)
+
+    def _group_actions(self, comps: list[dict]) -> Gtk.Widget:
+        names = [c["name"] for c in comps]
+        running = [c for c in comps if c.get("state") in ("up", "starting", "external")]
+        box = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+        if len(running) < len(comps):
+            box.append(self._icon_button("media-playback-start-symbolic", "Start all",
+                                         lambda: self._run_action("start", *names)))
+        if running:
+            box.append(self._icon_button("view-refresh-symbolic", "Restart all",
+                                         lambda: self._run_action("restart", *names)))
+            box.append(self._icon_button("media-playback-stop-symbolic", "Stop all",
+                                         lambda: self._run_action("stop", *names)))
+        return box
+
+    @staticmethod
+    def _icon_button(icon: str, tooltip: str, action) -> Gtk.Button:
+        button = Gtk.Button(icon_name=icon, tooltip_text=tooltip)
+        button.add_css_class("flat")
+        button.connect("clicked", lambda _b: action())
+        return button
 
     @staticmethod
     def _group_summary(comps: list[dict]) -> str:
@@ -608,8 +764,10 @@ class Window(Adw.ApplicationWindow):
             self._legend.append(box)
 
     # ── actions ─────────────────────────────────────────────────────────────
-    def _run_action(self, verb: str, component: str) -> None:
-        argv = [self._pitcrew, "-p", self._project, verb, component]
+    def _run_action(self, verb: str, *components: str) -> None:
+        """One component, a whole app, a profile, or everything — same path."""
+        component = components[0] if len(components) == 1 else f"{len(components)} components"
+        argv = [self._pitcrew, "-p", self._project, verb, *components]
         try:
             proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDERR_PIPE)
         except GLib.Error as error:

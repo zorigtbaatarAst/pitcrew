@@ -29,6 +29,9 @@ class LogView(Gtk.Box):
         self._proc: Gio.Subprocess | None = None
         self._cancel: Gio.Cancellable | None = None
         self._lines = 0
+        # Every line as it arrived, so a filter can be changed without losing
+        # what scrolled past — the file may already have been truncated.
+        self._raw: list[str] = []
 
         self._picker = Gtk.DropDown(model=Gtk.StringList.new([]), hexpand=True)
         self._picker.connect("notify::selected", lambda *_: self._selection_changed())
@@ -44,6 +47,16 @@ class LogView(Gtk.Box):
 
         self._follow = Gtk.ToggleButton(icon_name="go-bottom-symbolic", active=True,
                                         tooltip_text="Follow new lines")
+        # A tailer without a filter is half a tool: the line you want is one of
+        # four hundred. Filtering hides lines as they arrive rather than
+        # re-reading the file, so it works on a live tail.
+        self._filter = Gtk.SearchEntry(placeholder_text="Filter lines", width_chars=18)
+        self._filter.connect("search-changed", lambda _e: self._refilter())
+
+        self._errors_only = Gtk.ToggleButton(icon_name="dialog-warning-symbolic",
+                                             tooltip_text="Errors only")
+        self._errors_only.connect("toggled", lambda _b: self._refilter())
+
         clear = Gtk.Button(icon_name="edit-clear-all-symbolic", tooltip_text="Clear")
         clear.connect("clicked", lambda _b: self._clear())
 
@@ -51,6 +64,8 @@ class LogView(Gtk.Box):
                       margin_start=12, margin_end=12)
         bar.append(self._roles)
         bar.append(self._picker)
+        bar.append(self._filter)
+        bar.append(self._errors_only)
         bar.append(self._follow)
         bar.append(clear)
 
@@ -121,6 +136,19 @@ class LogView(Gtk.Box):
             self._current = name
             self._open(name)
 
+    def show_component(self, name: str, errors_only: bool = False) -> None:
+        """Open one component's log — how the Components view hands off."""
+        if name in self._names:
+            self._roles.set_active_name("all")
+        if name not in self._names:
+            return
+        self._errors_only.set_active(errors_only)
+        self._picker.set_selected(self._names.index(name))
+        self._selection_changed()
+
+    def focus_filter(self) -> None:
+        self._filter.grab_focus()
+
     def stop(self) -> None:
         if self._cancel:
             self._cancel.cancel()
@@ -171,7 +199,33 @@ class LogView(Gtk.Box):
         self._append(data.decode("utf-8", "replace"))
         self._read(stream)
 
+    def _shown(self, line: str) -> bool:
+        needle = self._filter.get_text().strip().lower()
+        if needle and needle not in line.lower():
+            return False
+        if self._errors_only.get_active():
+            return bool(self._pattern and self._pattern.search(line))
+        return True
+
+    def _refilter(self) -> None:
+        self._buffer.set_text("")
+        self._lines = 0
+        for line in self._raw:
+            if self._shown(line):
+                self._insert(line)
+        self._scroll_to_end()
+
     def _append(self, line: str) -> None:
+        self._raw.append(line)
+        if len(self._raw) > MAX_LINES:
+            del self._raw[:len(self._raw) - MAX_LINES]
+        if not self._shown(line):
+            return
+        self._insert(line)
+        if self._follow.get_active():
+            GLib.idle_add(self._scroll_to_end, priority=GLib.PRIORITY_LOW)
+
+    def _insert(self, line: str) -> None:
         end = self._buffer.get_end_iter()
         tag = "error" if self._pattern and self._pattern.search(line) else "dim"
         self._buffer.insert_with_tags_by_name(end, line + "\n", tag)
@@ -181,8 +235,6 @@ class LogView(Gtk.Box):
             cut = self._buffer.get_iter_at_line(self._lines - MAX_LINES)[1]
             self._buffer.delete(start, cut)
             self._lines = MAX_LINES
-        if self._follow.get_active():
-            GLib.idle_add(self._scroll_to_end, priority=GLib.PRIORITY_LOW)
 
     def _scroll_to_end(self) -> bool:
         adjustment = self._scroller.get_vadjustment()
@@ -192,3 +244,4 @@ class LogView(Gtk.Box):
     def _clear(self) -> None:
         self._buffer.set_text("")
         self._lines = 0
+        self._raw.clear()

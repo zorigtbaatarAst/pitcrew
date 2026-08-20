@@ -32,10 +32,22 @@ field is removed or changes meaning.
   `status --json`.
 - `pitcrew --version`, and the version in `doctor`.
 
+- Desktop **crash notifications**, clickable **URLs** and **health** hints,
+  an **errors → logs** jump, log **filtering**, **group and stack-wide**
+  start/stop/restart, **profiles**, **keyboard shortcuts**, and remembered
+  window geometry in the desktop app.
+- `url`, `health` and `profileDir` in `status --json`.
+
 ### Fixed
 - `bundle exec …` apps drew the **node** icon: `*bun*` matched "bundle" and sat
   above the ruby line. `*pnpm*` was dead for the mirror-image reason.
 - `rail_color` read the **caller's** `$app` — two assignments on one `local`.
+- Two GUI icons were **invisible**: `utilities-system-monitor-symbolic` (the
+  Resources tab) and `external-link-symbolic` are not in the icon theme, and a
+  missing icon name draws nothing rather than erroring. A test now checks every
+  name the GUI asks for.
+- A `NameError` in the "add project" folder picker — `plain` was used but never
+  imported. Found by ruff's first run; no test could reach that callback.
 - `status --json` reported `cpu: 0` for everything. A one-shot process has no
   previous sample to delta against; it now reports `null`.
 

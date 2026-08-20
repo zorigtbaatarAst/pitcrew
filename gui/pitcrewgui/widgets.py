@@ -126,11 +126,12 @@ class Graph(Gtk.DrawingArea):
 class ComponentRow(Adw.ActionRow):
     """One component: state, what it is using, and the buttons that act on it."""
 
-    def __init__(self, name: str, color: str, on_action) -> None:
+    def __init__(self, name: str, color: str, on_action, on_show_logs=None) -> None:
         # Component names and ports come from a config file, not from us.
         super().__init__(title=name, use_markup=False)
         self._name = name
         self._on_action = on_action
+        self._on_show_logs = on_show_logs
 
         self._dot = Dot(color)
         self.add_prefix(self._dot)
@@ -141,6 +142,27 @@ class ComponentRow(Adw.ActionRow):
         self.add_suffix(self._badge)
 
         box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        # The port has always been printed and never been usable. pitcrew knows
+        # the real URL — including the --url-path every backend sits behind — so
+        # this opens the right thing rather than a guess at localhost:PORT.
+        # web-browser-symbolic, not adw-external-link-symbolic: the latter is
+        # bundled in libadwaita's resources and only resolves after Adw.init(),
+        # which makes it invisible anywhere the theme is queried earlier.
+        self._open = Gtk.Button(icon_name="web-browser-symbolic", tooltip_text="Open")
+        self._open.add_css_class("flat")
+        self._open.set_visible(False)
+        self._open.connect("clicked", lambda _b: self._launch())
+        box.append(self._open)
+        self._url = ""
+
+        self._errors = Gtk.Button(icon_name="dialog-warning-symbolic",
+                                  tooltip_text="Show the error lines")
+        self._errors.add_css_class("flat")
+        self._errors.set_visible(False)
+        self._errors.connect(
+            "clicked", lambda _b: self._on_show_logs and self._on_show_logs(self._name, True))
+        box.append(self._errors)
+
         self._start = self._button(box, "media-playback-start-symbolic", "start", "Start")
         self._restart = self._button(box, "view-refresh-symbolic", "restart", "Restart")
         self._stop = self._button(box, "media-playback-stop-symbolic", "stop", "Stop")
@@ -152,6 +174,10 @@ class ComponentRow(Adw.ActionRow):
         button.connect("clicked", lambda _b: self._on_action(verb, self._name))
         box.append(button)
         return button
+
+    def _launch(self) -> None:
+        if self._url:
+            Gtk.UriLauncher.new(self._url).launch(None, None, None, None)
 
     def set_color(self, color: str) -> None:
         self._dot.set_color(color)
@@ -178,10 +204,21 @@ class ComponentRow(Adw.ActionRow):
         bits.append("cpu —" if cpu is None else f"{cpu}% cpu")
         if comp.get("port"):
             bits.append(f":{comp['port']}")
+        if comp.get("health"):
+            bits.append("health ✓" if state == "up" else "health")
         if comp.get("errors"):
             bits.append(f"{comp['errors']} errors")
+        # "2 errors" that you cannot click is a dead end: the lines exist, in a
+        # view one tab away, already highlighted.
+        self._errors.set_visible(bool(comp.get("errors")) and self._on_show_logs is not None)
         if state == "crashed" and comp.get("exit") is not None:
             bits.append(f"exit {comp['exit']}")
+
+        self._url = comp.get("url") or ""
+        # Only offer to open something that is actually answering.
+        self._open.set_visible(bool(self._url) and state in ("up", "external"))
+        if self._url:
+            self._open.set_tooltip_text(f"Open {self._url}")
         self.set_subtitle("  ·  ".join(bits))
 
         running = state in ("up", "starting", "external")

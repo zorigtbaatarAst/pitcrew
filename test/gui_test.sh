@@ -504,4 +504,86 @@ print(view._picker.get_model().get_string(0))
   assert_match "$(printf '%s' "$out" | sed -n 4p)" 'be.*orders' "each entry names its role"
 }
 
+# ── notifications, filtering, shortcuts ─────────────────────────────────────
+
+test_a_crash_notifies_once_and_only_for_a_transition() {
+  gui_available || return 0
+  # A dashboard you have to be looking at tells you nothing. But a component
+  # that was ALREADY crashed when you started watching is not news, and one
+  # that flaps must not stack twelve notifications.
+  local out; out=$(_drive "
+from pitcrewgui.notify import CrashWatcher
+fired = []
+w = CrashWatcher(None, lambda n: None)
+w._notify = lambda c: fired.append(c['name'])
+w.check([{'name': 'be-x', 'state': 'up'}])
+w.check([{'name': 'be-x', 'state': 'crashed', 'exit': 1}])
+w.check([{'name': 'be-x', 'state': 'crashed', 'exit': 1}])
+print(fired)
+w.reset()
+w.check([{'name': 'be-y', 'state': 'crashed'}])
+print(fired)
+w2 = CrashWatcher(None, lambda n: None); w2.enabled = False
+w2._notify = lambda c: fired.append('SHOULD-NOT-FIRE')
+w2.check([{'name': 'be-z', 'state': 'up'}])
+w2.check([{'name': 'be-z', 'state': 'crashed'}])
+print(fired)
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "['be-x']" "up → crashed fires exactly once"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "['be-x']" "a crash already in progress is not news"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "['be-x']" "and the preference turns it off"
+}
+
+test_the_log_filter_hides_lines_as_they_arrive() {
+  gui_available || return 0
+  # Filtering a LIVE tail cannot re-read the file — it may already have been
+  # truncated by a restart — so every line is kept and the view is rebuilt.
+  local out; out=$(_drive "
+from pitcrewgui.logview import LogView
+v = LogView(lambda e: None)
+v.update_sources('/nonexistent', [{'name': 'be-a', 'role': 'be', 'app': 'a'}], 'ERROR')
+v._raw = ['alpha one', 'beta two', 'ERROR three']
+v._filter.set_text('beta'); v._refilter()
+print(repr(v._buffer.get_text(*v._buffer.get_bounds(), False).strip()))
+v._filter.set_text(''); v._errors_only.set_active(True); v._refilter()
+print(repr(v._buffer.get_text(*v._buffer.get_bounds(), False).strip()))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "'beta two'" "text filter shows only matches"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "'ERROR three'" "errors-only shows only error lines"
+}
+
+test_a_profile_is_read_from_the_directory_pitcrew_writes() {
+  gui_available || return 0
+  local dir; dir=$(mktemp -d)
+  printf 'sales\nbe-orders\n' > "$dir/morning"
+  : > "$dir/empty"
+  local out; out=$(_drive "
+from pitcrewgui.profiles import profile_names, profile_targets
+print(' '.join(profile_names('$dir')))
+print(' '.join(profile_targets('$dir', 'morning')))
+print(profile_names(None), profile_targets('$dir', 'nope'))
+")
+  rm -rf "$dir"
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "empty morning" "one entry per saved profile"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "sales be-orders" "targets, one per line"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "[] []" "no directory and no file are both empty, not errors"
+}
+
+test_every_icon_the_gui_asks_for_actually_exists() {
+  gui_available || return 0
+  # A missing icon name is not an error — GTK draws NOTHING. The Resources tab
+  # and the "open URL" button both shipped invisible because the names looked
+  # plausible (`utilities-system-monitor-symbolic`, `external-link-symbolic`)
+  # and neither is in the theme.
+  local names; names=$(grep -rhoE '"[a-z0-9.-]+-symbolic"' "$GUI_DIR"/pitcrewgui/*.py \
+    | tr -d '"' | sort -u | tr '\n' ' ')
+  local out; out=$(_drive "
+from gi.repository import Gtk, Gdk
+theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+missing = [n for n in '''$names'''.split() if not theme.has_icon(n)]
+print(' '.join(missing))
+")
+  assert_empty "$out" "icon names the theme does not have"
+}
+
 run_tests

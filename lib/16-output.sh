@@ -40,6 +40,7 @@ cmd_json() {
   # the same lines the dashboard counts without knowing pitcrew's layout or
   # re-inventing the pattern.
   printf '"logDir":%s,' "$(_json_str "$LOG_DIR")"
+  printf '"profileDir":%s,' "$(_json_str "$PROFILE_DIR")"
   printf '"errorPattern":%s,' "$(_json_str "$PITCREW_ERROR_PATTERN")"
   # The machine itself. A reader plotting RAM against a per-component cap has no
   # idea whether 18G of caps is generous or suicidal without knowing what the
@@ -55,17 +56,31 @@ cmd_json() {
     app=${c#??-}; role=${c:0:2}
     if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
     st=${SNAP_STATE[$c]:-n/a}
+    # Built here because pitcrew is what knows --url-path and --be-health. A
+    # reader assembling "http://localhost:$port" itself would be right for a
+    # frontend and wrong for every backend behind a path prefix.
+    local url="" health=""
+    if [ -n "$port" ]; then
+      if [ "$role" = be ]; then
+        url="http://localhost:$port${PITCREW_URL_PATH[$app]:-}"
+        [ -n "${PITCREW_BE_HEALTH_PATH[$app]:-}" ] &&
+          health="http://localhost:$port${PITCREW_BE_HEALTH_PATH[$app]}"
+      else
+        url="http://localhost:$port"
+      fi
+    fi
     case "$st" in up) up=$((up+1));; starting) starting=$((starting+1));;
                   crashed) crashed=$((crashed+1));; external) external=$((external+1));;
                   down) down=$((down+1));; esac
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s}' \
+    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s}' \
       "$(_json_str "$c")" "$(_json_str "$app")" "$(_json_str "$role")" "$(_json_str "$st")" \
       "$(_json_num "$port")" "$(_json_num "${SNAP_PID[$c]:-}")" \
       "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_cpu "${SNAP_CPU[$c]:-}")" \
       "$(_json_num "${ERR_COUNT[$c]:-0}")" "$(_json_num "${SNAP_EXIT[$c]:-}")" \
-      "$(_json_num "${COMP_MAX_B[$c]:-}")" "$(_json_str "$(comp_max_source "$c")")"
+      "$(_json_num "${COMP_MAX_B[$c]:-}")" "$(_json_str "$(comp_max_source "$c")")" \
+      "$(_json_str "$url")" "$(_json_str "$health")"
   done
   printf '],"deps":['
   first=1
