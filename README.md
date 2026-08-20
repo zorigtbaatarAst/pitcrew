@@ -358,6 +358,25 @@ the case. The cap also reaches `pitcrew status --json` as `limit` and
 `limitSource`, so the dashboard, the preflight, systemd's `MemoryMax` and the
 GUI are all reading one number.
 
+### From the terminal
+
+The dashboard colours the RAM figure by how close it is to the cap, which
+answers "am I near it" but not "near what". `render ram cap` spells it out:
+
+```bash
+pitcrew render ram cap      # 1.0G/2G instead of 1.0G
+pitcrew render ram value    # back to just the figure
+```
+
+It is an ordinary render setting, so it shows up in `pitcrew render` with a
+swatch of both styles, and in the dashboard's **📈 graph & gauge style…**
+picker, alongside graph/scale/gauge.
+
+Changing a cap without leaving the dashboard is **🧠 RAM caps…** in the menu:
+pick a component (with its current cap and where it came from), then a size.
+`default` says what it would fall back to, so clearing an override is not a
+guess.
+
 In the desktop app it is **RAM caps…** in the menu: every component with its
 effective cap and where that came from. It writes nothing itself — each change
 goes through `pitcrew limit`, the same way adding a project goes through

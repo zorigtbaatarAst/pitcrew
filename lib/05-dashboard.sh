@@ -226,10 +226,15 @@ status_table() {
   fi
   summary_line; say "$R"
   say ""
+  # These are hand-aligned to the columns printf builds below, so they have to
+  # widen with mem_meter when the cap is spelled out.
+  local _ram_hdr="ram" _ram_pad=34
+  if [ "${PITCREW_RAM_CELL:-value}" = cap ]; then _ram_hdr="ram / cap"; _ram_pad=39; fi
   if [ "$twocol" = 1 ]; then
-    printf '  %b%-12s %-34s %s%b\n' "$BOLD" "app" "backend              ram" "frontend             ram" "$RESET"
+    printf '  %b%-12s %-*s %s%b\n' "$BOLD" "app" "$_ram_pad" \
+      "backend              $_ram_hdr" "frontend             $_ram_hdr" "$RESET"
   else
-    printf '  %b%-12s %s%b\n' "$BOLD" "app" "role  state       port      ram" "$RESET"
+    printf '  %b%-12s %s%b\n' "$BOLD" "app" "role  state       port      $_ram_hdr" "$RESET"
   fi
   for app in "${PITCREW_APPS[@]}"; do
     bs=${SNAP_STATE[be-$app]:-n/a}; fs=${SNAP_STATE[fe-$app]:-n/a}
@@ -300,7 +305,7 @@ rail_color() { # $1 app → RAILC
 # so the labels can never drift away from the numbers under them.
 CELL_W_ICON=2        # "● "
 CELL_W_PORT=7        # ":8082 " or "n/a    "
-CELL_W_RAM=7         # " 893M"
+CELL_W_RAM=7         # " 893M", or 12 with `render ram cap` (" 1.2G/8G  ")
 CELL_W_CPU=5         # "  0%"
 CELL_W_ERR=5         # " ⚡7  "
 ROW_PREFIX_W=15      # marker(2) + " " + app(11) + " "
@@ -340,6 +345,9 @@ layout_for_width() { # $1 W → LAYOUT, TIER, GRAPH_W, PREFIX_W, CELL_FIXED_W, C
   local w=$1 cells=2
   PREFIX_W=$ROW_PREFIX_W
   CELL_RAM=1; CELL_CPU=1; CELL_ERR=1
+  # `render ram cap` spells out what the colour already implies, and needs the
+  # room for it. Set before any width is added up below.
+  [ "${PITCREW_RAM_CELL:-value}" = cap ] && CELL_W_RAM=12 || CELL_W_RAM=7
   [ "$w" -ge "${PITCREW_NARROW_AT:-110}" ] || cells=1
 
   # Drop columns until the row's fixed part fits, cheapest loss first. The
@@ -412,7 +420,10 @@ cell_header() { # $1 graph width → R, exactly CELL_FIXED_W + $1 wide
   local g="" h
   [ "$1" -gt 0 ] && printf -v g '%-*s' "$1" "graph"
   printf -v h '%*s%-*s%s' "$CELL_W_ICON" "" "$(( CELL_W_PORT ))" "port" "$g"
-  [ "$CELL_RAM" = 1 ] && printf -v h '%s %6s' "$h" "ram"
+  if [ "$CELL_RAM" = 1 ]; then
+    [ "${PITCREW_RAM_CELL:-value}" = cap ] && printf -v h '%s %11s' "$h" "ram / cap" \
+                                           || printf -v h '%s %6s' "$h" "ram"
+  fi
   [ "$CELL_CPU" = 1 ] && printf -v h '%s %4s' "$h" "cpu"
   [ "$CELL_ERR" = 1 ] && printf -v h '%s %-4s' "$h" ""
   printf -v R '%b%s%b' "$C_MUTED" "$h" "$RESET"
@@ -469,6 +480,10 @@ comp_cell() { # $1 comp, $2 graph width (0 = no graph column) → R: one aligned
       printf -v R ' %b%5s%b%b%s%b' \
         "$PCOL" "${HUMAN%[GM]}" "$RESET" "$C_MUTED" "${HUMAN: -1}" "$RESET"
       cell+="$R"
+      if [ "${PITCREW_RAM_CELL:-value}" = cap ]; then
+        printf -v R '%b/%-4s%b' "$C_FAINT" "${COMP_MAX_LABEL[$c]:-?}" "$RESET"
+        cell+="$R"
+      fi
     fi
     if [ "$CELL_CPU" = 1 ]; then
       printf -v R ' %b%3s%b%b%%%b' "$C_TEXT" "${SNAP_CPU[$c]:-0}" "$RESET" "$C_MUTED" "$RESET"

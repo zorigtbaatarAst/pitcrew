@@ -177,11 +177,9 @@ config_finalize() { # $1 = path to the config file that was just sourced
   # so the meters, the preflight and systemd all see one number.
   limits_load
 
-  declare -gA COMP_MAX_B=()
+  declare -gA COMP_MAX_B=() COMP_MAX_LABEL=()
   local _c
-  for _c in "${PITCREW_COMPS[@]}"; do
-    COMP_MAX_B[$_c]=$(to_bytes "$(comp_max "$_c")")
-  done
+  for _c in "${PITCREW_COMPS[@]}"; do cap_cache_set "$_c"; done
 }
 
 app_has_role() { # $1 app $2 role(be|fe)

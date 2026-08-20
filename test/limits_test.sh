@@ -128,5 +128,69 @@ test_limit_refuses_a_component_that_does_not_exist() {
   assert_fails cmd_limit be-both
 }
 
+# ── showing the cap in the terminal ─────────────────────────────────────────
+
+test_the_ram_cell_is_a_render_setting_like_the_others() {
+  assert_ok _render_valid ram value
+  assert_ok _render_valid ram cap
+  assert_fails _render_valid ram both
+  assert_fails _render_valid ram ""
+  # It has to appear in the generic machinery, or the CLI and the fzf picker
+  # would never offer it — they are both built from RENDER_KEYS.
+  assert_match "${RENDER_KEYS[*]}" 'ram' "listed as a render key"
+  assert_ne "$(render_describe ram cap)" "" "and describes itself in the picker"
+}
+
+test_the_cap_is_only_printed_when_asked_for() {
+  reset_limits
+  save_limit be-both 4G
+  cap_cache_set be-both
+  SNAP_RSS[be-both]=$((1024 ** 3))          # 1.0G against a 4G cap
+
+  PITCREW_RAM_CELL=value mem_meter be-both
+  local plain_cell; plain_cell=$(plain "$R")
+  assert_not_match "$plain_cell" '/' "the default cell is just the figure"
+
+  PITCREW_RAM_CELL=cap mem_meter be-both
+  local cap_cell; cap_cell=$(plain "$R")
+  assert_match "$cap_cell" '1.0G/4G' "and names the cap when asked"
+  unset 'SNAP_RSS[be-both]'
+  reset_limits
+}
+
+test_a_stopped_component_shows_no_cap_to_be_measured_against() {
+  # A dash is the honest cell for a service that is not running; "—/8G" would
+  # imply a measurement that does not exist.
+  reset_limits
+  unset 'SNAP_RSS[be-both]'
+  PITCREW_RAM_CELL=cap mem_meter be-both
+  assert_not_match "$(plain "$R")" '/' "no reading, no cap"
+}
+
+test_the_cap_label_follows_the_override() {
+  reset_limits
+  cap_cache_set be-both
+  assert_eq "${COMP_MAX_LABEL[be-both]}" "2G" "the role default, as a label"
+  save_limit be-both 512M
+  cap_cache_set be-both
+  assert_eq "${COMP_MAX_LABEL[be-both]}" "512M" "and follows an override"
+  assert_eq "${COMP_MAX_B[be-both]}" "$((512 * 1024 ** 2))" "with the bytes in step"
+  reset_limits
+}
+
+test_the_menu_feeds_one_line_per_component_and_per_size() {
+  reset_limits
+  local lines; lines=$(limit_choices | wc -l)
+  assert_eq "$lines" "${#PITCREW_COMPS[@]}" "a component picker entry each"
+  assert_eq "$(limit_choices | head -1 | cut -f1)" "${PITCREW_COMPS[0]}" "keyed by component, tab-delimited"
+
+  # "default" has to say what it falls back to, or clearing an override is a
+  # guess about what you are going back to.
+  assert_match "$(plain "$(limit_size_choices be-both | head -1)")" 'inherits 2G' "default names the inherited cap"
+  save_limit be-both 1G
+  assert_match "$(plain "$(limit_size_choices be-both)")" '●  1G' "the current override is marked"
+  reset_limits
+}
+
 trap 'rm -f "$LIMITS_FILE" 2>/dev/null' EXIT
 run_tests

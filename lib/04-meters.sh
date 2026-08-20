@@ -25,17 +25,20 @@
 #   graph   block | braille | bar   a service's RAM over time
 #   scale   range | cap             what the height of that graph MEANS
 #   gauge   bar   | graph           the CPU/RAM gauges at the top of the frame
+#   ram     value | cap             whether the RAM figure names the cap it is measured against
 PITCREW_GRAPH_ENV="${PITCREW_GRAPH:-}"
 PITCREW_GRAPH_SCALE_ENV="${PITCREW_GRAPH_SCALE:-}"
 PITCREW_GAUGE_ENV="${PITCREW_GAUGE:-}"
+PITCREW_RAM_CELL_ENV="${PITCREW_RAM_CELL:-}"
 PITCREW_RENDER_FILE="${PITCREW_RENDER_FILE:-$HOME/.config/pitcrew/render}"
 
-RENDER_KEYS=(graph scale gauge)
+RENDER_KEYS=(graph scale gauge ram)
 render_values() { # $1 key → the values it accepts
   case "$1" in
     graph) R="block braille bar" ;;
     scale) R="range cap" ;;
     gauge) R="bar graph" ;;
+    ram)   R="value cap" ;;
     *)     R="" ;;
   esac
 }
@@ -45,6 +48,7 @@ render_get() { # $1 key → R, the value in effect
     graph) R=$PITCREW_GRAPH ;;
     scale) R=$PITCREW_GRAPH_SCALE ;;
     gauge) R=$PITCREW_GAUGE ;;
+    ram)   R=$PITCREW_RAM_CELL ;;
     *)     R="" ;;
   esac
 }
@@ -59,25 +63,29 @@ _render_valid() { # $1 key, $2 value
 # means the file was hand-edited or comes from a newer version. Fall back to
 # the default rather than drawing with a setting nothing understands.
 render_resolve() {
-  local key val saved_graph="" saved_scale="" saved_gauge=""
+  local key val saved_graph="" saved_scale="" saved_gauge="" saved_ram=""
   if [ -r "$PITCREW_RENDER_FILE" ]; then
     while IFS='=' read -r key val; do
       case "$key" in
         graph) saved_graph=$val ;;
         scale) saved_scale=$val ;;
         gauge) saved_gauge=$val ;;
+        ram)   saved_ram=$val ;;
       esac
     done < "$PITCREW_RENDER_FILE"
   fi
   [ -n "$PITCREW_GRAPH_ENV" ]       && PITCREW_GRAPH=$PITCREW_GRAPH_ENV
   [ -n "$PITCREW_GRAPH_SCALE_ENV" ] && PITCREW_GRAPH_SCALE=$PITCREW_GRAPH_SCALE_ENV
   [ -n "$PITCREW_GAUGE_ENV" ]       && PITCREW_GAUGE=$PITCREW_GAUGE_ENV
+  [ -n "$PITCREW_RAM_CELL_ENV" ]    && PITCREW_RAM_CELL=$PITCREW_RAM_CELL_ENV
   [ -z "${PITCREW_GRAPH:-}" ]       && PITCREW_GRAPH=$saved_graph
   [ -z "${PITCREW_GRAPH_SCALE:-}" ] && PITCREW_GRAPH_SCALE=$saved_scale
   [ -z "${PITCREW_GAUGE:-}" ]       && PITCREW_GAUGE=$saved_gauge
+  [ -z "${PITCREW_RAM_CELL:-}" ]    && PITCREW_RAM_CELL=$saved_ram
   _render_valid graph "${PITCREW_GRAPH:-}"       || PITCREW_GRAPH=block
   _render_valid scale "${PITCREW_GRAPH_SCALE:-}" || PITCREW_GRAPH_SCALE=range
   _render_valid gauge "${PITCREW_GAUGE:-}"       || PITCREW_GAUGE=bar
+  _render_valid ram   "${PITCREW_RAM_CELL:-}"    || PITCREW_RAM_CELL=value
   return 0
 }
 
@@ -143,6 +151,14 @@ render_swatch() { # $1 "key=value" → one line showing what that setting draws
     gauge)
       if [ "$val" = bar ]; then bar 34 22; else spark "$RENDER_SAMPLE_LEAK" 22 100 "" abs; fi
       sample=$R ;;
+    ram)
+      # The same service at 62% of an 8G cap, drawn both ways.
+      pct_color 62
+      if [ "$val" = cap ]; then
+        printf -v sample '%b5.0%b%bG%b%b/8G%b' "$PCOL" "$RESET" "$C_MUTED" "$RESET" "$C_FAINT" "$RESET"
+      else
+        printf -v sample '%b5.0%b%bG%b   ' "$PCOL" "$RESET" "$C_MUTED" "$RESET"
+      fi ;;
     *) printf '  %bno such setting: %s%b\n' "$C_CRIT" "$key" "$RESET"; return 0 ;;
   esac
   printf '  %b %b%-8s%b %s  %b%s%b\n' "$mark" "$C_TEXT" "$val" "$RESET" "$sample" \
@@ -173,6 +189,7 @@ render_purpose() { # $1 key → what the setting is FOR
     graph) echo "a service's RAM over time" ;;
     scale) echo "what the height of that graph means" ;;
     gauge) echo "the CPU and RAM gauges at the top of the frame" ;;
+    ram)   echo "whether a service's RAM figure names the cap it is measured against" ;;
   esac
 }
 
@@ -185,6 +202,8 @@ render_describe() { # $1 key, $2 value → the one line that says why you would 
     scale=cap)     echo "height is the RAM cap — absolute, and flat for anything well under it" ;;
     gauge=bar)     echo "a loading bar: the filled part is the number" ;;
     gauge=graph)   echo "the last few minutes of system load, as history" ;;
+    ram=value)     echo "just the figure — the colour already says how close to the cap it is" ;;
+    ram=cap)       echo "the figure and its cap: 1.2G/8G, so the headroom is a number not a hue" ;;
     *)             echo "" ;;
   esac
 }
@@ -234,6 +253,7 @@ render_set() { # $1 key, $2 value — apply it to the running process
     graph) PITCREW_GRAPH=$2 ;;
     scale) PITCREW_GRAPH_SCALE=$2 ;;
     gauge) PITCREW_GAUGE=$2 ;;
+    ram)   PITCREW_RAM_CELL=$2 ;;
   esac
   return 0
 }
@@ -443,6 +463,11 @@ mem_meter() { # $1 comp → R: one aligned "bar RAM" cell, or a dim "—" if not
   pct_color "$pct"
   human "$cur"
   printf -v R '%b%s %5s%b' "$PCOL" "${BARS[$LVL]}" "$HUMAN" "$RESET"
+  # `render ram cap` names the cap the colour is already measuring against, so
+  # the headroom is a number rather than a hue you have to interpret.
+  if [ "${PITCREW_RAM_CELL:-value}" = cap ]; then
+    printf -v R '%s%b/%-4s%b' "$R" "$C_FAINT" "${COMP_MAX_LABEL[$c]:-?}" "$RESET"
+  fi
 }
 
 # ── error radar ─────────────────────────────────────────────────────────────
