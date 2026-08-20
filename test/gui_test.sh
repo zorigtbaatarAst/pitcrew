@@ -16,24 +16,35 @@
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
 
-GUI="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/gui/pitcrew-gui"
+GUI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/gui"
 
 # The GTK bindings live in the system python, which is what the app shebangs
 # into — not whatever `python3` resolves to on $PATH (a Homebrew or pyenv
 # python has no `gi`). No bindings, no GUI, nothing to test: skip, don't fail.
 gui_available() {
-  [ -r "$GUI" ] && /usr/bin/python3 -c 'import gi, cairo' >/dev/null 2>&1
+  [ -d "$GUI_DIR/pitcrewgui" ] && /usr/bin/python3 -c 'import gi, cairo' >/dev/null 2>&1
 }
+
+# The GUI is a package now, so the whole public surface is assembled into one
+# namespace here rather than rewriting every assertion below to know which
+# module a name ended up in.
+_PRELUDE="
+import importlib, sys, types
+sys.path.insert(0, '$GUI_DIR')
+pgui = types.SimpleNamespace()
+for _name in ('platform', 'model', 'registry', 'settings', 'runner', 'widgets',
+              'dialogs', 'window', 'app'):
+    _mod = importlib.import_module('pitcrewgui.' + _name)
+    pgui.__dict__.update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
+"
 
 _drive() { # $1 = python body, with Stream / Counting / GLib in scope
   /usr/bin/python3 -c "
-import importlib.machinery, importlib.util, sys
+import sys
 import gi
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gio, GLib
-spec = importlib.util.spec_from_loader(
-    'pgui', importlib.machinery.SourceFileLoader('pgui', '$GUI'))
-pgui = importlib.util.module_from_spec(spec); spec.loader.exec_module(pgui)
+$_PRELUDE
 
 class Counting(pgui.Stream):
     '''Counts completed reads — the direct measure of the spin.'''
@@ -103,12 +114,10 @@ print(len(frames), 'quiet' if s.reads - after < 20 else f'SPUN({s.reads - after}
 
 _settings_drive() { # $1 = python body, with Settings/SETTINGS_BY_KEY/group_of in scope
   /usr/bin/python3 -c "
-import importlib.machinery, importlib.util, os, pathlib, sys
+import os, pathlib, sys
 import gi
 gi.require_version('Gtk', '4.0')
-spec = importlib.util.spec_from_loader(
-    'pgui', importlib.machinery.SourceFileLoader('pgui', '$GUI'))
-pgui = importlib.util.module_from_spec(spec); spec.loader.exec_module(pgui)
+$_PRELUDE
 Settings, SETTINGS, SETTINGS_BY_KEY = pgui.Settings, pgui.SETTINGS, pgui.SETTINGS_BY_KEY
 group_of = pgui.group_of
 $1
@@ -251,6 +260,65 @@ test_paths_with_shell_punctuation_still_render() {
   # at /srv/a&b rendered as an empty row and a warning nobody reads.
   local out; out=$(_settings_drive "print(pgui.plain('/srv/a&b <x>'))")
   assert_eq "$out" "/srv/a&amp;b &lt;x&gt;" "escaped for the markup parser"
+}
+
+# ── the platform seam ───────────────────────────────────────────────────────
+
+test_only_the_platform_module_knows_which_os_this_is() {
+  [ -d "$GUI_DIR/pitcrewgui" ] || return 0
+  # The bargain lib/00-platform.sh strikes, for the GUI: adding an OS means
+  # editing one file. This fails the moment an OS check leaks anywhere else,
+  # which is how a "portable" codebase quietly stops being one.
+  local offenders
+  offenders=$(grep -lE 'platform\.system|sys\.platform|"Darwin"|IS_MACOS|IS_WINDOWS|/opt/homebrew|uname' \
+    "$GUI_DIR"/pitcrewgui/*.py 2>/dev/null | grep -v '/platform\.py$' || true)
+  assert_empty "$offenders" "OS knowledge outside pitcrewgui/platform.py"
+}
+
+test_the_config_directory_is_deliberately_not_platform_specific() {
+  gui_available || return 0
+  # macOS convention says ~/Library/Application Support. That would be tidy and
+  # wrong: the GUI must read the registry the `pitcrew` COMMAND writes, and
+  # pitcrew uses $HOME/.config/pitcrew everywhere with no branch.
+  # The harness exports PITCREW_HOME to a temp dir so the suite never touches the
+  # real registry — unset it here to see the default this test is actually about.
+  local out; out=$( (unset PITCREW_HOME; _settings_drive "
+import pathlib
+print(pgui.pitcrew_home() == pathlib.Path.home() / '.config' / 'pitcrew')
+") )
+  assert_eq "$out" "True" "same path the CLI uses, on every OS"
+  local out2; out2=$(PITCREW_HOME=/tmp/elsewhere _settings_drive "print(pgui.pitcrew_home())")
+  assert_eq "$out2" "/tmp/elsewhere" "and PITCREW_HOME still overrides it"
+}
+
+test_config_validation_uses_a_bash_pitcrew_would_accept() {
+  gui_available || return 0
+  # pitcrew refuses to run under bash < 5. macOS still ships 3.2 as /bin/bash,
+  # so validating with "whatever bash is first" would accept configs the tool
+  # then rejects — or reject ones it would have run.
+  local out; out=$(_settings_drive "
+found = pgui.bash5()
+if found is None:
+    print('none', 'message' if pgui.missing_bash_message() else 'SILENT')
+else:
+    import subprocess
+    major = subprocess.run([found, '-c', 'echo \${BASH_VERSINFO[0]}'],
+                           capture_output=True, text=True).stdout.strip()
+    print('found', 'ge5' if int(major) >= 5 else 'TOO-OLD')
+")
+  assert_match "$out" '^(found ge5|none message)$' "a bash 5, or an honest refusal"
+}
+
+test_every_platform_offers_a_last_resort_on_path() {
+  gui_available || return 0
+  # A hardcoded absolute interpreter is what broke this on macOS in the first
+  # place. Whatever the OS, the list has to end with something $PATH can find.
+  local out; out=$(_settings_drive "
+print(pgui.python_candidates()[-1])
+print(bool(pgui.missing_bindings_message()))
+")
+  assert_not_match "$(printf '%s' "$out" | sed -n 1p)" '^/' "the last candidate is not an absolute path"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and there is an install hint when none work"
 }
 
 run_tests

@@ -446,15 +446,56 @@ the top, so a climb is legible before you read a number. Height auto-scales to
 the series; how close a service is to its configured RAM cap moves to the
 colour of the number, which is where you look for it anyway.
 
-## Desktop app (Linux + GNOME)
+## Desktop app
 
 `gui/` is a GTK4 / libadwaita front-end, laid out like GNOME System Monitor: a
-component list, and a Resources view of live CPU and memory graphs.
+component list, a Resources view of live CPU and memory graphs, and a Projects
+view that manages the registry.
 
 ```bash
-make install-gui     # symlink + .desktop + icon into ~/.local
-pitcrew-gui          # or launch "pitcrew" from the app grid
+make install-gui     # symlink, plus whatever this OS uses to list apps
+pitcrew-gui          # or launch "pitcrew" from the app grid / Launchpad
 ```
+
+| | |
+|---|---|
+| **Linux** | a `.desktop` entry and a hicolor icon, per XDG |
+| **macOS** | a `.app` bundle in `~/Applications`, for Launchpad and Spotlight |
+| **Windows** | not yet — the launcher and package are ready, the install step is not |
+
+macOS support is **written but untested** — there is no Mac here to run it on.
+The parts that were Linux-only have been fixed (see the seam below); what
+remains unverified is how well GTK4 and libadwaita themselves behave on
+quartz. Expect it to work and to look distinctly non-native.
+
+### Structure
+
+```
+gui/pitcrew-gui           launcher: find an interpreter with the bindings, then run
+gui/pitcrewgui/
+  platform.py             the ONLY file that knows which OS this is
+  bootstrap.py            re-exec into a python that has PyGObject
+  settings.py  registry.py  model.py                 no GTK, unit-testable
+  runner.py    widgets.py   dialogs.py   window.py   app.py
+```
+
+Same bargain `lib/00-platform.sh` strikes for the tool itself: **every
+OS-specific decision lives in one file**, and a test fails if OS knowledge leaks
+anywhere else. Adding an OS means a branch in `platform.py` and one in
+`gui/install.sh` — nothing else.
+
+Two decisions worth knowing:
+
+- **There is no shebang pinning an interpreter.** One was hardcoded to
+  `/usr/bin/python3`, which is the system python on Fedora, a stub with no
+  bindings on macOS, and absent under MSYS2. The launcher asks at runtime and
+  re-execs into whichever python can import `gi` — which also fixes the case
+  where a Homebrew or pyenv python shadows the system one on Linux.
+- **The config directory does not follow platform convention.** macOS would
+  want `~/Library/Application Support`; the GUI uses `~/.config/pitcrew`
+  anyway, because it has to read the registry the `pitcrew` *command* writes,
+  and that has no OS branch. A tidier path that disagreed with the CLI would be
+  a bug, not good manners.
 
 It owns **no** measurement logic. Every number on screen arrives over
 `pitcrew json --watch`, the same snapshot the terminal dashboard draws, so the
@@ -513,12 +554,18 @@ a message instead of silently falling back: a command line is an explicit
 instruction, and guessing at a typo there is how you end up debugging the wrong
 setting.
 
-It needs the GTK bindings for the **system** python:
+It needs PyGObject, GTK 4 and libadwaita for *some* python on the box — the
+launcher finds it, so it does not matter which:
 
 ```bash
 sudo dnf install python3-gobject python3-cairo gtk4 libadwaita   # Fedora
 sudo apt install python3-gi python3-gi-cairo gir1.2-adw-1        # Debian/Ubuntu
+brew install pygobject3 gtk4 libadwaita                          # macOS
 ```
+
+On macOS you also need **bash 5** (`brew install bash`, ahead of `/bin/bash` on
+`$PATH`) — pitcrew refuses to run under the 3.2 Apple ships, and the config
+editor validates with the same bash rather than whichever one is first.
 
 The terminal dashboard stays the primary interface — it is the one that works
 over ssh, which a GTK app never will.

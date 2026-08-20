@@ -1,0 +1,109 @@
+"""Pure presentation logic: colours, formatting, and the rolling history.
+
+No GTK and no OS calls, so every rule about how a number is rendered or a
+component is grouped can be tested without a display."""
+
+from __future__ import annotations
+
+from collections import deque
+
+from gi.repository import GLib
+
+SERIES_COLORS = (
+    "#3584e4", "#33d17a", "#f6d32d", "#ff7800",
+    "#e01b24", "#9141ac", "#00b8c4", "#986a44",
+)
+
+# state -> (libadwaita css class for the badge, dot colour)
+STATE_STYLE = {
+    "up":       ("success",   "#33d17a"),
+    "starting": ("warning",   "#f6d32d"),
+    "crashed":  ("error",     "#e01b24"),
+    "external": ("accent",    "#3584e4"),
+    "down":     ("dim-label", "#77767b"),
+}
+UNKNOWN_STYLE = ("dim-label", "#77767b")
+
+def rgb(hex_color: str) -> tuple[float, float, float]:
+    return tuple(int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+def human_bytes(n: float | None) -> str:
+    """Bytes for humans. None means "we have no reading"; 0 means zero — an axis
+    label of "—" at the bottom of a graph is a bug, not a blank."""
+    if n is None:
+        return "—"
+    value = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024:
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TiB"
+
+def nice_max(observed: float, floor: float) -> float:
+    """A round axis ceiling above what we've seen, never below `floor`.
+
+    Rounded up to a multiple of FOUR steps so the four gridline labels land on
+    whole steps — otherwise a ceiling of 130 prints 98%/65%/32% down the side.
+    """
+    target = max(observed, floor, 1.0)
+    step = 4 * 10 ** max(0, len(str(int(target))) - 2)
+    return max(floor, (int(target / step) + 1) * step)
+
+def plain(text: str) -> str:
+    """Escape text destined for a widget that parses Pango markup.
+
+    AdwPreferencesRow:use-markup covers the TITLE only — subtitles, and group
+    titles and descriptions, are parsed regardless. Paths and app names come out
+    of a config file, so a checkout at /srv/a&b renders as nothing at all
+    (with a warning on stderr nobody is reading) unless it is escaped.
+    """
+    return GLib.markup_escape_text(text)
+
+class Series:
+    """One component's rolling history."""
+
+    def __init__(self, name: str, color: str, size: int):
+        self.name = name
+        self.color = color
+        self.rgb = rgb(color)
+        self.size = size
+        self.cpu: deque[float] = deque(maxlen=size)
+        self.rss: deque[float] = deque(maxlen=size)
+
+    def resize(self, size: int) -> None:
+        """Change the window without losing what we already have."""
+        if size == self.size:
+            return
+        self.size = size
+        self.cpu = deque(self.cpu, maxlen=size)
+        self.rss = deque(self.rss, maxlen=size)
+
+    def push(self, cpu: float | None, rss: float | None) -> None:
+        # cpu is null until the stream has a baseline; carry the last known
+        # value rather than drawing a phantom drop to zero.
+        self.cpu.append(float(cpu) if cpu is not None else (self.cpu[-1] if self.cpu else 0.0))
+        self.rss.append(float(rss or 0))
+
+def empty_message(total: int) -> str:
+    """Why the component list is empty — never leave it blank and ambiguous."""
+    if not total:
+        return "This project has no components configured."
+    plural = "s" if total != 1 else ""
+    return (f"Nothing is running.\n{total} stopped component{plural} "
+            f"hidden by “Show stopped components”.")
+
+def group_of(comp: dict, mode: str) -> tuple[str, str]:
+    """(sort key, heading) for a component under the chosen grouping.
+
+    pitcrew's unit is `<role>-<app>` and the stream already carries `app` and
+    `role` separately, so this never has to parse a component name.
+    """
+    if mode == "app":
+        app = comp.get("app") or comp["name"]
+        return app, app
+    if mode == "role":
+        role = comp.get("role")
+        # Sorted so backends lead, which is the order they start in.
+        return {"be": "0", "fe": "1"}.get(role, "2"), \
+            {"be": "Backends", "fe": "Frontends"}.get(role, "Other")
+    return "", "Components"
