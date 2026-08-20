@@ -121,12 +121,14 @@ test_elapsed_time_parses_the_way_ps_prints_it() {
   # The macOS path. A Linux developer never runs it by accident, so it has to be
   # pinned here or it breaks on someone else's machine — ps prints elapsed as
   # [[dd-]hh:]mm:ss and every field is optional.
-  assert_eq "$(_etime_secs 45)"          "45"     "seconds only"
-  assert_eq "$(_etime_secs 01:30)"       "90"     "mm:ss"
-  assert_eq "$(_etime_secs 2:03:04)"     "7384"   "hh:mm:ss"
-  assert_eq "$(_etime_secs 3-04:05:06)"  "273906" "dd-hh:mm:ss"
+  # Sets _ETIME rather than printing: $(...) here would be a fork per component
+  # per frame, on the one collector that can least afford it.
+  _etime_secs 45;         assert_eq "$_ETIME" "45"     "seconds only"
+  _etime_secs 01:30;      assert_eq "$_ETIME" "90"     "mm:ss"
+  _etime_secs 2:03:04;    assert_eq "$_ETIME" "7384"   "hh:mm:ss"
+  _etime_secs 3-04:05:06; assert_eq "$_ETIME" "273906" "dd-hh:mm:ss"
   # Leading zeros must not be read as octal — 08 and 09 are the classic break.
-  assert_eq "$(_etime_secs 00:08:09)"    "489"    "leading zeros are decimal"
+  _etime_secs 00:08:09;   assert_eq "$_ETIME" "489"    "leading zeros are decimal"
 }
 
 test_a_start_time_needs_a_boot_time_to_mean_anything() {

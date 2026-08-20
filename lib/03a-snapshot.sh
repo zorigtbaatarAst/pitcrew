@@ -169,7 +169,12 @@ if [ -r /proc/stat ]; then
   done < /proc/stat
 fi
 
-_etime_secs() { # "[[dd-]hh:]mm:ss" → seconds on stdout (the ps collector's clock)
+# Sets _ETIME. It must NOT print its answer: called as $(_etime_secs ...) that
+# is a command substitution, i.e. a FORK, once per component per frame — and
+# only on the ps collector, so the default test run stays green while macOS
+# pays three times its fork budget. Same calling convention as _cputime_cs and
+# _next_port, and for the same reason.
+_etime_secs() { # "[[dd-]hh:]mm:ss" → _ETIME (seconds)
   local t=$1 d=0 h=0 m=0 sec=0
   case "$t" in *-*) d=${t%%-*}; t=${t#*-} ;; esac
   case "$t" in
@@ -177,7 +182,7 @@ _etime_secs() { # "[[dd-]hh:]mm:ss" → seconds on stdout (the ps collector's cl
     *:*)   m=${t%%:*}; sec=${t#*:} ;;
     *)     sec=$t ;;
   esac
-  printf '%s' $(( 10#${d:-0} * 86400 + 10#${h:-0} * 3600 + 10#${m:-0} * 60 + 10#${sec:-0} ))
+  _ETIME=$(( 10#${d:-0} * 86400 + 10#${h:-0} * 3600 + 10#${m:-0} * 60 + 10#${sec:-0} ))
 }
 
 _pid_stat() {
@@ -369,8 +374,10 @@ _snapshot_ps() {
     SNAP_RSS[$c]=""; SNAP_CPU[$c]=""; SNAP_PIDS[$c]=""; SNAP_SINCE[$c]=""
     [ -n "$pid" ] && [ -n "${rss[$pid]:-}" ] || continue
     # etime is "[[dd-]hh:]mm:ss" elapsed, one more field on a ps we already run.
-    [ -n "${elapsed[$pid]:-}" ] &&
-      SNAP_SINCE[$c]=$(( SNAP_NOW_S - $(_etime_secs "${elapsed[$pid]}") ))
+    if [ -n "${elapsed[$pid]:-}" ]; then
+      _etime_secs "${elapsed[$pid]}"
+      SNAP_SINCE[$c]=$(( SNAP_NOW_S - _ETIME ))
+    fi
 
     _TREE=(); _walk_ps_tree "$pid"
     SNAP_PIDS[$c]="${_TREE[*]}"
