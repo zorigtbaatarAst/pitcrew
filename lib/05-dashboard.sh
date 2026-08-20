@@ -10,20 +10,63 @@
 PITCREW_REFRESH="${PITCREW_REFRESH:-1}"      # seconds between frames; fractions OK
 PITCREW_MOUSE="${PITCREW_MOUSE:-0}"          # opt-in: click to select/expand, wheel to scroll
 
-# tput is an external command, so asking it for the terminal size every frame
-# is two forks per frame for a number that only changes when you resize the
-# window. Read it once and let SIGWINCH mark it dirty.
+# ── the viewport ────────────────────────────────────────────────────────────
+# The terminal is the window, and like a browser window it can be resized at
+# any moment. Every layout decision below is a function of these two numbers,
+# so measuring them wrong does not degrade the frame — it corrupts it.
+#
+# $COLUMNS is NOT the answer, and trusting it was a real bug: bash sets that
+# variable for itself and does not keep it up to date, so after a resize the
+# dashboard went on drawing a 150-column frame into an 84-column terminal.
+# Auto-wrap is off, so the terminal silently guillotined every row — the
+# "frontend" header showed as "f", the second column vanished mid-cell, and
+# the key hints stopped at whatever cap straddled the edge. Ask the tty.
+#
+# Asking costs a fork, which is why it is not asked every frame: SIGWINCH says
+# when the answer changed, and that is the only time the question is worth
+# asking. Measurement order, most explicit first:
+#
+#   PITCREW_COLS / PITCREW_LINES   pin it — scripts, recordings, the tests
+#   the tty itself                 one `stty size`, else two `tput`s
+#   COLUMNS / LINES                no tty to ask (a pipe, a CI run)
+#   100 x 30                       something to draw on
 TERM_DIRTY=1
 term_size() {
   [ "$TERM_DIRTY" = 1 ] || return 0
-  # An explicit COLUMNS/LINES wins: it is the conventional way to pin a size,
-  # and it is the only way to get a real size when stdout is not a terminal
-  # (a piped run, a recorded session, a test harness) — tput just says 80.
-  TERM_W=${COLUMNS:-}; [ -n "$TERM_W" ] || TERM_W=$(tput cols 2>/dev/null)
-  [ -n "$TERM_W" ] || TERM_W=100
-  TERM_H=${LINES:-}; [ -n "$TERM_H" ] || TERM_H=$(tput lines 2>/dev/null)
-  [ -n "$TERM_H" ] || TERM_H=30
+  TERM_W=${PITCREW_COLS:-}; TERM_H=${PITCREW_LINES:-}
+  if [ -z "$TERM_W" ] || [ -z "$TERM_H" ]; then
+    _tty_size
+    [ -n "$TERM_W" ] || TERM_W=${TTY_W:-${COLUMNS:-100}}
+    [ -n "$TERM_H" ] || TERM_H=${TTY_H:-${LINES:-30}}
+  fi
+  # A terminal that reports nonsense (0 columns is a real answer from a tty
+  # that is being torn down) must not reach the layout, where it becomes a
+  # negative width and a frame full of printf errors.
+  [ "$TERM_W" -ge 20 ] 2>/dev/null || TERM_W=20
+  [ "$TERM_H" -ge 4  ] 2>/dev/null || TERM_H=4
   TERM_DIRTY=0
+  return 0
+}
+
+# → TTY_W / TTY_H, both empty when there is no terminal to ask. Its own
+# function so the layout has ONE place that talks to the outside world — and
+# so a test can put a terminal where CI has none.
+_tty_size() {
+  TTY_W=""; TTY_H=""
+  local size
+  # `stty size` is one fork for both numbers and it asks the terminal on
+  # stdin, which is the fd the dashboard already owns for keys — so it keeps
+  # working when stdout is being redirected somewhere else.
+  if [ -t 0 ] && size=$(stty size 2>/dev/null); then
+    read -r TTY_H TTY_W <<< "$size"
+    [ -n "$TTY_W" ] && return 0
+  fi
+  # Neither may be asked without a terminal to ask: with stdout on a pipe
+  # `tput cols` does not fail, it cheerfully answers 80 — a wrong number that
+  # would then beat the real one the caller passed in the environment.
+  if [ -t 1 ]; then
+    TTY_W=$(tput cols 2>/dev/null); TTY_H=$(tput lines 2>/dev/null)
+  fi
   return 0
 }
 
@@ -161,10 +204,17 @@ summary_line() { # → R, and SUM_UP / SUM_STARTING for the empty state
   [ $down     -gt 0 ] && R+="${C_MUTED} · ${down} down${RESET}"
 }
 
+# The one-shot table. It scrolls in your terminal rather than owning the
+# screen, so auto-wrap is ON here and an over-long row wraps instead of being
+# eaten — but a wrapped row is still a mangled row, and the legend was 96
+# columns wide on an 80-column terminal. Same rule as the dashboard: fit it.
+STATUS_ROW_W=78          # the two-column row, measured
 status_table() {
   snapshot
   err_scan
-  local dep st app bs fs bx fx line
+  local dep st app bs fs bx fx line W twocol=1
+  term_size; W=$TERM_W
+  [ "$W" -lt "$STATUS_ROW_W" ] && twocol=0
   if [ ${#PITCREW_DEPS[@]} -gt 0 ]; then
     say "  ${BOLD}deps${RESET}"
     for dep in "${PITCREW_DEPS[@]}"; do
@@ -176,7 +226,11 @@ status_table() {
   fi
   summary_line; say "$R"
   say ""
-  printf '  %b%-12s %-34s %s%b\n' "$BOLD" "app" "backend              ram" "frontend             ram" "$RESET"
+  if [ "$twocol" = 1 ]; then
+    printf '  %b%-12s %-34s %s%b\n' "$BOLD" "app" "backend              ram" "frontend             ram" "$RESET"
+  else
+    printf '  %b%-12s %s%b\n' "$BOLD" "app" "role  state       port      ram" "$RESET"
+  fi
   for app in "${PITCREW_APPS[@]}"; do
     bs=${SNAP_STATE[be-$app]:-n/a}; fs=${SNAP_STATE[fe-$app]:-n/a}
     bx=""; fx=""
@@ -190,13 +244,30 @@ status_table() {
     local berr="" ferr=""
     [ "${ERR_COUNT[be-$app]:-0}" -gt 0 ] && berr=" ${RED}⚡${ERR_COUNT[be-$app]}${RESET}"
     [ "${ERR_COUNT[fe-$app]:-0}" -gt 0 ] && ferr=" ${RED}⚡${ERR_COUNT[fe-$app]}${RESET}"
-    printf '    %b%-12s%b %b %-8s %b:%-5s%b %b%b%b   %b %-8s %b:%-5s%b %b%b%b\n' \
-      "$CYAN" "$app" "$RESET" \
-      "$line" "$bs" "$GREY" "${PITCREW_BE_PORT[$app]:--}" "$RESET" "$bmem" "$berr" "$bx" \
+    if [ "$twocol" = 1 ]; then
+      printf '    %b%-12s%b %b %-8s %b:%-5s%b %b%b%b   %b %-8s %b:%-5s%b %b%b%b\n' \
+        "$CYAN" "$app" "$RESET" \
+        "$line" "$bs" "$GREY" "${PITCREW_BE_PORT[$app]:--}" "$RESET" "$bmem" "$berr" "$bx" \
+        "$ficon" "$fs" "$GREY" "${PITCREW_FE_PORT[$app]:--}" "$RESET" "$fmem" "$ferr" "$fx"
+      continue
+    fi
+    # one role per line: two squeezed columns wrap into an unreadable mess
+    printf '    %b%-12s%b %bbe%b %b %-8s %b:%-5s%b %b%b%b\n' \
+      "$CYAN" "$app" "$RESET" "$C_MUTED" "$RESET" \
+      "$line" "$bs" "$GREY" "${PITCREW_BE_PORT[$app]:--}" "$RESET" "$bmem" "$berr" "$bx"
+    printf '    %b%-12s%b %bfe%b %b %-8s %b:%-5s%b %b%b%b\n' \
+      "$CYAN" "" "$RESET" "$C_MUTED" "$RESET" \
       "$ficon" "$fs" "$GREY" "${PITCREW_FE_PORT[$app]:--}" "$RESET" "$fmem" "$ferr" "$fx"
   done
   say ""
-  say "  ${GREY}● up  ◐ starting  ✗ crashed  ○ down  · n/a  ⚡ errors in log  ext = something else on that port${RESET}"
+  # drop the entries that will not fit rather than wrapping the line
+  local leg="  " lg vis=2
+  for lg in "● up" "◐ starting" "✗ crashed" "○ down" "· n/a" "⚡ errors in log" \
+            "ext = something else on that port"; do
+    [ $(( vis + ${#lg} + 2 )) -gt "$W" ] && break
+    leg+="$lg  "; vis=$(( vis + ${#lg} + 2 ))
+  done
+  say "${GREY}${leg}${RESET}"
 }
 
 cmd_status() { banner; status_table; echo; }
@@ -223,59 +294,136 @@ rail_color() { # $1 app → RAILC
 }
 
 # ── one service cell ────────────────────────────────────────────────────────
-# The field widths are constants because BOTH comp_cell and cell_header build
-# from them. The header used to be a hand-spaced literal, so its "ram"/"cpu"
-# labels drifted away from their columns the moment the graph width changed
-# with the terminal — which is every terminal that isn't the one it was
-# eyeballed on.
-CELL_PORT_W=7        # ":8082 " or "n/a    "
-CELL_FIXED_W=26      # icon(2) + port(7) + ram+cpu(12) + err(5)
+# Each column is its own width, because which columns are DRAWN changes with
+# the terminal (see layout_for_width) and a single fixed total cannot describe
+# a row that has dropped one. cell_header and comp_cell both build from these,
+# so the labels can never drift away from the numbers under them.
+CELL_W_ICON=2        # "● "
+CELL_W_PORT=7        # ":8082 " or "n/a    "
+CELL_W_RAM=7         # " 893M"
+CELL_W_CPU=5         # "  0%"
+CELL_W_ERR=5         # " ⚡7  "
 ROW_PREFIX_W=15      # marker(2) + " " + app(11) + " "
 ROW_PREFIX_MIN_W=6   # marker(2) + " " + app(2) + " " — nothing below this reads
+ROW_PREFIX_MAX_W=26  # past this the name is just leading the eye further from the numbers
 CELL_GAP_W=2         # between the backend and frontend cells
 CELL_MIN_GRAPH_W=6   # under this a sparkline is decoration, not information
+CELL_MAX_GRAPH_W=40  # past this, history stops being readable and the row just sprawls
 
+# ── breakpoints ─────────────────────────────────────────────────────────────
 # One place decides what the frame is drawing, so the column header, the rows
-# and the selection band can never disagree about it. Three tiers, widest first:
+# and the selection band can never disagree about it.
 #
-#   wide    backend and frontend side by side
-#   narrow  one component per row — one readable cell beats two squeezed ones
-#   tiny    one component per row and NO graph: under ~50 columns the sparkline
-#           pushes the port and the numbers off the right edge, and with
-#           auto-wrap off the terminal drops them silently. Losing history is
-#           cheap; losing "which port, how much RAM" is not.
-layout_for_width() { # $1 W → LAYOUT, GRAPH_W, PREFIX_W
-  local w=$1
+# Two things vary with the width, exactly as they do in a responsive page: how
+# many cells fit on a row, and which columns inside a cell survive. The tiers,
+# widest first:
+#
+#   xl  ≥ 160   two cells, and the graph stops growing — a 300-column window
+#               should buy more history, not a row that sprawls off the edge
+#   lg  ≥ 110   backend and frontend side by side
+#   md  ≥  62   one component per row — one readable cell beats two squeezed
+#               ones — with a sparkline
+#   sm  ≥  46   no graph. Under ~50 columns the sparkline pushes the port and
+#               the numbers off the right edge, and with auto-wrap off the
+#               terminal drops them silently. Losing history is cheap; losing
+#               "which port, how much RAM" is not.
+#   xs  <  46   the same cascade continues into the numbers themselves: the
+#               error count goes, then CPU, then RAM, each buying columns back
+#               for the name. A 30-column split pane still says WHICH service
+#               is on WHICH port, which is the irreducible content of this row.
+#
+# The cascade is a priority order, not a table of magic numbers: drop the
+# least important column, re-measure, drop the next. The tier name is what
+# comes OUT of it, and exists so the tests and the header can name what they
+# are looking at.
+layout_for_width() { # $1 W → LAYOUT, TIER, GRAPH_W, PREFIX_W, CELL_FIXED_W, CELL_RAM/CPU/ERR
+  local w=$1 cells=2
   PREFIX_W=$ROW_PREFIX_W
-  if [ "$w" -ge "${PITCREW_NARROW_AT:-110}" ]; then
-    LAYOUT=wide
-    GRAPH_W=$(( (w - PREFIX_W - CELL_GAP_W - 2 * CELL_FIXED_W) / 2 ))
-  else
-    LAYOUT=narrow
-    GRAPH_W=$(( w - PREFIX_W - CELL_FIXED_W - 2 ))
-  fi
+  CELL_RAM=1; CELL_CPU=1; CELL_ERR=1
+  [ "$w" -ge "${PITCREW_NARROW_AT:-110}" ] || cells=1
+
+  # Drop columns until the row's fixed part fits, cheapest loss first. The
+  # graph is not in this list: it is the flexible column that soaks up
+  # whatever is left over, so it shrinks on its own before anything is lost.
+  local dropped
+  for dropped in err cpu ram; do
+    _cell_fixed_w
+    [ $(( PREFIX_W + cells * CELL_FIXED_W + (cells - 1) * CELL_GAP_W )) -le "$w" ] && break
+    case "$dropped" in
+      err) CELL_ERR=0 ;;
+      cpu) CELL_CPU=0 ;;
+      ram) CELL_RAM=0 ;;
+    esac
+  done
+  _cell_fixed_w
+
+  # Whatever the fixed columns did not take is the graph's, split between the
+  # cells. Under CELL_MIN_GRAPH_W there is no graph worth drawing, and the
+  # room goes back to the name.
+  GRAPH_W=$(( (w - PREFIX_W - cells * CELL_FIXED_W - (cells - 1) * CELL_GAP_W) / cells ))
+  [ "$GRAPH_W" -gt "$CELL_MAX_GRAPH_W" ] && GRAPH_W=$CELL_MAX_GRAPH_W
   if [ "$GRAPH_W" -lt "$CELL_MIN_GRAPH_W" ]; then
-    LAYOUT=tiny
     GRAPH_W=0
     # give the name column whatever the cell leaves, so the row still ends
     # inside the terminal instead of being cut off by it
-    PREFIX_W=$(( w - CELL_FIXED_W ))
+    PREFIX_W=$(( w - cells * CELL_FIXED_W - (cells - 1) * CELL_GAP_W ))
     [ "$PREFIX_W" -gt "$ROW_PREFIX_W" ]     && PREFIX_W=$ROW_PREFIX_W
     [ "$PREFIX_W" -lt "$ROW_PREFIX_MIN_W" ] && PREFIX_W=$ROW_PREFIX_MIN_W
   fi
-  [ "$GRAPH_W" -gt 40 ] && GRAPH_W=40
+
+  # Whatever is STILL left over once the graph has hit its cap goes to the
+  # name, up to a limit of its own. A wide window should buy something —
+  # service names that are not elided — and a row that stops two thirds of the
+  # way across the terminal looks like a bug even when the numbers are right.
+  # Past both caps the table simply stops growing: this is a max-width
+  # container, not a stretched one.
+  local slack=$(( w - PREFIX_W - cells * (CELL_FIXED_W + GRAPH_W) - (cells - 1) * CELL_GAP_W ))
+  if [ "$slack" -gt 0 ] && [ "$PREFIX_W" -lt "$ROW_PREFIX_MAX_W" ]; then
+    PREFIX_W=$(( PREFIX_W + slack ))
+    [ "$PREFIX_W" -gt "$ROW_PREFIX_MAX_W" ] && PREFIX_W=$ROW_PREFIX_MAX_W
+  fi
+
+  if [ "$cells" = 2 ]; then
+    LAYOUT=wide
+    TIER=lg; [ "$w" -ge "${PITCREW_XL_AT:-160}" ] && TIER=xl
+  else
+    LAYOUT=narrow
+    TIER=md
+    [ "$GRAPH_W" -eq 0 ] && { LAYOUT=tiny; TIER=sm; }
+    [ "$CELL_RAM$CELL_CPU$CELL_ERR" = 111 ] || TIER=xs
+  fi
   return 0
 }
 
+_cell_fixed_w() { # → CELL_FIXED_W: one cell minus its graph, at the current column set
+  CELL_FIXED_W=$(( CELL_W_ICON + CELL_W_PORT ))
+  [ "$CELL_RAM" = 1 ] && CELL_FIXED_W=$(( CELL_FIXED_W + CELL_W_RAM ))
+  [ "$CELL_CPU" = 1 ] && CELL_FIXED_W=$(( CELL_FIXED_W + CELL_W_CPU ))
+  [ "$CELL_ERR" = 1 ] && CELL_FIXED_W=$(( CELL_FIXED_W + CELL_W_ERR ))
+  return 0
+}
+
+# Set once so the file is never read with these unset (layout_for_width runs
+# before any row is drawn, but a helper called from a test should not have to
+# know that).
+layout_for_width 120
+
 cell_header() { # $1 graph width → R, exactly CELL_FIXED_W + $1 wide
-  local g=""
+  local g="" h
   [ "$1" -gt 0 ] && printf -v g '%-*s' "$1" "graph"
-  printf -v R '%b%2s%-7s%s %6s %4s %-4s%b' \
-    "$C_MUTED" "" "port" "$g" "ram" "cpu" "" "$RESET"
+  printf -v h '%*s%-*s%s' "$CELL_W_ICON" "" "$(( CELL_W_PORT ))" "port" "$g"
+  [ "$CELL_RAM" = 1 ] && printf -v h '%s %6s' "$h" "ram"
+  [ "$CELL_CPU" = 1 ] && printf -v h '%s %4s' "$h" "cpu"
+  [ "$CELL_ERR" = 1 ] && printf -v h '%s %-4s' "$h" ""
+  printf -v R '%b%s%b' "$C_MUTED" "$h" "$RESET"
 }
 
 comp_cell() { # $1 comp, $2 graph width (0 = no graph column) → R: one aligned cell
-  local c=$1 gw=$2 st port cur app role cell pct half i
+  # Every branch below appends the SAME columns in the SAME order — icon,
+  # port, graph, ram, cpu, err — because a cell that skips one silently
+  # shifts everything to its right by that column's width, and in the wide
+  # layout that shift lands in the middle of the neighbouring service.
+  local c=$1 gw=$2 st port cur app role cell pct i
   st=${SNAP_STATE[$c]:-n/a}
   app=${c#??-}; role=${c:0:2}
   if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
@@ -300,44 +448,93 @@ comp_cell() { # $1 comp, $2 graph width (0 = no graph column) → R: one aligned
       spark "${HIST_MEM[$c]:-}" "$gw" 67108864            # 64M floor
       cell+="$R"
     fi
-    human "$cur"
-    # units and the % sign are chrome: bright value, dim unit
-    printf -v R ' %b%5s%b%b%s%b %b%3s%b%b%%%b' \
-      "$PCOL" "${HUMAN%[GM]}" "$RESET" "$C_MUTED" "${HUMAN: -1}" "$RESET" \
-      "$C_TEXT" "${SNAP_CPU[$c]:-0}" "$RESET" "$C_MUTED" "$RESET"
-    cell+="$R"
-  elif is_external "$c"; then
-    # %*.*s, not %*s: "external" is 8 columns and the graph slot can be 6
-    [ "$gw" -gt 0 ] && {
-      printf -v R '%b%*.*s%b' "$DIM$GREY" "$gw" "$gw" "external" "$RESET"; cell+="$R"; }
-    printf -v R ' %6s %4s' "—" "—"
-    cell+="$R"
-  elif [ "$st" = crashed ] && [ -n "${SNAP_EXIT[$c]:-}" ]; then
-    # the graph area is empty for a dead service anyway — spend it on the one
-    # thing you want to know, which is how it died
-    local reason
-    printf -v reason 'exit %s' "${SNAP_EXIT[$c]}"
-    [ "${SNAP_EXIT[$c]}" -gt 128 ] 2>/dev/null && \
-      printf -v reason 'signal %s' "$(( ${SNAP_EXIT[$c]} - 128 ))"
-    [ -n "${SNAP_EXIT_AT[$c]:-}" ] && [ "${SNAP_EXIT_AT[$c]}" -gt 0 ] 2>/dev/null && \
-      printf -v reason '%s · %(%H:%M:%S)T' "$reason" "${SNAP_EXIT_AT[$c]}"
-    printf -v R '%b%-*.*s%b %6s %4s' "$RED" "$gw" "$gw" " $reason" "$RESET" "" ""
-    cell+="$R"
+    if [ "$CELL_RAM" = 1 ]; then
+      human "$cur"
+      # units are chrome: bright value, dim unit
+      printf -v R ' %b%5s%b%b%s%b' \
+        "$PCOL" "${HUMAN%[GM]}" "$RESET" "$C_MUTED" "${HUMAN: -1}" "$RESET"
+      cell+="$R"
+    fi
+    if [ "$CELL_CPU" = 1 ]; then
+      printf -v R ' %b%3s%b%b%%%b' "$C_TEXT" "${SNAP_CPU[$c]:-0}" "$RESET" "$C_MUTED" "$RESET"
+      cell+="$R"
+    fi
   else
-    # a faint baseline, not a lone dot: the column reads as an empty chart
-    # rather than as something broken
-    local base=""
-    for ((i = 0; i < gw; i++)); do base+="▁"; done
-    printf -v R '%b%s%b %6s %4s' "$C_FAINT" "$base" "$RESET" "" ""
-    cell+="$R"
+    if is_external "$c"; then
+      # %*.*s, not %*s: "external" is 8 columns and the graph slot can be 6
+      [ "$gw" -gt 0 ] && {
+        printf -v R '%b%*.*s%b' "$DIM$GREY" "$gw" "$gw" "external" "$RESET"; cell+="$R"; }
+      [ "$CELL_RAM" = 1 ] && { printf -v R ' %6s' "—"; cell+="$R"; }
+      [ "$CELL_CPU" = 1 ] && { printf -v R ' %4s' "—"; cell+="$R"; }
+    elif [ "$st" = crashed ] && [ -n "${SNAP_EXIT[$c]:-}" ]; then
+      # the graph area is empty for a dead service anyway — spend it on the one
+      # thing you want to know, which is how it died
+      local reason
+      printf -v reason 'exit %s' "${SNAP_EXIT[$c]}"
+      [ "${SNAP_EXIT[$c]}" -gt 128 ] 2>/dev/null && \
+        printf -v reason 'signal %s' "$(( ${SNAP_EXIT[$c]} - 128 ))"
+      [ -n "${SNAP_EXIT_AT[$c]:-}" ] && [ "${SNAP_EXIT_AT[$c]}" -gt 0 ] 2>/dev/null && \
+        printf -v reason '%s · %(%H:%M:%S)T' "$reason" "${SNAP_EXIT_AT[$c]}"
+      printf -v R '%b%-*.*s%b' "$RED" "$gw" "$gw" " $reason" "$RESET"
+      cell+="$R"
+      [ "$CELL_RAM" = 1 ] && { printf -v R ' %6s' ""; cell+="$R"; }
+      [ "$CELL_CPU" = 1 ] && { printf -v R ' %4s' ""; cell+="$R"; }
+    else
+      # a faint baseline, not a lone dot: the column reads as an empty chart
+      # rather than as something broken
+      local base=""
+      for ((i = 0; i < gw; i++)); do base+="▁"; done
+      printf -v R '%b%s%b' "$C_FAINT" "$base" "$RESET"
+      cell+="$R"
+      [ "$CELL_RAM" = 1 ] && { printf -v R ' %6s' ""; cell+="$R"; }
+      [ "$CELL_CPU" = 1 ] && { printf -v R ' %4s' ""; cell+="$R"; }
+    fi
   fi
 
-  if [ "${ERR_COUNT[$c]:-0}" -gt 0 ]; then
-    printf -v R ' %b%-4s%b' "$RED" "⚡${ERR_COUNT[$c]}" "$RESET"
-  else
-    printf -v R ' %-4s' ""
+  if [ "$CELL_ERR" = 1 ]; then
+    if [ "${ERR_COUNT[$c]:-0}" -gt 0 ]; then
+      printf -v R ' %b%-4s%b' "$RED" "⚡${ERR_COUNT[$c]}" "$RESET"
+    else
+      printf -v R ' %-4s' ""
+    fi
+    cell+="$R"
   fi
-  R="$cell$R"
+  R="$cell"
+}
+
+# The name column is the first thing a narrow terminal squeezes, and it used
+# to be squeezed from the wrong end: "backoffice be" cut to 11 columns became
+# "backoffice " — the name survived whole and the ROLE, the thing that says
+# which of the two rows you are looking at, fell off. Elide the name instead;
+# it is the half you can still recognise from a prefix.
+_row_label() { # $1 name, $2 role suffix ("" for none), $3 width → R, exactly $3 columns
+  local text=$1 suffix=$2 w=$3 nw pad=""
+  nw=$w
+  [ -n "$suffix" ] && nw=$(( w - ${#suffix} - 1 ))
+  # no room for both: the role is what tells the two rows apart, so it wins
+  [ "$nw" -lt 1 ] && { text=$suffix; suffix=""; nw=$w; }
+  [ "${#text}" -gt "$nw" ] && text="${text:0:$(( nw - 1 ))}…"
+  # the role reads as part of the name, so it goes right after it — all the
+  # slack in a wide name column belongs at the END of the column, not wedged
+  # between a service and the role that says which half of it this row is
+  [ -n "$suffix" ] && text="$text $suffix"
+  # ${#text} counts CHARACTERS and printf's field width counts BYTES, so a
+  # name carrying that three-byte ellipsis (or any non-ASCII name) has to be
+  # padded by hand — %-*s would stop three columns short and shift the row.
+  [ $(( w - ${#text} )) -gt 0 ] && printf -v pad '%*s' $(( w - ${#text} )) ''
+  R="$text$pad"
+  return 0
+}
+
+# Selection is a full-width background band rather than a caret. Every RESET
+# inside the row would drop the band, so re-arm it after each one.
+_band_row() { # $1 rendered row, $2 its visible width, $3 terminal width → R
+  local row=$1 rw=$2 w=$3 sp=""
+  if [ -z "$C_BAND" ]; then R=$row; return 0; fi
+  row=${row//"$RESET"/"$RESET$C_BAND"}
+  while [ ${#sp} -lt $(( w - rw )) ] && [ "$rw" -lt "$w" ]; do sp+=" "; done
+  R="$C_BAND$row$sp$RESET"
+  return 0
 }
 
 # Child processes of one component, heaviest first. Insertion sort over a
@@ -433,19 +630,47 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # Scale floors of 100 and total-RAM make these absolute rather than
     # auto-scaled: 4% CPU should look like 4%, not like a full bar.
     if [ $micro = 0 ]; then
-      pct_color "${SYS_CPU_PCT:-0}"
-      spark "$HIST_SYS_CPU" "$sw" 100 "$PCOL"
-      local cpuline
-      printf -v cpuline '   %bCPU%b %s %b%3s%b%b%%%b' "$C_MUTED" "$RESET" "$R" \
-        "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET" "$C_MUTED" "$RESET"
+      local cpuline used="" total="" have_mem=0
       if [ -n "$SYS_MEM_TOTAL_KB" ] && [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ]; then
-        local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB )) used
-        pct_color "$mpct"
-        spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$PCOL"
+        have_mem=1
         human $(( SYS_MEM_USED_KB * 1024 )); used=$HUMAN
-        human $(( SYS_MEM_TOTAL_KB * 1024 ))
-        printf -v line '   %bRAM%b %s %b%s%b %b/%b %b%s%b' "$C_MUTED" "$RESET" "$R" \
-          "$C_TEXT" "$used" "$RESET" "$C_FAINT" "$RESET" "$C_MUTED" "$HUMAN" "$RESET"
+        human $(( SYS_MEM_TOTAL_KB * 1024 )); total=$HUMAN
+      fi
+      # The two gauges are a fluid column between fixed labels and fixed
+      # numbers, so the sparkline is what has to give when the window narrows
+      # — and when the two fold onto ONE line it has to give twice as much.
+      # This used to be a fraction of the width with a floor under it, which
+      # is fine until the floor plus the numbers is wider than the terminal:
+      # at 38 columns the folded line ran off the edge mid-figure.
+      #   CPU:  "   CPU " + spark + " " + "100%"        = 12 + spark
+      #   RAM:  "   RAM " + spark + " 9.2G / 31.0G"     = 11 + spark + numbers
+      local room=$W fixed=$(( 12 + 11 + ${#used} + ${#total} ))
+      if [ $compact = 1 ]; then
+        sw=$(( (room - fixed) / 2 ))
+      else
+        sw=$(( room - 12 )); [ $(( room - 11 - ${#used} - ${#total} )) -lt "$sw" ] \
+          && sw=$(( room - 11 - ${#used} - ${#total} ))
+        [ "$sw" -gt $(( W / 5 )) ] && sw=$(( W / 5 ))
+      fi
+      [ "$sw" -gt 40 ] && sw=40
+      [ "$sw" -lt 4 ] && sw=0          # under four cells it is a smudge, not a trend
+
+      pct_color "${SYS_CPU_PCT:-0}"
+      if [ "$sw" -gt 0 ]; then
+        spark "$HIST_SYS_CPU" "$sw" 100 "$PCOL"
+        printf -v cpuline '   %bCPU%b %s %b%3s%b%b%%%b' "$C_MUTED" "$RESET" "$R" \
+          "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET" "$C_MUTED" "$RESET"
+      else
+        printf -v cpuline '   %bCPU%b %b%3s%b%b%%%b' "$C_MUTED" "$RESET" \
+          "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET" "$C_MUTED" "$RESET"
+      fi
+      if [ "$have_mem" = 1 ]; then
+        local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB ))
+        pct_color "$mpct"
+        R=""
+        [ "$sw" -gt 0 ] && { spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$PCOL"; R="$R "; }
+        printf -v line '   %bRAM%b %s%b%s%b %b/%b %b%s%b' "$C_MUTED" "$RESET" "$R" \
+          "$C_TEXT" "$used" "$RESET" "$C_FAINT" "$RESET" "$C_MUTED" "$total" "$RESET"
       else
         printf -v line '   %bRAM%b %bunavailable on this OS%b' "$C_MUTED" "$RESET" "$C_FAINT" "$RESET"
       fi
@@ -556,30 +781,32 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       [ -n "${APP_ICON[$app]:-}" ] && label="${APP_ICON[$app]} $app"
       [ -n "${MARKED[be-$app]:-}${MARKED[fe-$app]:-}" ] && mark="${C_ACCENT2}✓${RESET}"
       local nw=$(( PREFIX_W - 4 ))
-      printf -v line '%b▐%b%b %b%-*.*s%b ' "$RAILC" "$RESET" "$mark" "$nm" "$nw" "$nw" "$label" "$RESET"
       if [ $narrow = 1 ]; then
-        # one component per row; the role moves into the label
-        local nrow rc
+        # one component per row, so the role moves into the label — and the
+        # selection is per COMPONENT here, not per app: one of these two rows
+        # is selected, and highlighting both would be a lie about what the
+        # action keys are pointing at.
+        local nrow rc rsel rnm
         for rc in "be-$app" "fe-$app"; do
           [ -n "${SNAP_STATE[$rc]:-}" ] || continue
+          rsel=0; rnm=$C_SUBTLE
+          [ "${VIEW[$SEL]:-}" = "$rc" ] && { rsel=1; rnm="$C_TEXT$BOLD"; }
           rail_color "$app"
-              printf -v nrow '%b▐%b%b %b%-*.*s%b ' "$RAILC" "$RESET" "$mark" "$nm" "$nw" "$nw" "${label} ${rc:0:2}" "$RESET"
+          _row_label "$label" "${rc:0:2}" "$nw"
+          printf -v nrow '%b▐%b%b %b%s%b ' "$RAILC" "$RESET" "$mark" "$rnm" "$R" "$RESET"
           comp_cell "$rc" "$bw"; nrow+="$R"
+          [ $rsel = 1 ] && { _band_row "$nrow" $(( PREFIX_W + CELL_FIXED_W + bw )) "$W"; nrow=$R; }
           frame+="$nrow"$'\e[K\n'; ln=$((ln + 1)); avail=$((avail - 1))
           ROW_COMP[$ln]="$app"
         done
         continue
       fi
+      _row_label "$label" "" "$nw"
+      printf -v line '%b▐%b%b %b%s%b ' "$RAILC" "$RESET" "$mark" "$nm" "$R" "$RESET"
       comp_cell "be-$app" "$bw"; line+="$R"
       comp_cell "fe-$app" "$bw"; line+="  $R"
-      # Selection is a full-width background band rather than a caret. Every
-      # RESET inside the row would drop the band, so re-arm it after each one.
-      if [ "$selected" = 1 ] && [ -n "$C_BAND" ]; then
-        line=${line//"$RESET"/"$RESET$C_BAND"}
-        local rw=$(( PREFIX_W + CELL_GAP_W + 2 * (CELL_FIXED_W + bw) )) sp=""
-        while [ ${#sp} -lt $(( W - rw )) ] && [ $rw -lt "$W" ]; do sp+=" "; done
-        line="$C_BAND$line$sp$RESET"
-      fi
+      [ "$selected" = 1 ] && \
+        { _band_row "$line" $(( PREFIX_W + CELL_GAP_W + 2 * (CELL_FIXED_W + bw) )) "$W"; line=$R; }
       frame+="$line"$'\e[K\n'
       ln=$((ln + 1)); avail=$((avail - 1))
       ROW_COMP[$ln]="$app"
@@ -609,6 +836,16 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     SCROLL_BELOW=$(( ${#VIEW_APPS[@]} - ROW_OFF - drawn ))
     [ "$SCROLL_BELOW" -lt 0 ] && SCROLL_BELOW=0
     fi
+
+    # ── the footer sticks to the bottom ──
+    # Six services in a thirty-row window used to leave the legend and the key
+    # hints floating in the middle of the screen with a third of the terminal
+    # blank underneath them, and every started service shoved them further
+    # down. Pad the table out instead: the keys live on the last row, where
+    # they stay put whatever the table is doing — and the eye learns one place
+    # to look for them.
+    local pad=$(( H - foot - ln ))
+    while [ "$pad" -gt 0 ]; do frame+=$'\e[K\n'; ln=$((ln + 1)); pad=$((pad - 1)); done
 
     if [ $compact = 0 ]; then
       frame+=$'\e[K\n'; ln=$((ln + 1))
@@ -653,24 +890,101 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     done
     frame+="$line"$'\e[K'
 
-  # Last resort. Auto-wrap is off and the frame is painted from the home
-  # position, so ONE line too many scrolls the alt screen and every repaint
-  # after it lands a row off — the display does not recover. Below ~8 rows
-  # there is no layout left to shed, so cut the frame rather than corrupt the
-  # terminal. $ln is the newline count kept as the frame is built; the last
-  # line carries none, so the frame is $ln + 1 rows tall.
-  if [ "$ln" -ge "$H" ]; then
-    local keep=$(( H - 1 )) k=0 out="" seg
-    [ $keep -lt 0 ] && keep=0
-    while IFS= read -r seg; do
-      [ $k -ge $keep ] && break
-      [ $k -gt 0 ] && out+=$'\n'
-      out+="$seg"; k=$(( k + 1 ))
-    done <<< "$frame"
-    frame=$out
-  fi
+  fit_frame "$frame" "$W" "$H"
+  FRAME=$FIT
+  return 0
+}
 
-  FRAME=$frame
+# ── overflow: hidden ────────────────────────────────────────────────────────
+# The frame is painted from the home position with auto-wrap off, which makes
+# both directions unforgiving. One row too many scrolls the alt screen and
+# every repaint after it lands a row off — the display never recovers. One
+# column too many is quieter and worse: the terminal simply eats the tail of
+# the row, which is how a stale window size turned the "frontend" header into
+# "f" and cut every second cell in half.
+#
+# Every widget above already fits itself to the width, and that is where the
+# layout decisions belong — this is the guard that makes a mistake up there
+# cost a truncated row instead of a corrupted screen.
+fit_frame() { # $1 frame, $2 cols, $3 rows → FIT
+  local w=$2 h=$3 i n out="" seg
+  local -a rows
+  # mapfile, not `while read`: one builtin over the whole frame instead of a
+  # builtin call per row, and unlike splitting on $IFS it keeps blank rows —
+  # which the pinned footer depends on.
+  mapfile -t rows <<< "$1"
+  n=${#rows[@]}; [ "$n" -gt "$h" ] && n=$h
+  for ((i = 0; i < n; i++)); do
+    seg=${rows[i]}
+    [ "$i" -gt 0 ] && out+=$'\n'
+    if [ "${#seg}" -le "$w" ]; then out+="$seg"; continue; fi
+    fit_line "$seg" "$w"; out+="$R"
+  done
+  FIT=$out
+  return 0
+}
+
+# → R: $1 cut to $2 visible columns, with its escape sequences intact.
+#
+# Two things make this affordable enough to run on every row of every frame.
+#
+# It splits on ESC and walks the pieces. The obvious version — step through
+# the string a character at a time, or chop the head off it in a loop —
+# re-copies the whole row on every step, so a row with thirty colour changes
+# costs thirty copies of itself. That version was measurable: 38ms on a frame
+# that takes 12.
+#
+# And it MEASURES before it cuts. Almost every row already fits; this guard is
+# here for the one that does not. Measuring is a length check per piece, while
+# cutting reassembles the row piece by piece, so the row that fits pays for
+# neither.
+#
+# (An earlier attempt measured with one extglob substitution — strip every
+# `ESC [ params letter` and take what is left. It is the obvious way to write
+# it and it HANGS: bash backtracks that pattern over a 400-character row for
+# long enough to stall the dashboard. Do not reintroduce it.)
+fit_line() {
+  local s=$1 budget=$2 i n txt head vis=0 cut=-1 keep=0
+  local -a parts
+  local IFS=$'\e'
+  # the split on $IFS is the point here, and noglob keeps a service name
+  # containing * from being expanded into filenames on the way through
+  # shellcheck disable=SC2206
+  set -f; parts=($s); set +f
+  n=${#parts[@]}
+  for ((i = 0; i < n; i++)); do
+    txt=${parts[i]}
+    if [ "$i" -gt 0 ]; then
+      # every sequence the frame emits is a CSI: "[", parameters, then a final
+      # byte, which is its first alphabetic character. Colour costs no columns.
+      head=${txt%%[a-zA-Z]*}
+      [ "${#head}" -ge "${#txt}" ] && continue        # unterminated: leave it alone
+      txt=${txt:$(( ${#head} + 1 ))}
+    fi
+    if [ $(( vis + ${#txt} )) -le "$budget" ]; then
+      vis=$(( vis + ${#txt} )); continue
+    fi
+    cut=$i; keep=$(( budget - vis ))                  # visible chars to keep in THIS piece
+    break
+  done
+  if [ "$cut" -lt 0 ]; then R=$s; return 0; fi
+
+  local out=""
+  for ((i = 0; i < cut; i++)); do
+    [ "$i" -gt 0 ] && out+=$'\e'
+    out+="${parts[i]}"
+  done
+  txt=${parts[cut]}
+  if [ "$cut" -gt 0 ]; then
+    head=${txt%%[a-zA-Z]*}
+    out+=$'\e'"${head}${txt:${#head}:1}"
+    txt=${txt:$(( ${#head} + 1 ))}
+  fi
+  out+="${txt:0:$keep}"
+  # A cut can land between a colour and its RESET, and an unterminated colour
+  # bleeds into whatever the terminal draws next — including the shell prompt
+  # after the dashboard exits. Close it, and clear the rest of the row.
+  R="$out$RESET"$'\e[K'
   return 0
 }
 
@@ -812,7 +1126,7 @@ err_view() {
   while true; do
     local frame="" W H rows
     term_size; W=$TERM_W; H=$TERM_H
-    rows=$((H - 3))
+    rows=$((H - 4))                       # title + blank + rows + blank + key
     frame="  ${BOLD}${RED}errors${RESET} ${GREY}(pattern: ${PITCREW_ERROR_PATTERN})${RESET}"$'\e[K\n\e[K\n'
     local shown=0
     for c in "${PITCREW_COMPS[@]}"; do
@@ -827,9 +1141,12 @@ err_view() {
       done <<< "${ERR_LINES[$c]}"
       [ $shown -ge $rows ] && break
     done
-    [ $shown -eq 0 ] && frame+="  ${GREEN}no matching lines in any log${RESET}"$'\e[K\n'
+    [ $shown -eq 0 ] && { frame+="  ${GREEN}no matching lines in any log${RESET}"$'\e[K\n'; shown=1; }
+    # same rule as everywhere else: the key hint lives on the bottom row
+    while [ "$shown" -lt "$rows" ]; do frame+=$'\e[K\n'; shown=$((shown + 1)); done
     frame+=$'\e[K\n'" ${BOLD}${MAGENTA}q${RESET}${DIM}${GREY} back${RESET}"$'\e[K'
-    printf '\033[H%b\033[0J' "$frame"
+    fit_frame "$frame" "$W" "$H"
+    printf '\033[H%b\033[0J' "$FIT"
     read_key 1 || continue
     case "$KEY" in q|Q|esc) break ;; esac
   done

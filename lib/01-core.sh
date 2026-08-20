@@ -354,5 +354,9 @@ tui_resume() {
   tput civis 2>/dev/null
   printf '\033[?7l'
   [ "${PITCREW_MOUSE:-0}" = 1 ] && printf '\033[?1000;1006h'
+  # While fzf or $PAGER owned the terminal, THEY got the SIGWINCH and we did
+  # not. This is the one resize a dashboard reliably sleeps through, so coming
+  # back is the one moment worth re-measuring unconditionally.
+  TERM_DIRTY=1
   return 0
 }

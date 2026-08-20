@@ -20,9 +20,16 @@ for c in "${PITCREW_COMPS[@]}"; do
   echo $! > "$LOG_DIR/$c.pid"
 done
 
+# Kept so a test can stand in for the terminal and then hand the real one
+# back, without re-sourcing the library over the running suite's state.
+REAL_TTY_SIZE=$(declare -f _tty_size)
+
 _render_at() { # $1 cols, $2 lines → FRAME, stderr into RENDER_ERR
   local tmp; tmp=$(mktemp)
-  COLUMNS=$1 LINES=$2 TERM_DIRTY=1
+  # PITCREW_COLS/LINES, not COLUMNS/LINES: the renderer deliberately treats the
+  # shell's own COLUMNS as untrustworthy (bash never updates it after a
+  # resize), so pinning a size for a test is what the pitcrew-owned pair is for
+  PITCREW_COLS=$1 PITCREW_LINES=$2 TERM_DIRTY=1
   { collect_frame; build_frame; } 2>"$tmp"
   RENDER_ERR=$(cat "$tmp"); rm -f "$tmp"
 }
@@ -237,6 +244,157 @@ test_the_selection_cannot_scroll_off_the_screen() {
   _render_at 160 6
   assert_match "$(plain "$FRAME")" 'below' "scrolled back to the top, it says what is under it"
   SEL=0; ROW_OFF=0
+}
+
+# ── the viewport ───────────────────────────────────────────────────────────
+# The frame is a function of the terminal size, so a wrong size is not a
+# cosmetic problem: every row is built to a width that does not exist, and the
+# terminal (auto-wrap is off) silently guillotines the difference.
+
+test_a_stale_COLUMNS_never_beats_the_real_terminal() {
+  # THE resize bug. bash sets COLUMNS for itself and never updates it, so
+  # after a window resize it holds the OLD width — and the dashboard used to
+  # prefer it over asking the terminal. A 150-column frame went on being
+  # painted into an 84-column window: "frontend" showed as "f", the second
+  # column was cut mid-cell, and the key hints stopped at whatever cap
+  # straddled the edge.
+  local saved_c=${COLUMNS:-} saved_l=${LINES:-}
+  _tty_size() { TTY_W=84; TTY_H=27; }        # a terminal, which CI does not have
+  COLUMNS=150 LINES=30
+  PITCREW_COLS="" PITCREW_LINES="" TERM_DIRTY=1
+  term_size
+  assert_eq "$TERM_W" 84 "the terminal wins over a stale COLUMNS"
+  assert_eq "$TERM_H" 27 "in both directions"
+  eval "$REAL_TTY_SIZE"                      # put the real one back
+  COLUMNS=$saved_c LINES=$saved_l
+}
+
+test_the_environment_is_the_fallback_when_there_is_no_terminal() {
+  # a piped run, a recorded session, CI. `tput` does not fail without a tty,
+  # it cheerfully answers 80 — which is why it may only be asked when one is
+  # actually there.
+  local saved_c=${COLUMNS:-} saved_l=${LINES:-}
+  _tty_size() { TTY_W=""; TTY_H=""; }        # nothing to ask
+  COLUMNS=137 LINES=41
+  PITCREW_COLS="" PITCREW_LINES="" TERM_DIRTY=1
+  term_size
+  assert_eq "$TERM_W" 137 "COLUMNS is used when no terminal can be asked"
+  assert_eq "$TERM_H" 41  "and LINES with it"
+  eval "$REAL_TTY_SIZE"
+  COLUMNS=$saved_c LINES=$saved_l
+}
+
+test_an_explicit_size_pins_the_frame() {
+  PITCREW_COLS=99 PITCREW_LINES=33 TERM_DIRTY=1
+  term_size
+  assert_eq "$TERM_W" 99 "PITCREW_COLS pins the width"
+  assert_eq "$TERM_H" 33 "PITCREW_LINES pins the height"
+}
+
+test_a_nonsense_size_never_reaches_the_layout() {
+  # a tty being torn down really does report 0x0, and a zero width becomes a
+  # negative column width and a frame full of printf errors
+  PITCREW_COLS=0 PITCREW_LINES=0 TERM_DIRTY=1
+  term_size
+  [ "$TERM_W" -ge 20 ] || _t_bad "0 columns survived as $TERM_W"
+  [ "$TERM_H" -ge 4 ]  || _t_bad "0 rows survived as $TERM_H"
+}
+
+# ── overflow: hidden ───────────────────────────────────────────────────────
+
+test_an_overlong_row_is_cut_not_left_to_the_terminal() {
+  # the guard under everything else: whatever the layout gets wrong, the frame
+  # that reaches the terminal fits it
+  local long
+  printf -v long '%bkeep%b %s' "$RED" "$RESET" "$(printf 'x%.0s' {1..200})"
+  fit_line "$long" 20
+  local vis; vis=$(plain "${R//$'\e[K'/}")
+  assert_eq "${#vis}" 20 "cut to the budget"
+  assert_match "$vis" '^keep' "from the right end, not the left"
+  assert_match "$R" $'\e\[0m' "and the open colour is closed"
+}
+
+test_clipping_counts_columns_not_bytes() {
+  # colour is invisible, so it cannot cost columns — an escape-heavy row would
+  # otherwise be cut to a fraction of the width it deserves
+  local painted="" i
+  for ((i = 0; i < 20; i++)); do painted+="${RED}a${RESET}"; done
+  fit_line "$painted" 12
+  local vis; vis=$(plain "${R//$'\e[K'/}")
+  assert_eq "${#vis}" 12 "twenty colour changes still spend twelve columns"
+}
+
+test_a_row_that_fits_is_returned_untouched() {
+  local row="${GREEN}ok${RESET}"
+  fit_line "$row" 40
+  assert_eq "$R" "$row" "no reassembly, no stray reset"
+}
+
+test_the_frame_is_clipped_even_when_the_layout_is_wrong() {
+  # simulate the resize bug: lay the frame out for a wide terminal, then paint
+  # it into a narrow one. Nothing may exceed the narrow width.
+  _render_at 160 30
+  local wide=$FRAME line vis
+  fit_frame "$wide" 84 30
+  while IFS= read -r line; do
+    vis=$(plain "${line//$'\e[K'/}")
+    [ "${#vis}" -le 84 ] || _t_bad "a mislaid row survived at ${#vis} columns"
+  done <<< "$FIT"
+}
+
+# ── breakpoints ────────────────────────────────────────────────────────────
+
+test_the_breakpoints_shed_columns_in_priority_order() {
+  # narrower and narrower: the error count goes first, then CPU, then RAM —
+  # and the name and the port, which are the irreducible content of the row,
+  # never go at all
+  local w
+  for w in 200 160 120 90 60 46 38 30 24; do
+    _render_at "$w" 30
+    local body; body=$(plain "$FRAME")
+    assert_match "$body" 'both'   "the app name survives at ${w} columns"
+    assert_match "$body" ':19801' "and so does the port"
+  done
+  _render_at 200 30; assert_eq "$TIER" xl "200 columns is the widest tier"
+  _render_at 120 30; assert_eq "$TIER" lg "120 columns keeps two cells"
+  _render_at  90 30; assert_eq "$TIER" md "90 columns is one cell with a graph"
+  _render_at  46 30; assert_eq "$TIER" sm "46 columns drops the graph"
+  _render_at  30 30
+  assert_eq "$TIER" xs "30 columns drops columns inside the cell"
+  assert_eq "$CELL_ERR" 0 "the error count is the first to go"
+}
+
+test_a_wide_window_stops_the_table_growing() {
+  # a max-width container: past a point, more terminal must not mean a wider
+  # sparkline and a name column halfway across the screen
+  _render_at 400 30
+  [ "$GRAPH_W" -le "$CELL_MAX_GRAPH_W" ] || _t_bad "graph grew to $GRAPH_W"
+  [ "$PREFIX_W" -le "$ROW_PREFIX_MAX_W" ] || _t_bad "name column grew to $PREFIX_W"
+}
+
+test_the_role_survives_a_squeezed_name_column() {
+  # "backoffice be" cut to 11 columns used to become "backoffice " — the name
+  # survived whole and the role, which is what tells the two rows apart, fell
+  # off the end
+  _row_label "backoffice" "be" 11
+  assert_match "$R" 'be$'      "the role is kept"
+  assert_match "$R" '^backoff' "and the name is elided instead"
+  assert_eq "${#R}" 11 "the column is exactly as wide as it was asked for"
+}
+
+# ── the footer sticks to the bottom ────────────────────────────────────────
+
+test_the_key_hints_are_on_the_last_row() {
+  # six services in a thirty-row window used to leave the footer floating in
+  # the middle of the screen with a third of the terminal blank under it
+  local h
+  for h in 40 30 24 18 14 12 10; do
+    _render_at 160 "$h"
+    _frame_rows
+    assert_eq "$ROWS" "$h" "the frame fills a ${h}-row window"
+    local last; last=$(plain "$FRAME" | tail -n 1)
+    assert_match "$last" 'select' "and the key hints are its last row at ${h} rows"
+  done
 }
 
 trap 'err_close; for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$LOG_DIR"' EXIT

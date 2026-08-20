@@ -60,7 +60,7 @@ _now_ms() { local e=${EPOCHREALTIME/,/.}; printf '%s' $(( ${e%.*} * 1000 + 10#${
 # afterwards — a footer, a header, a new column — sat outside the fork budget
 # and could regress without failing anything. cmd_watch is now split so the
 # test drives exactly what the dashboard drives.
-COLUMNS=140 LINES=40
+PITCREW_COLS=140 PITCREW_LINES=40      # pin the frame size; see term_size()
 _frame() { collect_frame; build_frame; }
 
 test_the_fixture_actually_exercises_the_live_path() {

@@ -10,7 +10,7 @@ log_components() { # stable order: only components that have a log file
 }
 
 log_view() { # in-place live log viewer ($1 = optional preselect); assumes alt screen is active
-  local comps=() sel=0 i i0 used tok c f key rest W H rows frame hdr line
+  local comps=() sel=0 i i0 used tok c f key rest W H rows frame hdr line shown
   mapfile -t comps < <(log_components)
   [ ${#comps[@]} -eq 0 ] && { say "  ${YELLOW}⚠${RESET} no service logs yet — start something first"; sleep 2; return; }
   if [ -n "${1:-}" ]; then
@@ -22,9 +22,12 @@ log_view() { # in-place live log viewer ($1 = optional preselect); assumes alt s
     [ ${#comps[@]} -eq 0 ] && break
     snapshot
     [ "$sel" -ge ${#comps[@]} ] && sel=$((${#comps[@]} - 1))
-    W=$(tput cols 2>/dev/null); [ -n "$W" ] || W=100
-    H=$(tput lines 2>/dev/null); [ -n "$H" ] || H=30
-    rows=$((H - 4)); [ $rows -lt 3 ] && rows=3
+    # Same viewport as the dashboard: measured once and re-measured on
+    # SIGWINCH, instead of two `tput` forks every second forever.
+    term_size; W=$TERM_W; H=$TERM_H
+    # tab bar + blank + rows + hint bar == exactly the window, so the hint bar
+    # sits on the bottom row whether the log has three lines or three thousand
+    rows=$((H - 3)); [ $rows -lt 3 ] && rows=3
     c=${comps[$sel]}; f="$LOG_DIR/$c.log"
 
     # tab bar: sliding window — the selection stays visible, the bar never overflows the width
@@ -44,16 +47,21 @@ log_view() { # in-place live log viewer ($1 = optional preselect); assumes alt s
     done
 
     frame="$hdr"$'\e[K\n\e[K\n'
+    shown=0
     while IFS= read -r line; do
-      frame+="$line"$'\e[K\n'
+      frame+="$line"$'\e[K\n'; shown=$((shown + 1))
     done < <(tail -n $((rows + 60)) "$f" 2>/dev/null | strip_ansi | grep -vE '^[[:space:]]*$' \
              | expand -t 4 | awk -v w=$((W - 1)) '{ print substr($0, 1, w) }' | tail -n "$rows")
+    # A log with four lines in it used to leave the hint bar floating four
+    # rows down the screen; push it to the bottom and leave it there.
+    while [ "$shown" -lt "$rows" ]; do frame+=$'\e[K\n'; shown=$((shown + 1)); done
     printf -v line ' %bTab/←→%b switch  %b1-9%b jump  %bx%b stop  %br%b restart  %bEnter%b full log  %bq%b back' \
       "$BOLD$MAGENTA" "$RESET$DIM$GREY" "$BOLD$MAGENTA" "$RESET$DIM$GREY" \
       "$BOLD$MAGENTA" "$RESET$DIM$GREY" "$BOLD$MAGENTA" "$RESET$DIM$GREY" \
       "$BOLD$MAGENTA" "$RESET$DIM$GREY" "$BOLD$MAGENTA" "$RESET$DIM$GREY"
     frame+="$line$RESET"$'\e[K'
-    printf '\033[H%b\033[0J' "$frame"
+    fit_frame "$frame" "$W" "$H"
+    printf '\033[H%b\033[0J' "$FIT"
 
     read_key 1 || continue
     key=$KEY
@@ -78,8 +86,9 @@ cmd_logs() { # standalone entry: wrap log_view in its own alt screen
   [ -d "$LOG_DIR" ] || die "no logs yet — nothing has been started"
   tui_enter
   trap 'tui_leave; trap - INT; return 0' INT
+  trap 'TERM_DIRTY=1' WINCH          # reached without the dashboard's own trap
   log_view "${1:-}"
-  trap - INT
+  trap - INT WINCH
   tui_leave
 }
 
