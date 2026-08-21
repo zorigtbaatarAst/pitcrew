@@ -74,17 +74,41 @@ the tool knows what it is running on.
   `pitcrew doctor` warns when the stack does not fit in the machine, but a
   runaway process is not auto-killed. `doctor` says so plainly rather than
   letting the identical-looking meters imply otherwise.
-- **Windows** — not supported natively, and not pretending to be: no bash 5,
-  no `/dev/tcp`, no POSIX `ps`. Run pitcrew inside **WSL2**, where it sees a
-  normal Linux userland and needs nothing special — including real RAM caps,
-  since modern WSL2 distros run systemd by default. Under Git Bash / MSYS,
-  `pitcrew doctor` tells you this instead of failing in pieces.
+- **Windows** — runs natively under **Git Bash** (2.35+, which ships bash 5) or
+  **MSYS2**. The shell was never the problem; the POSIX userland underneath it
+  was. So the process table comes from `wmic` (or PowerShell, where wmic has
+  been removed), listening ports from `netstat -ano`, and the pidfiles hold
+  MSYS pids — translated to Windows pids only where a native tool is on the
+  other end.
+
+  Two things are worse here and `pitcrew doctor` says both. **RAM caps are not
+  enforceable**: Windows has Job Objects but nothing on the command line puts a
+  process in one, so the caps are budgets the meters measure against, exactly
+  as on macOS. And a frame costs one process-table call plus one `netstat` —
+  `wmic` is ~80ms, PowerShell a few hundred — against *zero* forks on Linux, so
+  raise `PITCREW_REFRESH` if it feels heavy.
+
+  **WSL2 is still the better experience** and needs nothing special: pitcrew
+  sees a normal Linux userland, gets real cgroup RAM caps, and draws a
+  fork-free dashboard.
+
+  > Honest caveat: the Windows path is **written and unit-tested but not yet
+  > run on Windows** — there was no Windows machine available. Every place a
+  > native tool's output is parsed is covered by `test/windows_test.sh` against
+  > captured output, which is where a port like this actually breaks; what is
+  > unverified is the integration. Reports welcome.
 
 The portable collector is not a fallback that rots: `PITCREW_FORCE_COLLECTOR=ps`
 runs it on Linux, and CI runs the whole suite that way on every push, so the
 path macOS depends on is exercised even by people who never touch a Mac.
 
 ## Install
+
+On Windows, install [Git for Windows](https://gitforwindows.org/) 2.35 or newer
+(it ships bash 5) or MSYS2, and run everything below from its Bash prompt.
+`install.sh` writes a small shim rather than a symlink there, because a Windows
+symlink needs Developer Mode and a *copy* of the launcher cannot find its own
+`lib/`.
 
 Requires **bash 5.0 or newer** (`$EPOCHREALTIME`, negative array indices and
 `declare -gA` are used throughout; `pitcrew` checks this up front and tells you
@@ -916,7 +940,7 @@ selectable text. A plugin can put anything in that field, so anything else —
 |---|---|
 | **Linux** | a `.desktop` entry and a hicolor icon, per XDG |
 | **macOS** | a `.app` bundle in `~/Applications`, for Launchpad and Spotlight |
-| **Windows** | not yet — the launcher and package are ready, the install step is not |
+| **Windows** | not yet — the launcher and package are ready, the install step is not. The CLI runs natively; the desktop app needs PyGObject, which MSYS2 has |
 
 macOS support is **written but untested** — there is no Mac here to run it on.
 The parts that were Linux-only have been fixed (see the seam below); what

@@ -34,6 +34,9 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ]; then
   case "$(uname -s)" in
     Darwin) printf 'On macOS: brew install bash, then re-run pitcrew.
 ' >&2 ;;
+    MINGW*|MSYS*|CYGWIN*)
+            printf 'On Windows: update Git for Windows (2.35+ ships bash 5), or use MSYS2.
+' >&2 ;;
     *)      printf 'Install a newer bash and make sure it is first on your PATH.
 ' >&2 ;;
   esac

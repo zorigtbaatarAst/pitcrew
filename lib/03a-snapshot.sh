@@ -336,20 +336,15 @@ _snapshot_ps() {
   SNAP_PORT_OPEN=()
   SNAP_PROC_RSS=(); SNAP_PROC_CPU=(); SNAP_PROC_CMD=()
 
+  # One question — "what is listening" — asked once, of the platform layer.
+  # It used to be two inline branches here, which is exactly the kind of "which
+  # OS am I on" that must not live outside lib/00-platform.sh.
   local addr port
-  if command -v lsof >/dev/null 2>&1; then
-    while read -r addr; do
-      _ps_addr_is_local "$addr" || continue
-      port=${addr##*:}
-      [[ $port =~ ^[0-9]+$ ]] && SNAP_PORT_OPEN[$port]=1
-    done < <(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $9}')
-  elif command -v ss >/dev/null 2>&1; then
-    while read -r addr; do
-      _ps_addr_is_local "$addr" || continue
-      port=${addr##*:}
-      [[ $port =~ ^[0-9]+$ ]] && SNAP_PORT_OPEN[$port]=1
-    done < <(ss -tlnH 2>/dev/null | awk '{print $4}')
-  fi
+  while read -r addr; do
+    _ps_addr_is_local "$addr" || continue
+    port=${addr##*:}
+    [[ $port =~ ^[0-9]+$ ]] && SNAP_PORT_OPEN[$port]=1
+  done < <(pf_listening)
 
   # Elapsed centiseconds — the denominator for every CPU% below. Zero on the
   # first frame, which correctly yields 0% rather than a spike.
@@ -374,19 +369,25 @@ _snapshot_ps() {
     comm[$pid]=${cm##*/}
   done < <("${PITCREW_PS[@]}" -e -o pid=,ppid=,rss=,time=,etime=,comm= 2>/dev/null)
 
-  local c p rss_sum cs_sum d
+  local c p rss_sum cs_sum d npid
   for c in "${PITCREW_COMPS[@]}"; do
     _read_pidfile "$c"; pid=$PIDF
     SNAP_PID[$c]=$pid
     SNAP_RSS[$c]=""; SNAP_CPU[$c]=""; SNAP_PIDS[$c]=""; SNAP_SINCE[$c]=""
-    [ -n "$pid" ] && [ -n "${rss[$pid]:-}" ] || continue
+    [ -n "$pid" ] || continue
+    # The pidfile's pid is the one `kill` understands. The process TABLE may be
+    # keyed by a different one — on Windows an MSYS pid and a Windows pid are
+    # two numbers for the same process — so translate once, here, at the only
+    # boundary where it matters. Identity everywhere else.
+    pf_pid_native "$pid"; npid=$NATIVE_PID
+    [ -n "${rss[$npid]:-}" ] || continue
     # etime is "[[dd-]hh:]mm:ss" elapsed, one more field on a ps we already run.
-    if [ -n "${elapsed[$pid]:-}" ]; then
-      _etime_secs "${elapsed[$pid]}"
+    if [ -n "${elapsed[$npid]:-}" ]; then
+      _etime_secs "${elapsed[$npid]}"
       SNAP_SINCE[$c]=$(( SNAP_NOW_S - _ETIME ))
     fi
 
-    _TREE=(); _walk_ps_tree "$pid"
+    _TREE=(); _walk_ps_tree "$npid"
     SNAP_PIDS[$c]="${_TREE[*]}"
     rss_sum=0; cs_sum=0
     for p in "${_TREE[@]}"; do

@@ -110,6 +110,11 @@ jobs:
       - name: setup.sh takes a clean checkout to ready
         run: ./setup.sh --yes
 
+  # There is no Windows runner here, and adding one would not help much: the
+  # value is in the PARSERS, and those are pure filters over captured output
+  # that the Linux job already runs. What a Windows job would catch is the
+  # integration, which needs a real stack running on a real box.
+  #
   # The bash-3.2 guard is a feature: it has to say what is wrong and how to fix
   # it, not die with a syntax error out of a random lib file. /bin/bash on a
   # macOS runner IS 3.2, so this is the real thing rather than a simulation.

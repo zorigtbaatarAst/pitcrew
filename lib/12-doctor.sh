@@ -33,11 +33,27 @@ cmd_doctor() {
     ok "caps   systemd --user available — MemoryMax is enforced per component"
   elif [ "$PITCREW_OS" = macos ]; then
     warn "caps   not enforceable on macOS — there is no cgroup equivalent, so PITCREW_BE_MAX/FE_MAX are budgets the meters measure against, not limits the kernel applies"
+  elif [ "$PITCREW_OS" = windows ]; then
+    warn "caps   not enforceable on Windows — Job Objects exist but nothing on the command line puts a process in one, so the caps are budgets the meters measure against, not limits the kernel applies"
   else
     warn "caps   no systemd --user — components run uncapped (the RAM meters still work)"
   fi
   if [ "$PITCREW_OS" = windows ]; then
-    bad "windows  pitcrew is not supported natively here — run it inside WSL2, where it gets a normal Linux userland (and real RAM caps)"
+    # Native Windows is a supported target now, but a degraded one — and the
+    # degradation is in things that look identical on screen, so it is said
+    # here rather than left to be discovered.
+    case "${PITCREW_WIN_PS_SOURCE:-}" in
+      _pf_ps_win_wmic)
+        ok "windows  process table via wmic ${GREY}(~80ms a frame — wmic is deprecated; PowerShell is the fallback)${RESET}" ;;
+      _pf_ps_win_powershell)
+        warn "windows  process table via PowerShell — a few hundred ms a frame. Raise PITCREW_REFRESH, or install wmic if this box still has it" ;;
+      *)
+        bad "windows  no process table available: neither wmic nor powershell.exe is on PATH, so RAM/CPU cannot be read at all" ;;
+    esac
+    command -v netstat >/dev/null 2>&1 \
+      && ok "windows  ports via netstat -ano" \
+      || bad "windows  netstat not found — nothing can tell whether a service is listening"
+    say "  ${GREY}∙ WSL2 remains the fuller experience: real cgroup RAM caps and a fork-free dashboard${RESET}"
   fi
   if [ ${#PITCREW_DEPS[@]} -gt 0 ]; then
     if command -v docker >/dev/null; then
@@ -156,7 +172,7 @@ cmd_doctor_json() {
 
 _caps_enforced() {
   case "$PITCREW_OS" in
-    macos|bsd) return 1 ;;
+    macos|bsd|windows) return 1 ;;
     *) systemctl --user is-system-running >/dev/null 2>&1 ;;
   esac
 }

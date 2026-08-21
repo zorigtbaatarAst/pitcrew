@@ -61,6 +61,16 @@ attribute, and most are pinned by a test.
    on `uname`. `PITCREW_FORCE_COLLECTOR=ps` runs the macOS collector on Linux,
    and CI runs the entire suite that way, so the portable path can't rot.
 
+   Three targets: linux (`/proc`, zero forks), macos/bsd (`ps`+`lsof`, two
+   forks), windows (Git Bash or MSYS2 — `wmic`/PowerShell + `netstat`). Windows
+   works by making `PITCREW_PS` point at a shell FUNCTION that emits the exact
+   columns the portable collector already parses, so there is no third
+   collector. Any native output that has to be interpreted goes through a pure
+   filter (`_wmic_ps_parse`, `_netstat_*_parse`, `_vm_stat_avail_kb`) so it can
+   be tested on a machine that has never seen that OS — that pattern is the
+   only reason the macOS and Windows paths are verifiable at all. The Windows
+   integration is **untested on real Windows**; the parsers are not.
+
 6. **No GNU coreutils assumptions.** No `readlink -f`, no `timeout`, no
    GNU-only `sed`/`grep` flags. BSD `sed` does not understand `\+`. A stock
    macOS must work after only `brew install bash`.
@@ -142,7 +152,7 @@ examples/plugins/  worked plugins; jvm.sh is the reference one
 gui/pitcrewgui/    GTK4 + libadwaita desktop app, consumes `json --watch`
                    model.py pure logic · ansi.py log colour · style.py the CSS
 themes/            colour palettes
-test/              a ~70-line assert harness and 21 test files
+test/              a ~70-line assert harness and 22 test files
 ```
 
 ## Diagnostics vs doctor

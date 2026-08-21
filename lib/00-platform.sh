@@ -10,9 +10,12 @@
 #   macos    ps/lsof/sysctl/vm_stat    same meters, no cap enforcement (there is
 #                                      no cgroup equivalent — see doctor)
 #   bsd      same portable path as macOS, minus the sysctl/vm_stat gauges
-#   windows  not native: no bash 5, no /dev/tcp, no POSIX ps. Run under WSL2,
-#            where pitcrew sees a normal Linux userland and this file says
-#            "linux" like it would on any other box.
+#   windows  native, under Git Bash or MSYS2 — see the block near the bottom of
+#            this file. The shell is real bash 5; what is missing is the POSIX
+#            userland underneath it, so the process table comes from wmic or
+#            PowerShell, listening ports from netstat, and RAM caps do not
+#            exist at all. WSL2 remains the better experience and says "linux"
+#            like any other box.
 #
 # The portable path is not a degraded mode kept alive out of politeness — it is
 # what macOS runs every day, so PITCREW_COLLECTOR=ps can be forced on Linux to
@@ -40,6 +43,12 @@ PITCREW_NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
 # `ps` truncates its output to the terminal width on BSD/macOS, which silently
 # cuts the command column mid-parse. -ww turns that off; GNU ps accepts it too,
 # so there is one spelling rather than two code paths.
+#
+# An ARRAY, not a string, and the first word is resolved by bash the normal
+# way — so on Windows it can be the name of a shell FUNCTION that produces the
+# same columns from a native process table. The portable collector then works
+# there unchanged, which is the whole reason it is written against a column
+# layout rather than against `ps` itself.
 PITCREW_PS=(ps -ww)
 
 # ── run a command with a deadline ───────────────────────────────────────────
@@ -99,6 +108,18 @@ case "$PITCREW_OS" in
     ;;
 esac
 
+# ── listening ports ─────────────────────────────────────────────────────────
+# Every locally-reachable listening port, one per line, as `addr:port`. Lifted
+# out of the collector so that "how do I see a listening socket" is answered
+# once, here, by the file that is allowed to know what OS this is.
+pf_listening() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print $9}'
+  elif command -v ss >/dev/null 2>&1; then
+    ss -tlnH 2>/dev/null | awk '{print $4}'
+  fi
+}
+
 # ── port → pid ──────────────────────────────────────────────────────────────
 # lsof is the portable choice and the only one macOS has; ss is the Linux
 # fallback for boxes without lsof. Parsing ss with sed rather than `grep -oP`
@@ -110,6 +131,13 @@ port_pid() {
     ss -tlnpH "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1
   fi
 }
+
+# ── a pid, as the native tools understand it ────────────────────────────────
+# Everywhere but Windows a pid is a pid. There, the pidfile holds an MSYS pid
+# (so `kill` and kill_tree keep working) while wmic and netstat only know the
+# Windows one, so the two have to be told apart at exactly the boundary where
+# one becomes the other — and nowhere else.
+pf_pid_native() { NATIVE_PID=$1; }
 
 # ── process trees ───────────────────────────────────────────────────────────
 # Only the stop path uses these — the dashboard walks trees inside the snapshot
@@ -279,9 +307,160 @@ sys_gauges() {
   case "$PITCREW_OS" in
     linux)     sys_gauges_linux 2>/dev/null ;;
     macos|bsd) sys_gauges_macos 2>/dev/null ;;
+    windows)   sys_gauges_windows 2>/dev/null ;;
   esac
   return 0
 }
+
+# ── Windows, natively ───────────────────────────────────────────────────────
+#
+# Under Git Bash or MSYS2 the SHELL is real bash 5 — that part was never the
+# problem. What is missing is everything underneath it: no /proc, no POSIX ps,
+# no lsof, no cgroups. So each of those is answered by a native tool instead,
+# and the rest of pitcrew does not find out.
+#
+#   process table   wmic, else PowerShell — reshaped into the exact columns the
+#                   portable collector already parses (see pf_ps_win)
+#   ports           netstat -ano, which gives port AND owning pid in one call
+#   liveness/kill   MSYS pids in the pidfiles, so `kill` and kill_tree keep
+#                   working; translated to Windows pids only where a native
+#                   tool needs one
+#   RAM caps        NOT ENFORCEABLE. Windows has Job Objects but no command
+#                   that puts a process in one, so the caps are budgets the
+#                   meters measure against — the same honest degradation macOS
+#                   gets, and doctor says so rather than letting the identical
+#                   meters imply otherwise.
+#
+# Cost: a frame here is one process-table call plus one netstat, against zero
+# forks on Linux and two on macOS. wmic is ~80ms, PowerShell ~300ms, so the
+# default refresh is slower here and doctor explains why.
+
+# WMI reports CPU time in 100-nanosecond ticks and memory in bytes; the
+# collector wants centisecond-ish "[[dd-]hh:]mm:ss.cc" and kilobytes. Kept as a
+# pure filter over captured output so it can be tested on a machine that has
+# never seen Windows — the same bargain _vm_stat_avail_kb strikes for macOS.
+#
+# Input is wmic's CSV: Node,CreationDate,KernelModeTime,Name,ParentProcessId,ProcessId,UserModeTime,WorkingSetSize
+_wmic_ps_parse() { # $1 = epoch seconds now; wmic CSV on stdin → ps-shaped columns
+  awk -F, -v now="$1" '
+    NR == 1 || NF < 8 { next }
+    {
+      # WMI CreationDate is yyyymmddHHMMSS.ffffff+ZZZ, in LOCAL time. Only the
+      # difference from now matters, and mktime reads local time too, so the
+      # offset cancels and does not have to be parsed.
+      created = substr($2, 1, 14)
+      elapsed = 0
+      if (created ~ /^[0-9]{14}$/) {
+        spec = substr(created,1,4) " " substr(created,5,2) " " substr(created,7,2) " " \
+               substr(created,9,2) " " substr(created,11,2) " " substr(created,13,2)
+        birth = mktime(spec)
+        if (birth > 0 && now > birth) elapsed = now - birth
+      }
+      cs   = int(($3 + $7) / 100000)          # 100ns ticks -> centiseconds
+      rss  = int($8 / 1024)                   # bytes -> KiB
+      printf "%d %d %d %d:%02d.%02d %02d:%02d:%02d %s\n",
+             $6, $5, rss,
+             int(cs/6000), int(cs/100) % 60, cs % 100,
+             int(elapsed/3600), int(elapsed/60) % 60, elapsed % 60,
+             $4
+    }'
+}
+
+# PowerShell is the durable route — wmic is deprecated and gone from recent
+# Windows 11 — but it costs a few hundred milliseconds to start, so it is the
+# fallback rather than the default. Asked for the same fields in the same order
+# so ONE parser serves both.
+_pf_ps_win_powershell() {
+  powershell.exe -NoProfile -NonInteractive -Command \
+    "Get-CimInstance Win32_Process | ForEach-Object { \
+       'x,' + \$_.CreationDate.ToString('yyyyMMddHHmmss') + ',' + \$_.KernelModeTime + ',' + \
+       \$_.Name + ',' + \$_.ParentProcessId + ',' + \$_.ProcessId + ',' + \
+       \$_.UserModeTime + ',' + \$_.WorkingSetSize }" 2>/dev/null | tr -d '\r'
+}
+
+_pf_ps_win_wmic() {
+  wmic process get CreationDate,KernelModeTime,Name,ParentProcessId,ProcessId,UserModeTime,WorkingSetSize \
+    /format:csv 2>/dev/null | tr -d '\r'
+}
+
+# The shim PITCREW_PS points at. Its arguments are the POSIX `ps` flags the
+# collector passes; they are ignored, because the columns they ask for are
+# exactly what this produces.
+pf_ps_win() {
+  local now
+  printf -v now '%(%s)T' -1
+  "$PITCREW_WIN_PS_SOURCE" | _wmic_ps_parse "$now"
+}
+
+# netstat -ano, which is on every Windows and needs no install:
+#   Proto  Local Address    Foreign Address  State       PID
+#   TCP    0.0.0.0:8080     0.0.0.0:0        LISTENING   1234
+# Only the local address is wanted here; the pid column is what pf_port_pid_win
+# uses, from the same output.
+_netstat_listening_parse() {
+  awk '$1 ~ /^TCP/ && $4 == "LISTENING" { print $2 }'
+}
+
+_netstat_port_pid_parse() { # $1 = port; netstat -ano on stdin -> owning pid
+  awk -v want=":" -v port="$1" '
+    $1 ~ /^TCP/ && $4 == "LISTENING" {
+      addr = $2
+      n = split(addr, part, ":")
+      if (part[n] == port) { print $5; exit }
+    }'
+}
+
+# An MSYS/Cygwin pid is not a Windows pid, and netstat and wmic only know the
+# latter. The mapping is published for free at /proc/<pid>/winpid — one builtin
+# read, no fork — so pidfiles keep holding MSYS pids (which is what `kill` and
+# kill_tree need) and the translation happens only where a native tool is on
+# the other end.
+pf_winpid() { # $1 msys pid -> WINPID, or the input unchanged if unmappable
+  local w=""
+  [ -r "/proc/$1/winpid" ] && read -r w < "/proc/$1/winpid" 2>/dev/null
+  case "$w" in ''|*[!0-9]*) WINPID=$1 ;; *) WINPID=$w ;; esac
+}
+
+_pf_windows_init() {
+  # Which process table this box can actually produce. Resolved once: probing
+  # per frame would cost more than the call it is choosing between.
+  PITCREW_WIN_PS_SOURCE=""
+  if command -v wmic >/dev/null 2>&1 && wmic os get Caption /format:csv >/dev/null 2>&1; then
+    PITCREW_WIN_PS_SOURCE=_pf_ps_win_wmic
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    PITCREW_WIN_PS_SOURCE=_pf_ps_win_powershell
+  fi
+  [ -n "$PITCREW_WIN_PS_SOURCE" ] && PITCREW_PS=(pf_ps_win)
+
+  pf_pid_native() { pf_winpid "$1"; NATIVE_PID=$WINPID; }
+  pf_listening() { netstat -ano 2>/dev/null | tr -d '\r' | _netstat_listening_parse; }
+  port_pid() { netstat -ano 2>/dev/null | tr -d '\r' | _netstat_port_pid_parse "$1"; }
+
+  # Total RAM, once. wmic and PowerShell both know it; systeminfo is the last
+  # resort and is far too slow to call more than once.
+  local total=""
+  if [ "$PITCREW_WIN_PS_SOURCE" = _pf_ps_win_wmic ]; then
+    total=$(wmic computersystem get TotalPhysicalMemory /value 2>/dev/null | tr -d '\r' |
+            sed -n 's/^TotalPhysicalMemory=//p')
+  fi
+  case "$total" in ''|*[!0-9]*) ;; *) PITCREW_MEM_TOTAL_KB=$(( total / 1024 )) ;; esac
+}
+
+# Free memory has to be sampled, not resolved once. The counter is in KILOBYTES
+# in wmic's output and the collector wants the same, so no conversion.
+sys_gauges_windows() {
+  SYS_MEM_TOTAL_KB=$PITCREW_MEM_TOTAL_KB
+  [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ] || return 0
+  local free=""
+  [ "$PITCREW_WIN_PS_SOURCE" = _pf_ps_win_wmic ] &&
+    free=$(wmic os get FreePhysicalMemory /value 2>/dev/null | tr -d '\r' |
+           sed -n 's/^FreePhysicalMemory=//p')
+  case "$free" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$free" -le "$SYS_MEM_TOTAL_KB" ] || free=$SYS_MEM_TOTAL_KB
+  SYS_MEM_USED_KB=$(( SYS_MEM_TOTAL_KB - free ))
+}
+
+[ "$PITCREW_OS" = windows ] && _pf_windows_init
 
 # ── which collector the dashboard uses (see lib/03a-snapshot.sh) ────────────
 # "proc" reads everything out of /proc with bash builtins — zero forks per

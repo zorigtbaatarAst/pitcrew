@@ -11,6 +11,32 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **Native Windows**, under Git Bash (2.35+) or MSYS2. The shell was never the
+  problem — that is real bash 5 — the POSIX userland underneath it was. So the
+  process table comes from `wmic` (or PowerShell where wmic has been removed),
+  listening ports from `netstat -ano`, and pidfiles keep holding MSYS pids so
+  `kill` and `kill_tree` work unchanged, translated to Windows pids only where
+  a native tool is on the other end.
+
+  There is no third collector: `PITCREW_PS` is an array whose first word bash
+  resolves normally, so on Windows it points at a shell *function* that emits
+  the exact `pid ppid rss time etime comm` columns the portable collector
+  already parses. Everything downstream — tree walking, CPU deltas, idle
+  tracking — is untouched.
+
+  Two honest degradations, both reported by `doctor`: **RAM caps are not
+  enforceable** (Windows has Job Objects, nothing on the command line puts a
+  process in one), and a frame costs one process-table call plus one `netstat`
+  — ~80ms via wmic, a few hundred via PowerShell — against zero forks on Linux.
+  WSL2 remains the better experience and is unchanged.
+
+  **Written and unit-tested, but not yet run on Windows** — there was no
+  Windows machine to run it on. `test/windows_test.sh` covers every place a
+  native tool's output is interpreted, against captured output, which is where
+  this class of port actually breaks: a swapped column, a unit off by 1024, an
+  unstripped `\r`. The integration is what remains unverified.
+- `install.sh` writes a shim rather than a symlink on Windows: a symlink there
+  needs Developer Mode, and a *copy* of the launcher cannot find its own `lib/`.
 - **The desktop app can now reach everything the CLI can**, apart from what a
   window genuinely cannot host. New: a live **process tree** in a component's
   detail dialog (a `gradle bootRun` is a wrapper that forks a daemon that forks
