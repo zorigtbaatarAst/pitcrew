@@ -26,6 +26,14 @@ STATE_STYLE = {
 }
 UNKNOWN_STYLE = ("dim-label", "#57606a")
 
+# Worst first. The same order lib/05a-dashboard.sh's _state_rank uses, because
+# the desktop app and the terminal dashboard putting "what needs you" in two
+# different orders would be two answers to one question.
+STATE_RANK = {"crashed": 0, "starting": 1, "up": 2, "external": 3, "down": 4}
+
+def state_rank(comp: dict) -> int:
+    return STATE_RANK.get(comp.get("state") or "", 5)
+
 def rgb(hex_color: str) -> tuple[float, float, float]:
     return tuple(int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
 

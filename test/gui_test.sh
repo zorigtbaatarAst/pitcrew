@@ -1373,7 +1373,8 @@ test_a_group_heading_describes_the_group_not_the_filter() {
   # A heading that says "0/1 up" over a group of two, because a filter hid the
   # healthy one, is a wrong number stated confidently. Worse, "Stop all" under
   # that heading would stop one of the two -- and you would believe the port
-  # was free.
+  # was free. Driven through the SEARCH box, which is where headings survive;
+  # zen has no headings at all (see the flat-list test below).
   local out; out=$(_settings_drive "
 from gi.repository import Adw
 Adw.init()
@@ -1389,7 +1390,10 @@ w._on_state({
              'counts': {'crit': 1}, 'findings': [], 'recoverable': {}}})
 heading = next(iter(w._group_widgets))
 print(w._group_widgets[heading].get_description())
-w._toggle_zen()
+w._comp_filter.set_text('be-')
+# GtkSearchEntry debounces search-changed by ~150ms, so drive the handler the
+# signal would have called rather than spinning a main loop for it.
+w._filter_changed()
 print(sorted(w._rows))
 print(w._group_widgets[heading].get_description())
 
@@ -1404,11 +1408,69 @@ while child is not None:
 print(calls)
 ")
   assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1/2 up  ·  100 B" "unfiltered, the summary is just the group"
-  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "['be-orders']" "zen hides the healthy half"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "['be-orders']" "the filter hides the healthy half"
   assert_match "$(printf '%s' "$out" | sed -n 3p)" "^1/2 up" "the count still describes the group, not the rows"
   assert_match "$(printf '%s' "$out" | sed -n 3p)" "1 not shown" "and says the rows are not all of it"
   assert_eq "$(printf '%s' "$out" | sed -n 4p)" \
     "[('stop', ('be-orders', 'fe-orders'))]" "\"Stop all\" stops all of orders, hidden rows included"
+}
+
+test_zen_is_one_flat_list_not_a_page_of_headings() {
+  gui_display || return 0
+  # Grouped, zen showed three headings over four rows. A heading for a group
+  # of one is the same noise as a column header over a single row, which is
+  # exactly what the terminal's zen drops.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+def comp(name, app, state):
+    return {'name': name, 'app': app, 'role': name[:2], 'state': state, 'rss': 10,
+            'cpu': 0, 'errors': 0, 'since': 1}
+w._on_state({
+  'at': 1000, 'machine': {'memTotal': 100, 'memUsed': 10, 'cpuPercent': 1},
+  # Deliberately the REVERSE of worst-first: listed crashed-first, the order
+  # assertion below would hold with no sorting code at all.
+  'components': [comp('fe-billing', 'billing', 'down'),
+                 comp('be-billing', 'billing', 'starting'),
+                 comp('fe-orders', 'orders', 'up'),
+                 comp('be-orders', 'orders', 'crashed')],
+  'deps': [{'name': 'postgres', 'state': 'up'}, {'name': 'redis', 'state': 'down'}],
+  'summary': {'up': 1, 'crashed': 1, 'starting': 1, 'down': 1},
+  'health': {'verdict': 'crit', 'headline': 'be-orders crashed', 'deep': False,
+             'counts': {'crit': 1}, 'findings': [], 'recoverable': {}}})
+print(sorted(t for t in (g.get_title() for g in w._groups) if t), w._dep_group.get_title())
+print(w._overview_clamp.get_maximum_size(), w._comp_clamp.get_maximum_size())
+w._toggle_zen()
+print([g.get_title() for g in w._groups], repr(w._dep_group.get_title()))
+print(sorted(w._rows))
+print(w._overview_clamp.get_maximum_size(), w._comp_clamp.get_maximum_size())
+print(w._overview_body.get_valign().value_nick, w._comp_header.get_visible())
+order = []
+row = w._groups[-1].get_first_child()
+def walk(widget, out):
+    if isinstance(widget, pgui.ComponentRow):
+        out.append(widget.get_title()); return
+    child = widget.get_first_child()
+    while child is not None:
+        walk(child, out); child = child.get_next_sibling()
+walk(w._groups[-1], order)
+w._toggle_zen()
+print(sorted(t for t in (g.get_title() for g in w._groups) if t), w._dep_group.get_title())
+print(w._overview_clamp.get_maximum_size())
+print(' '.join(order))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "['billing', 'orders'] Dependencies" "grouped by app normally"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "1240 1240" "and the column is wide enough for the table"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "[''] ''" "in zen there are no headings, deps included"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "['be-billing', 'be-orders', 'fe-billing']" \
+    "only what needs you, still one row per component"
+  assert_eq "$(printf '%s' "$out" | sed -n 9p)" "be-orders be-billing fe-billing" \
+    "worst first, the same order the terminal uses"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "800 800" "the column narrows to something you read in one go"
+  assert_eq "$(printf '%s' "$out" | sed -n 6p)" "center False" "the verdict sits in the middle, and the column header is gone"
+  assert_eq "$(printf '%s' "$out" | sed -n 7p)" "['billing', 'orders'] Dependencies" "leaving zen puts the headings back"
+  assert_eq "$(printf '%s' "$out" | sed -n 8p)" "1240" "and the width with them"
 }
 
 test_the_error_banner_shows_the_error_not_the_escape_codes() {
@@ -1429,6 +1491,30 @@ print(w._banner.get_revealed())
   assert_eq "$(printf '%s' "$out" | sed -n 1p)" \
     "pitcrew stopped: no project at /srv/a&b <dir>" "colour stripped, the text left alone"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and it is actually shown"
+}
+
+test_the_zen_column_is_never_narrower_than_a_row_needs() {
+  gui_display || return 0
+  # ComponentRow's columns are fixed widths; the component NAME is the only
+  # flexible part, so a clamp under the row's natural width squeezes the name
+  # until it wraps mid-word -- "be-billing" came out as "be-billi-/ng". That
+  # is a silent, visual-only failure, and CLAMP_ZEN is a constant somebody will
+  # tune. Ask the widget rather than trusting the number.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw, GLib, Gtk
+Adw.init()
+import pitcrewgui.window as W
+group = Adw.PreferencesGroup()
+group.add(pgui.ComponentRow('be-billing', '#89b4fa', lambda *a: None, lambda *a: None))
+win = Gtk.Window(child=group)
+win.present()
+ctx = GLib.MainContext.default()
+for _ in range(200):
+    ctx.iteration(False)
+natural = group.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+print(natural, W.CLAMP_ZEN, W.CLAMP_ZEN >= natural)
+")
+  assert_match "$out" 'True$' "CLAMP_ZEN ($out) must fit a component row without squeezing its name"
 }
 
 run_tests

@@ -337,3 +337,199 @@ _tree_sorted() { # $1 comp → TREE_SORTED array
     TREE_SORTED[j+1]=$p
   done
 }
+
+# ── zen rows ────────────────────────────────────────────────────────────────
+# Zen is NOT the table with rows taken out of it.
+#
+# The table costs two header rows, a be/fe column pair and a graph column
+# before it says anything, and once the content is "one crashed service" that
+# chrome outweighs it: a column header over a single row is noise, and the
+# empty `· n/a` frontend cell beside a dead backend spends half the width
+# saying nothing. Filtering that layout gives you a wide, mostly-blank table.
+#
+# So zen draws a LIST. One line per component, each a sentence rather than a
+# row of columns you need the header to decode, in a block narrow enough to
+# read in one eye movement and centred in the window. No graphs: history is
+# what you look at when you are watching something, not when you are deciding
+# whether anything needs you, and it is the noisiest thing on the screen.
+
+ZEN_NAMEW=12                   # name column
+ZEN_WHATW=9                    # state word — "starting" and "external" are 8
+ZEN_DETAILW=26                 # the sentence after it — the longest is
+                               # "on its port, not ours" plus an error count
+ZEN_BLOCKW=0                   # the block's whole visible width
+ZEN_INDENT=2                   # left margin that centres the block
+ZEN_VIS=0                      # visible width of the row zen_row just built
+
+zen_metrics() { # $1 terminal width
+  # Measured over every CONFIGURED name, not the ones that happen to be
+  # visible. Sized to the visible set, the block would shift sideways every
+  # time a service crashed or recovered — which is the opposite of calm, and
+  # the reason the whole mode exists.
+  local w=$1 c n
+  ZEN_NAMEW=8
+  for c in "${PITCREW_COMPS[@]}" "${PITCREW_DEPS[@]:-}"; do
+    [ -n "$c" ] || continue
+    n=${#c}; [ "$n" -gt "$ZEN_NAMEW" ] && ZEN_NAMEW=$n
+  done
+  [ "$ZEN_NAMEW" -gt 22 ] && ZEN_NAMEW=22
+  # mark + icon + name + what + detail, with the gaps between them
+  ZEN_BLOCKW=$(( 2 + 1 + 2 + ZEN_NAMEW + 2 + ZEN_WHATW + 2 + ZEN_DETAILW ))
+  # Room for the margin on BOTH sides, not just the block: clamped to $w and
+  # then indented by 2, every row came out two columns past the right edge —
+  # and with auto-wrap off the terminal eats those two columns silently.
+  [ "$ZEN_BLOCKW" -gt $(( w - 4 )) ] && ZEN_BLOCKW=$(( w - 4 ))
+  [ "$ZEN_BLOCKW" -lt 16 ] && ZEN_BLOCKW=16
+  ZEN_INDENT=$(( (w - ZEN_BLOCKW) / 2 ))
+  [ "$ZEN_INDENT" -lt 2 ] && ZEN_INDENT=2
+  # The name and state columns give way before the sentence does: "crashed"
+  # with no name is useless, but so is a name with nowhere to say why.
+  local fixed=$(( 2 + 1 + 2 + ZEN_NAMEW + 2 + ZEN_WHATW + 2 ))
+  ZEN_DETAILW=$(( ZEN_BLOCKW - fixed ))
+  if [ "$ZEN_DETAILW" -lt 8 ]; then
+    ZEN_NAMEW=$(( ZEN_NAMEW - (8 - ZEN_DETAILW) ))
+    [ "$ZEN_NAMEW" -lt 4 ] && ZEN_NAMEW=4
+    fixed=$(( 2 + 1 + 2 + ZEN_NAMEW + 2 + ZEN_WHATW + 2 ))
+    ZEN_DETAILW=$(( ZEN_BLOCKW - fixed )); [ "$ZEN_DETAILW" -lt 0 ] && ZEN_DETAILW=0
+  fi
+  return 0
+}
+
+# The state word and the sentence that follows it. Split out of zen_row so the
+# two-branch component/dependency shape stays readable.
+_zen_what() { # $1 comp or dep-NAME → ZWHAT, ZWHATC, ZDETAIL, ZDETAILC
+  local key=$1 st n
+  if [ "${key:0:4}" = dep- ]; then
+    st=${SNAP_DEP[${key#dep-}]:-down}
+    ZDETAIL="dependency"; ZDETAILC=$C_FAINT
+    case "$st" in
+      up) ZWHAT=up;   ZWHATC=$C_OK ;;
+      # Ordered above the services in the list because a dead dependency is
+      # usually the reason for them — but the ROW does not claim that. Which
+      # services actually depend on which container is not modelled, and a
+      # confident "likely the cause" beside an unrelated outage is worse than
+      # the plain fact.
+      *)  ZWHAT=down; ZWHATC=$C_CRIT ;;
+    esac
+    return 0
+  fi
+  st=${SNAP_STATE[$key]:-n/a}
+  ZDETAIL=""; ZDETAILC=$C_MUTED
+  case "$st" in
+    up)
+      ZWHAT=up; ZWHATC=$C_OK
+      # Only marks and filters keep an `up` row in zen, so this row is one you
+      # asked to watch. Give it its figures.
+      ZDETAIL=""
+      if [ -n "${SNAP_SINCE[$key]:-}" ]; then
+        dur_human $(( SNAP_NOW_S - SNAP_SINCE[$key] )); ZDETAIL="$DUR"
+      fi
+      if [ "${SNAP_RSS[$key]:-0}" -gt 0 ] 2>/dev/null; then
+        human "${SNAP_RSS[$key]}"; ZDETAIL="${ZDETAIL:+$ZDETAIL  }$HUMAN"
+      fi
+      [ "${SNAP_CPU_OK:-0}" = 1 ] && ZDETAIL="${ZDETAIL:+$ZDETAIL  }${SNAP_CPU[$key]:-0}%"
+      ;;
+    starting)
+      ZWHAT=starting; ZWHATC=$C_WARN
+      if [ -n "${SNAP_SINCE[$key]:-}" ]; then
+        dur_human $(( SNAP_NOW_S - SNAP_SINCE[$key] )); ZDETAIL="$DUR so far"
+      fi ;;
+    crashed)
+      ZWHAT=crashed; ZWHATC=$C_CRIT
+      # How it died, not that it died — the icon and the word already said
+      # that, and "exit 1" versus "killed by signal 9" is the whole question.
+      if [ -n "${SNAP_EXIT[$key]:-}" ]; then
+        if [ "${SNAP_EXIT[$key]}" -gt 128 ] 2>/dev/null; then
+          printf -v ZDETAIL 'signal %s' $(( ${SNAP_EXIT[$key]} - 128 ))
+        else
+          printf -v ZDETAIL 'exit %s' "${SNAP_EXIT[$key]}"
+        fi
+        n=${SNAP_EXIT_AT[$key]:-0}
+        [ "$n" -gt 0 ] 2>/dev/null && printf -v ZDETAIL '%s · %(%H:%M)T' "$ZDETAIL" "$n"
+      fi ;;
+    external)
+      ZWHAT=external; ZWHATC=$C_INFO
+      ZDETAIL="on its port, not ours" ;;
+    down)
+      ZWHAT=down; ZWHATC=$C_MUTED
+      ZDETAIL="not running"; ZDETAILC=$C_FAINT ;;
+    *)
+      ZWHAT="—"; ZWHATC=$C_FAINT ;;
+  esac
+  return 0
+}
+
+zen_row() { # $1 comp or dep-NAME, $2 1 if selected → R rendered, ZEN_VIS wide
+  local key=$1 selected=${2:-0} name row mark errs="" errvis=0 dmax
+  local ZWHAT ZWHATC ZDETAIL ZDETAILC
+
+  name=$key
+  # Inlined rather than `state_icon "$(comp_state ...)"`: a command
+  # substitution is a fork, and this runs once per row per frame.
+  local st=${SNAP_STATE[$key]:-n/a}
+  [ "${key:0:4}" = dep- ] && { name=${key#dep-}; st=${SNAP_DEP[$name]:-down}; }
+  _zen_what "$key"
+  state_icon "$st"
+  local icon=$R
+
+  mark=" "
+  [ -n "${MARKED[$key]:-}" ] && mark="${C_ACCENT2}✓${RESET}"
+
+  # Error counts are the one number worth carrying into zen: a service that is
+  # "up" and logging four hundred errors is exactly what the mode is for.
+  if [ "${ERR_COUNT[$key]:-0}" -gt 0 ] 2>/dev/null; then
+    printf -v errs '  %b⚡%s%b' "$C_CRIT" "${ERR_COUNT[$key]}" "$RESET"
+    errvis=$(( 3 + ${#ERR_COUNT[$key]} ))
+  fi
+
+  # Elided from the LEFT: a name cut to "backoffice" loses the `be-`/`fe-`
+  # prefix, which in a one-row-per-component list is the half that says which
+  # of the two you are looking at.
+  [ ${#name} -gt "$ZEN_NAMEW" ] && name="…${name: -$(( ZEN_NAMEW - 1 ))}"
+
+  local namec=$C_SUBTLE
+  [ "$selected" = 1 ] && namec="$C_TEXT$BOLD"
+  printf -v row '%*s%b %s  %b%-*s%b  %b%-*s%b  ' \
+    "$ZEN_INDENT" "" "$mark" "$icon" \
+    "$namec" "$ZEN_NAMEW" "$name" "$RESET" \
+    "$ZWHATC" "$ZEN_WHATW" "$ZWHAT" "$RESET"
+  # The indent is part of the row, so it is part of the row's width. Left out,
+  # the selection band was drawn ZEN_INDENT columns too wide and ran past the
+  # right edge of the block.
+  ZEN_VIS=$(( ZEN_INDENT + 2 + 1 + 2 + ZEN_NAMEW + 2 + ZEN_WHATW + 2 ))
+
+  dmax=$(( ZEN_INDENT + ZEN_BLOCKW - ZEN_VIS - errvis )); [ "$dmax" -lt 0 ] && dmax=0
+  # A fragment is worse than nothing: "exi" where "exit 1 · 18:34" did not fit
+  # reads as corruption, and there is no room to recognise it from a prefix.
+  if [ "$dmax" -lt 6 ]; then ZDETAIL=""
+  elif [ ${#ZDETAIL} -gt "$dmax" ]; then ZDETAIL="${ZDETAIL:0:$(( dmax - 1 ))}…"
+  fi
+  printf -v R '%b%s%b' "$ZDETAILC" "$ZDETAIL" "$RESET"
+  row+="$R$errs"
+  ZEN_VIS=$(( ZEN_VIS + ${#ZDETAIL} + errvis ))
+
+  if [ "$selected" = 1 ]; then
+    _band_row "$row" "$ZEN_VIS" "$(( ZEN_INDENT + ZEN_BLOCKW ))"
+    row=$R; ZEN_VIS=$(( ZEN_INDENT + ZEN_BLOCKW ))
+  fi
+  R=$row
+  return 0
+}
+
+# The one line in zen that counts what is FINE. Everywhere else the mode hides
+# it on purpose; on an empty screen it is the difference between "everything is
+# up" and "is this thing even running?".
+_zen_all_well_line() { # → R, ZEN_VIS
+  local c n_up=0 n_dep=0 dep parts
+  for c in "${PITCREW_COMPS[@]}"; do
+    case "${SNAP_STATE[$c]:-}" in up|external) n_up=$((n_up + 1)) ;; esac
+  done
+  for dep in "${PITCREW_DEPS[@]:-}"; do
+    [ -n "$dep" ] && [ "${SNAP_DEP[$dep]:-down}" = up ] && n_dep=$((n_dep + 1))
+  done
+  printf -v parts '%s up' "$n_up"
+  [ "$n_dep" -gt 0 ] && printf -v parts '%s · %s deps up' "$parts" "$n_dep"
+  ZEN_VIS=${#parts}
+  printf -v R '%b%s%b' "$C_FAINT" "$parts" "$RESET"
+  return 0
+}

@@ -427,6 +427,9 @@ test_the_process_tree_renders_in_both_layouts() {
 # rather than re-collecting, because collect_frame would overwrite it.
 
 _all_up() { local c; for c in "${PITCREW_COMPS[@]}"; do SNAP_STATE[$c]=up; done; }
+# Dependencies are rows in the zen list, not a rule above it, so a down one is
+# something that needs you and the screen is correctly not empty.
+_all_deps_up() { local d; for d in "${PITCREW_DEPS[@]:-}"; do [ -n "$d" ] && SNAP_DEP[$d]=up; done; }
 
 test_zen_hides_what_is_fine_and_keeps_what_is_not() {
   _render_at 150 40
@@ -444,7 +447,7 @@ test_zen_keeps_what_you_marked_even_when_it_is_healthy() {
   # z, and you get that app plus anything that breaks — nothing else
   _render_at 150 40
   _all_up
-  MARKED[be-feonly]=1
+  MARKED[fe-feonly]=1      # feonly has no backend — be-feonly never exists
   ZEN=1; build_frame
   local body; body=$(plain "$FRAME")
   assert_match     "$body" 'feonly' "the marked app is what you are focused on"
@@ -454,10 +457,31 @@ test_zen_keeps_what_you_marked_even_when_it_is_healthy() {
 
 test_zen_with_nothing_wrong_says_so_rather_than_going_blank() {
   _render_at 150 40
-  _all_up
+  # diag_run after planting the state, not before: the message zen shows is
+  # decided by what diagnostics found, so a stale DIAG_N left over from the
+  # fixture's own down dependencies would be testing the wrong screen.
+  _all_up; _all_deps_up; diag_run
   ZEN=1; build_frame
-  assert_match "$(plain "$FRAME")" 'nothing needs you' "an empty zen screen is the answer, not a bug"
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'nothing needs you' "an empty zen screen is the answer, not a bug"
+  assert_match     "$body" '4 up'              "and says what is fine, the one place that matters"
+  assert_not_match "$body" 'd  for details'    "with no verdict line saying it a second time"
   ZEN=0
+}
+
+test_zen_does_not_say_nothing_needs_you_over_a_verdict_that_disagrees() {
+  # A finding that puts no component in the list — an idle service, a RAM
+  # warning — still leaves the verdict line saying something is up. Printing
+  # "nothing needs you" directly under it contradicts the row above it.
+  _render_at 150 40
+  _all_up; _all_deps_up; diag_run
+  DIAG_N=1; DIAG_WARN=1; DIAG_VERDICT=warn
+  ZEN=1; build_frame
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'd  for details'    "the verdict stays: it is the only thing that knows"
+  assert_not_match "$body" 'nothing needs you' "so the screen does not claim otherwise"
+  assert_match     "$body" 'nothing is down'   "it says the narrower thing that is true"
+  ZEN=0; diag_run
 }
 
 test_zen_sheds_chrome_but_never_the_way_out() {
@@ -492,6 +516,91 @@ test_zen_still_fits_the_terminal_in_both_directions() {
       [ "${#vis}" -le "$w" ] || _t_bad "zen at ${w} cols drew a ${#vis}-char row"
     done <<< "$FRAME"
   done
+  ZEN=0
+}
+
+test_zen_draws_a_list_not_the_table_with_rows_removed() {
+  _render_at 150 40
+  _all_up; _all_deps_up
+  SNAP_STATE[be-beonly]=crashed
+  SNAP_EXIT[be-beonly]=1; SNAP_EXIT_AT[be-beonly]=$(( SNAP_NOW_S - 90 ))
+  ZEN=1; build_frame
+  local body; body=$(plain "$FRAME")
+  assert_not_match "$body" 'port +graph'  "no column header over a two-row list"
+  assert_not_match "$body" '── services'  "nor a section rule for one section"
+  assert_not_match "$body" '· n/a'        "and no empty frontend cell beside a dead backend"
+  assert_not_match "$body" '▁▁▁'          "no graph: history is not what you came to read"
+  assert_match     "$body" 'be-beonly +crashed +exit 1' \
+    "the row is a sentence — what it is, what it is doing, and why"
+  ZEN=0; unset "SNAP_EXIT[be-beonly]" "SNAP_EXIT_AT[be-beonly]"
+}
+
+test_zen_lists_components_not_apps() {
+  # The table's row is an app with a backend column and a frontend column, so
+  # a crashed backend drags its healthy frontend onto the screen with it. In
+  # zen the row IS the component, and only the one that needs you is drawn.
+  _render_at 150 40
+  _all_up; _all_deps_up
+  SNAP_STATE[be-both]=crashed
+  ZEN=1; build_frame
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'be-both'  "the crashed component"
+  assert_not_match "$body" 'fe-both'  "not the healthy one beside it"
+  ZEN=0
+}
+
+test_zen_puts_a_down_dependency_in_the_list_above_the_services() {
+  # It used to be a rule of its own above the table. A section header for one
+  # item is a section header too many, and the ordering is the point: a dead
+  # postgres is usually the reason for everything under it.
+  _render_at 150 40
+  _all_up; _all_deps_up
+  SNAP_DEP[fixture-db]=down
+  SNAP_STATE[be-beonly]=crashed
+  ZEN=1; build_frame
+  local body; body=$(plain "$FRAME")
+  assert_not_match "$body" '── deps' "no rule for it"
+  local dep_at svc_at
+  dep_at=$(printf '%s\n' "$body" | grep -n 'fixture-db' | tail -1 | cut -d: -f1)
+  svc_at=$(printf '%s\n' "$body" | grep -n 'be-beonly'  | head -1 | cut -d: -f1)
+  [ -n "$dep_at" ] && [ -n "$svc_at" ] && [ "$dep_at" -lt "$svc_at" ] \
+    || _t_bad "the dependency is on row ${dep_at:-?}, the service it may have taken out on ${svc_at:-?}"
+  ZEN=0
+}
+
+test_zen_orders_the_list_worst_first() {
+  # The crashed one is deliberately the LAST app by name: with the fixture's
+  # own order (both, beonly, feonly) a crashed `beonly` sorts first anyway, so
+  # the assertion would hold with no ordering code at all.
+  _render_at 150 40
+  _all_up; _all_deps_up
+  SNAP_STATE[be-both]=starting
+  SNAP_STATE[fe-feonly]=crashed
+  ZEN=1; build_frame
+  local body crashed_at starting_at
+  body=$(plain "$FRAME")
+  crashed_at=$(printf '%s\n' "$body" | grep -n 'fe-feonly' | head -1 | cut -d: -f1)
+  starting_at=$(printf '%s\n' "$body" | grep -n 'be-both'  | head -1 | cut -d: -f1)
+  [ -n "$crashed_at" ] && [ -n "$starting_at" ] && [ "$crashed_at" -lt "$starting_at" ] \
+    || _t_bad "crashed on ${crashed_at:-?}, starting on ${starting_at:-?} — worst goes first"
+  ZEN=0
+}
+
+test_the_zen_block_is_centred_and_does_not_move_when_the_list_does() {
+  # Sized to the visible set, the block would shift sideways every time a
+  # service crashed or recovered, which is the opposite of calm.
+  _render_at 150 40
+  _all_up; _all_deps_up
+  SNAP_STATE[be-beonly]=crashed
+  ZEN=1; build_frame
+  local one; one=$(plain "$FRAME" | grep 'be-beonly' | head -1)
+  local indent_one=${one%%[! ]*}
+  SNAP_STATE[fe-feonly]=starting
+  build_frame
+  local two; two=$(plain "$FRAME" | grep 'be-beonly' | head -1)
+  local indent_two=${two%%[! ]*}
+  assert_eq "${#indent_two}" "${#indent_one}" "the block holds its column when the list grows"
+  [ "${#indent_one}" -gt 20 ] || _t_bad "at 150 columns the block should be centred, not at column ${#indent_one}"
   ZEN=0
 }
 

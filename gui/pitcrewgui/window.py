@@ -31,6 +31,7 @@ from .model import (
     merge_findings,
     plain,
     share_slices,
+    state_rank,
     top_consumers,
     verdict_of,
 )
@@ -52,6 +53,17 @@ from .widgets import (
     ShareChart,
     human_age,
 )
+
+# How wide the content column is allowed to get. Wide enough for the
+# component table's columns to line up; zen narrows it, because a verdict and
+# two findings stretched across 1240px is the same emptiness as the terminal's
+# full-width table with two rows in it.
+CLAMP_WIDE = 1240
+# Not a taste number: a ComponentRow's own natural width is ~755px, and
+# clamped under that the flexible part — the component's NAME — is the thing
+# that gives, so "be-billing" wrapped to "be-billi-/ng" mid-word. Narrow enough
+# to read in one go, never narrower than a row needs.
+CLAMP_ZEN = 800
 
 
 class Window(Adw.ApplicationWindow):
@@ -223,6 +235,22 @@ class Window(Adw.ApplicationWindow):
         # pinned to the right of a dead gutter a third of the window wide.
         self._left.set_visible(not self._zen)
         self._meters_group.set_visible(not self._zen)
+        # Zen is a LAYOUT, not the same page with things hidden: the column
+        # narrows, and while its content is short enough it sits in the middle
+        # of the window rather than clinging to the top of it.
+        width = CLAMP_ZEN if self._zen else CLAMP_WIDE
+        for clamp in (self._overview_clamp, self._comp_clamp, self._comp_filter_clamp):
+            clamp.set_maximum_size(width)
+        # Overview only. The Components list has a filter box pinned above it,
+        # and a list floating in the middle of the window with its own filter
+        # stranded at the top reads as two unrelated things; a list belongs
+        # under the box that filters it.
+        self._overview_body.set_valign(Gtk.Align.CENTER if self._zen else Gtk.Align.FILL)
+        # The column header goes with the headings. It is sized in characters
+        # for the wide column, so in the narrow one it wrapped "component" to
+        # one letter per line — but it would be the wrong thing here even if it
+        # fitted: a header over a four-row list is what zen exists to remove.
+        self._comp_header.set_visible(not self._zen)
         self._layout_key = None            # the visible set changed; rebuild
         if self._last_state is not None:
             self._on_state(self._last_state)
@@ -535,8 +563,11 @@ class Window(Adw.ApplicationWindow):
         body.append(self._recover_group)
         body.append(self._protected_group)
 
-        clamp = Adw.Clamp(maximum_size=1240, tightening_threshold=900, child=body)
-        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp)
+        self._overview_body = body
+        self._overview_clamp = Adw.Clamp(maximum_size=CLAMP_WIDE,
+                                         tightening_threshold=900, child=body)
+        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  child=self._overview_clamp)
 
     def _render_overview(self, state: dict) -> None:
         components = state.get("components", [])
@@ -760,20 +791,24 @@ class Window(Adw.ApplicationWindow):
         # which on a wide screen leaves most of it empty and squeezes the
         # figures on every row into a run-on subtitle. Its own clamp, set wide
         # enough for the columns below to line up.
-        clamp = Adw.Clamp(maximum_size=1240, tightening_threshold=900,
-                          child=self._comp_page)
+        self._comp_clamp = Adw.Clamp(maximum_size=CLAMP_WIDE,
+                                     tightening_threshold=900, child=self._comp_page)
+        clamp = self._comp_clamp
         # Names the columns once, so the rows below stop needing to be read:
         # without it you infer that `:19871` is a port and `8s` is uptime from
         # every row, every time. Built by ComponentRow itself, from the widths
         # the rows actually use.
-        self._comp_page.prepend(ComponentRow.header())
+        self._comp_header = ComponentRow.header()
+        self._comp_page.prepend(self._comp_header)
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                       child=clamp, vexpand=True)
         # The filter stays put while the list scrolls under it — a search box
         # you have to scroll back up to reach is one you stop using.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(Adw.Clamp(maximum_size=1240, tightening_threshold=900,
-                             child=self._comp_filter))
+        self._comp_filter_clamp = Adw.Clamp(maximum_size=CLAMP_WIDE,
+                                            tightening_threshold=900,
+                                            child=self._comp_filter)
+        box.append(self._comp_filter_clamp)
         box.append(scroller)
         return box
 
@@ -1278,6 +1313,16 @@ class Window(Adw.ApplicationWindow):
         for comp in components:
             buckets.setdefault(group_of(comp, mode), []).append(comp)
         ordered = sorted(buckets.items())
+        if self._zen:
+            # ONE flat list, no headings. Grouped, zen showed three headings
+            # over four rows — a heading for a group of one is the same noise
+            # as a column header over a single row, which is exactly what the
+            # terminal's zen drops. The rows still say which app they belong
+            # to: that is what the `be-`/`fe-` prefix is for.
+            # Worst first, stably, so the grouping preference still decides
+            # the order inside each band rather than being overridden by it.
+            flat = sorted(components, key=state_rank)
+            ordered = [(("", ""), flat)] if flat else []
 
         # The heading counts describe the GROUP, never the filtered slice of it.
         # "orders 0/1 up" under a filter that hid the healthy half of orders is
@@ -1317,7 +1362,7 @@ class Window(Adw.ApplicationWindow):
                 self._collapsed[heading] = auto and group_is_idle(comps)
             self._apply_collapse(heading)
             group = self._group_widgets.get(heading)
-            if group is not None:
+            if group is not None and heading:
                 group.set_description(self._group_summary(whole.get(heading, comps),
                                                           hidden=len(whole.get(heading, comps)) - len(comps)))
 
@@ -1340,6 +1385,21 @@ class Window(Adw.ApplicationWindow):
         self._comp_page.append(self._dep_group)
         for (_sort, heading), comps in ordered:
             group = Adw.PreferencesGroup(title=plain(heading))
+            if not heading:
+                # The zen list. No title, so no header suffix either: the
+                # buttons hang off a heading, and there is no heading.
+                for comp in comps:
+                    row = ComponentRow(comp["name"], colors[comp["name"]],
+                                       self._run_action, self._show_logs_for)
+                    row.set_activatable(True)
+                    row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
+                    group.add(row)
+                    self._rows[comp["name"]] = row
+                    self._group_rows.setdefault(heading, []).append(row)
+                self._comp_page.append(group)
+                self._groups.append(group)
+                self._group_widgets[heading] = group
+                continue
             # Starting "sales" means both its roles. Doing that one row at a
             # time is the commonest thing anyone does here, so it belongs on
             # the heading rather than in a menu.
@@ -1479,6 +1539,10 @@ class Window(Adw.ApplicationWindow):
             row, dot, badge = self._dep_rows[dep["name"]]
             dot.set_color(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1])
             badge.set_text(dep["state"])
+        # In zen the deps are the top of the ONE list, not a section above it —
+        # same as the terminal, where a dead dependency is a row beside the
+        # services it took out rather than a rule of its own.
+        self._dep_group.set_title("" if self._zen else "Dependencies")
         self._dep_group.set_visible(bool(self._dep_rows)
                                    and (not self._zen or bool(deps)))
 

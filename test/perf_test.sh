@@ -113,6 +113,23 @@ test_a_frame_forks_nothing() {
   printf '      \033[90m%d frames, %d forks (%s collector)\033[0m\n' "$FRAMES" "$FORKS" "$PITCREW_COLLECTOR"
 }
 
+test_a_zen_frame_forks_nothing_either() {
+  # Zen draws a different layout, not the same one with rows removed, so it is
+  # a second frame path — and a second place for a $( ) to hide. `comp_state`
+  # PRINTS its answer, which makes the natural `state_icon "$(comp_state ...)"`
+  # one fork per row per frame; zen_row inlines the lookup instead, and this is
+  # what keeps it that way.
+  local saved=$ZEN
+  ZEN=1
+  _frame >/dev/null 2>&1
+  _forks_over "$FRAMES"
+  ZEN=$saved
+  local budget=2
+  [ "$PITCREW_COLLECTOR" != proc ] && budget=$(( FRAMES * 3 + 2 ))
+  [ "$FORKS" -le "$budget" ] \
+    || _t_bad "zen: $FORKS forks over $FRAMES frames (budget $budget)"
+}
+
 test_a_frame_is_fast_enough_for_a_sub_second_refresh() {
   _frame >/dev/null 2>&1
   local best=999999 i a d

@@ -851,9 +851,35 @@ boot report, failure log tails and URL table.
 #### Zen mode
 
 `z` answers one question — *is there anything I need to do?* — so it hides
-everything that says no. Healthy components go, dependencies that are up go,
-the CPU/RAM gauges go, the legend goes. What stays is the verdict line, the
-deps that are down, and every component that is not plainly `up`.
+everything that says no, and it changes the **layout**, not just the contents.
+
+The table is gone. Its two header rows, its backend/frontend column pair and
+its graph column cost more rows than the content does once the content is one
+crashed service, and an empty `· n/a` frontend cell beside a dead backend
+spends half the width saying nothing. In its place is a list — one line per
+component, each a sentence rather than a row of columns you need the header to
+decode — in a narrow block centred in the window:
+
+```
+── salespro zen ──────────────────────────────────────────── 18:49 ──
+                    ● be-orders crashed 12 seconds ago    d  for details
+
+
+                    ○  redis          down       dependency
+                    ✗  be-orders      crashed    exit 1 · 18:47  ⚡12
+                    ⠙  be-billing     starting   8s so far
+                  ✓ ●  be-sales       up         1h6m  900M  4%
+
+
+  q  quit   z  leave zen   ␣  mark   s  stop   r  restart   l  logs
+```
+
+Dependencies that are down are rows in that list rather than a rule above it —
+a dead postgres is usually the reason for the six services under it, so it
+sorts to the top where the cause belongs. Everything else sorts worst-first,
+stably, so `o` still decides the order inside each band. Gauges, legend and
+graphs are gone: history is what you look at when you are watching something,
+not when you are deciding whether anything needs you.
 
 It is also the **focus** mode, and deliberately the same key. Anything you
 `space`-marked stays visible in zen even when it is perfectly healthy — that
@@ -861,8 +887,16 @@ is *"I am working on this one"*, which is the other half of the same question.
 So `space` on the app you are working on, then `z`, gives you that app plus
 anything that breaks, and nothing else. An active `/` filter does the same.
 
-When there is genuinely nothing, the screen says **nothing needs you** rather
-than going blank — an empty list and a broken tool look identical otherwise.
+When there is genuinely nothing, the screen says **nothing needs you** — with
+the count of what is fine under it, the one place in the mode where that number
+earns its line, and with the verdict row suppressed because it would be the
+same sentence twice:
+
+```
+                              nothing needs you
+                               6 up · 2 deps up
+```
+
 The title rule reads `── project zen ──` instead of `live`, and `q quit` and
 `z leave zen` stay in the hint row: a mode that hides the way out of itself is
 a trap rather than a mode.
@@ -1100,12 +1134,16 @@ GUI is a renderer plus start/stop/restart buttons.
   **Start everything**, **Stop everything**, and your saved **Profiles**
 - the log view has a **filter box** and an **errors-only** toggle, both of
   which work on a live tail
-- **zen mode** (`Ctrl+Z`, or the menu) — the same filter as the terminal's
-  `z`: healthy components, dependencies that are up, the machine meters and the
-  consumer ranking all go, and the verdict, the findings and anything broken
-  stay. The view switcher does *not* go: navigation is not chrome, and a focus
-  mode you cannot leave is a trap. An accent `zen` pill in the header says you
-  are in it and clicking it gets you out
+- **zen mode** (`Ctrl+Z`, or the menu) — the same idea as the terminal's `z`,
+  and the same layout change. Healthy components, dependencies that are up, the
+  machine meters and the consumer ranking all go; the verdict, the findings and
+  anything broken stay. Components becomes **one flat list** — no group
+  headings, no column header, deps at the top, worst first — because a heading
+  over a group of one is the same noise as a column header over a single row.
+  The content column narrows to something you read in one go and the Overview
+  centres in the window. The view switcher does *not* go: navigation is not
+  chrome, and a focus mode you cannot leave is a trap. An accent `zen` pill in
+  the header says you are in it, and clicking it gets you out
 - **keyboard**: `Ctrl+1…4` for views, `Ctrl+Z` for zen, `/` to filter the log,
   `Ctrl+M` for RAM caps, `Ctrl+Enter` to start everything, `?` for the list
 - window size and last view are remembered

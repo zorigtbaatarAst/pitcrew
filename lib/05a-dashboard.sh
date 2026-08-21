@@ -121,9 +121,13 @@ _zen_keeps() { # $1 app
   local app=$1 c
   [ -n "$FILTER" ] && return 0                 # you already said what you wanted
   for c in "be-$app" "fe-$app"; do
+    # An app with no frontend has no fe- component, and a mark left on one is
+    # not a reason to keep the app: the zen list is per COMPONENT, so it would
+    # keep the app and then find nothing in it to draw.
+    [ -n "${SNAP_STATE[$c]:-}" ] || continue
     [ -n "${MARKED[$c]:-}" ] && return 0
-    case "${SNAP_STATE[$c]:-}" in
-      ''|n/a|up) ;;
+    case "${SNAP_STATE[$c]}" in
+      n/a|up) ;;
       *) return 0 ;;
     esac
   done
@@ -180,6 +184,56 @@ build_view() {
     for c in "be-$app" "fe-$app"; do
       [ -n "${SNAP_STATE[$c]:-}" ] && VIEW+=("$c")
     done
+  done
+  return 0
+}
+
+
+# The zen list: what needs you, in the order it needs you, one entry per
+# component — plus the dependencies that are down.
+#
+# Built here rather than inside the renderer because the verdict line above the
+# list has to know whether the list is empty: with nothing wrong, the verdict
+# and the centred "nothing needs you" underneath it are the same sentence
+# twice, and zen exists to remove exactly that.
+declare -ga ZEN_KEYS=()
+zen_list() {
+  # ── the zen list ──
+  # Dependencies that are down come FIRST, as rows in the same list rather
+  # than a rule above it: a dead postgres is usually the reason for the six
+  # services under it, and reading the cause after the symptoms is
+  # backwards.
+  ZEN_KEYS=()
+  local _d _c
+  for _d in "${PITCREW_DEPS[@]:-}"; do
+    [ -n "$_d" ] && [ "${SNAP_DEP[$_d]:-down}" != up ] && ZEN_KEYS+=("dep-$_d")
+  done
+  # VIEW keeps a whole app when any of its components is unhappy, which is
+  # right for the table's per-app rows and wrong here: this list is one row
+  # per COMPONENT, so a healthy frontend does not come along with its
+  # crashed backend unless you marked it or a filter names it.
+  for _c in "${VIEW[@]}"; do
+    if [ "${SNAP_STATE[$_c]:-}" = up ] && [ -z "${MARKED[$_c]:-}" ] && [ -z "$FILTER" ]; then
+      continue
+    fi
+    ZEN_KEYS+=("$_c")
+  done
+
+  # Worst first, stably — so `o` still decides the order inside each band
+  # rather than being overridden by it.
+  local _n=${#ZEN_KEYS[@]} _i _j _key
+  local -a _rank=()
+  for ((_i = 0; _i < _n; _i++)); do
+    _c=${ZEN_KEYS[_i]}
+    if [ "${_c:0:4}" = dep- ]; then _rank[_i]=0     # the cause, above the symptoms
+    else _state_rank "${SNAP_STATE[$_c]:-}"; _rank[_i]=$(( SR + 1 )); fi
+  done
+  for ((_i = 1; _i < _n; _i++)); do
+    _key=${ZEN_KEYS[_i]}; _j=$((_i - 1)); _c=${_rank[_i]}
+    while [ $_j -ge 0 ] && [ "${_rank[_j]}" -gt "$_c" ]; do
+      ZEN_KEYS[_j+1]=${ZEN_KEYS[_j]}; _rank[_j+1]=${_rank[_j]}; _j=$((_j - 1))
+    done
+    ZEN_KEYS[_j+1]=$_key; _rank[_j+1]=$_c
   done
   return 0
 }

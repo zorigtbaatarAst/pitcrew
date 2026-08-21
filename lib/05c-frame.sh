@@ -111,6 +111,25 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     frame=""; ln=0
     printf -v ts '%(%H:%M:%S)T' -1        # builtin strftime — no `date` fork
 
+    # Sized before anything is drawn: in zen the verdict is indented to the
+    # same left edge as the rows below it, and a content column that starts in
+    # two different places is the thing the mode is supposed to remove.
+    ZEN_INDENT=2
+    local zquiet=0
+    if [ "$ZEN" = 1 ]; then
+      zen_metrics "$W"
+      zen_list
+      # Nothing in the list and nothing in diagnostics: the verdict line and
+      # the centred "nothing needs you" below it would be the same sentence
+      # twice. The centred one wins — it is the answer, in the middle of the
+      # screen where the eye already is.
+      # DIAG_VERDICT, not DIAG_N: an info-level note ("no health path
+      # configured") is a finding and is not something that needs you, and a
+      # healthy project almost always has one. Keyed on the count, zen never
+      # once reached its quiet screen.
+      [ ${#ZEN_KEYS[@]} -eq 0 ] && [ "${DIAG_VERDICT:-ok}" = ok ] && zquiet=1
+    fi
+
     # ── title rule ──
     local _mode=live; [ "$ZEN" = 1 ] && _mode=zen
     printf -v line '%b──%b %b%s%b %b%s%b %b' "$C_FAINT" "$RESET" "$C_ACCENT$BOLD" "${PITCREW_PROJECT_NAME:-pitcrew}" "$RESET" "$C_MUTED" "$_mode" "$RESET" "$C_FAINT"
@@ -128,15 +147,22 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # go back to what I was doing? Everything else on this screen is evidence
     # for it. A count of what is up is not an answer — "9 up · 1 crashed" still
     # leaves the reading to you, and the one that matters is the 1.
-    if [ $micro = 0 ]; then
+    if [ $micro = 0 ] && [ $zquiet = 0 ]; then
       diag_verdict_line
-      local vline=$R vhint="" vwidth=$(( 5 + ${#DIAG_HEADLINE} ))
+      # +2 for the mark column, so the verdict's dot lands in the same column
+      # as the state icons in the list below it.
+      local vpad=2; [ "$ZEN" = 1 ] && vpad=$(( ZEN_INDENT + 2 ))
+      # The indent counts toward the width. Left out, zen's centred verdict
+      # kept its "d for details" hint at widths where it no longer fit, and
+      # the terminal ate the end of the line.
+      local vline=$R vhint="" vwidth=$(( vpad + 3 + ${#DIAG_HEADLINE} ))
       if [ "$DIAG_N" -gt 0 ]; then
         printf -v vhint '   %b%b d %b%b for details%b' \
           "$C_CAP" "$C_TEXT" "$RESET" "$C_FAINT" "$RESET"
         [ $(( vwidth + 16 )) -gt "$W" ] && vhint=""
       fi
-      frame+="  $vline$vhint"$'\e[K\n'; ln=$((ln + 1))
+      printf -v line '%*s%s%s' "$vpad" "" "$vline" "$vhint"
+      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
     fi
     # The title and the verdict are lines of their own now, so what is left of
     # the gap is only the blank spacer under them: one row when there is room,
@@ -219,17 +245,12 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # Six deps used to run 40 columns past the right edge, and with auto-wrap
     # off the terminal ate them without a trace. Wrap onto a continuation line;
     # when there are no rows to spare, say how many did not fit.
-    # In zen only the deps that are DOWN are worth a line — a running postgres
-    # is not news, and a stopped one explains everything else on the screen.
+    # Not in zen: a dependency that is down becomes a ROW in the list below,
+    # beside the services it took out, rather than a rule of its own above
+    # them. A section header for one item is a section header too many.
     local _deps_shown=("${PITCREW_DEPS[@]:-}")
-    if [ "$ZEN" = 1 ]; then
-      _deps_shown=()
-      local _d
-      for _d in "${PITCREW_DEPS[@]:-}"; do
-        [ -n "$_d" ] && [ "${SNAP_DEP[$_d]:-down}" != up ] && _deps_shown+=("$_d")
-      done
-    fi
-    if [ ${#_deps_shown[@]} -gt 0 ] && [ -n "${_deps_shown[0]:-}" ] && [ $micro = 0 ]; then
+    if [ ${#_deps_shown[@]} -gt 0 ] && [ -n "${_deps_shown[0]:-}" ] && [ $micro = 0 ] \
+       && [ "$ZEN" != 1 ]; then
       local dep dline dvis dshown=0 dtotal=${#_deps_shown[@]}
       local DEPS_INDENT_W=10        # visible width of "── deps   "
       printf -v dline '%b──%b %b%s%b   ' "$C_FAINT" "$RESET" "$C_TEXT$BOLD" "deps" "$RESET"
@@ -253,9 +274,15 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     fi
 
     # ── services ──
+    # summary_line always runs: zen does not print the rule, but SUM_UP and
+    # friends below decide the empty state, and zen's own empty state is the
+    # one place the count of what is FINE is worth saying.
     summary_line
-    printf -v line '%b──%b %b%s%b%s' "$C_FAINT" "$RESET" "$C_TEXT$BOLD" "services" "$RESET" "$R"
-    frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    local _summary=$R
+    if [ "$ZEN" != 1 ]; then
+      printf -v line '%b──%b %b%s%b%s' "$C_FAINT" "$RESET" "$C_TEXT$BOLD" "services" "$RESET" "$R"
+      frame+="$line"$'\e[K\n'; ln=$((ln + 1))
+    fi
     # Column headers over an empty table are pure noise — they were the worst
     # thing about the first screen anyone sees.
     local empty=0
@@ -268,7 +295,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       && [ -z "$FILTER" ] && [ "$nmarked" -eq 0 ] && empty=1
 
     cell_header "$bw"; local chdr=$R
-    if [ $empty = 1 ] || [ $micro = 1 ]; then :
+    if [ $empty = 1 ] || [ $micro = 1 ] || [ "$ZEN" = 1 ]; then :
     elif [ $narrow = 1 ]; then
       printf -v line '%b%-*.*s%s%b' "$C_MUTED" "$PREFIX_W" "$PREFIX_W" "   service" "$chdr" "$RESET"
       frame+="$line"$'\e[K\n'; ln=$((ln + 1))
@@ -308,14 +335,6 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       centre "$W" $(( 16 + ${#FILTER} + 2 )) "$nomatch"
       frame+="$R"$'\e[K\n'; ln=$((ln + 1))
       avail=$(( avail - 1 ))
-    elif [ "$ZEN" = 1 ] && [ ${#VIEW_APPS[@]} -eq 0 ]; then
-      # Not an error state — the answer. Everything is fine and there is
-      # nothing here on purpose, which is what you left it open to find out.
-      local zmsg
-      printf -v zmsg '%bnothing needs you%b' "$C_SUBTLE" "$RESET"
-      _vcentre 1
-      centre "$W" 17 "$zmsg"
-      frame+="$R"$'\e[K\n'; ln=$((ln + 1)); avail=$(( avail - 1 ))
     elif [ $empty = 1 ]; then
       local msg1 msg2
       printf -v msg1 '%b%s%b' "$C_TEXT$BOLD" "nothing is running yet" "$RESET"
@@ -327,6 +346,58 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       frame+=$'\e[K\n'; ln=$((ln + 1))
       centre "$W" 46 "$msg2"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
       avail=$(( avail - 3 ))
+    elif [ "$ZEN" = 1 ]; then
+      if [ ${#ZEN_KEYS[@]} -eq 0 ]; then
+        # Not an error state — the answer, and the one place in zen where the
+        # count of what is FINE earns its line: an empty screen that does not
+        # say "six up" leaves you wondering whether anything is running at all.
+        #
+        # "nothing needs you" is only true when diagnostics agree. With a
+        # finding on the verdict line above, saying it here would contradict
+        # the row directly over it, so say the narrower thing that is true.
+        local zmsg zsub zsubvis zwords="nothing needs you"
+        [ "${DIAG_VERDICT:-ok}" != ok ] && zwords="nothing is down"
+        printf -v zmsg '%b%s%b' "$C_OK$BOLD" "$zwords" "$RESET"
+        _zen_all_well_line
+        zsub=$R; zsubvis=$ZEN_VIS
+        _vcentre 3
+        centre "$W" "${#zwords}" "$zmsg"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
+        frame+=$'\e[K\n'; ln=$((ln + 1))
+        centre "$W" "$zsubvis" "$zsub"; frame+="$R"$'\e[K\n'; ln=$((ln + 1))
+        avail=$(( avail - 3 ))
+      else
+        # Trees count too: centring on the list length alone would push an
+        # expanded tree straight off the bottom of the frame.
+        local _rows=${#ZEN_KEYS[@]} _off=0 _sel=-1 _shown=0
+        for ((_i = 0; _i < ${#ZEN_KEYS[@]}; _i++)); do
+          _c=${ZEN_KEYS[_i]}
+          [ "$_c" = "${VIEW[$SEL]:-}" ] && _sel=$_i
+          [ -n "${EXPANDED[$_c]:-}" ] || continue
+          _tree_sorted "$_c"; _rows=$(( _rows + ${#TREE_SORTED[@]} ))
+        done
+        if [ "$_rows" -le "$avail" ]; then
+          # A short list centred in the window reads as a screen. Top-aligned
+          # under a title with a footer pinned twenty rows below, it reads as a
+          # table that lost its rows.
+          _vcentre "$_rows"
+        elif [ "$_sel" -ge 0 ]; then
+          _off=$(( _sel - avail / 2 )); [ $_off -lt 0 ] && _off=0
+          [ $_off -gt $(( _rows - avail )) ] && _off=$(( _rows - avail ))
+        fi
+        SCROLL_ABOVE=$_off
+        for ((_i = _off; _i < ${#ZEN_KEYS[@]}; _i++)); do
+          [ $avail -le 0 ] && break
+          _c=${ZEN_KEYS[_i]}
+          local _zs=0; [ "$_c" = "${VIEW[$SEL]:-}" ] && _zs=1
+          zen_row "$_c" "$_zs"
+          frame+="$R"$'\e[K\n'; ln=$((ln + 1)); avail=$((avail - 1)); _shown=$((_shown + 1))
+          [ "${_c:0:4}" = dep- ] && continue
+          ROW_COMP[$ln]="${_c#??-}"
+          _tree_rows "$_c"
+        done
+        SCROLL_BELOW=$(( ${#ZEN_KEYS[@]} - _off - _shown ))
+        [ "$SCROLL_BELOW" -lt 0 ] && SCROLL_BELOW=0
+      fi
     else
     scroll_to_selection "$avail"
     local drawn=0

@@ -17,8 +17,17 @@ field is removed or changes meaning.
   that are up, the gauges, the legend, the machine meters, the consumer
   ranking. Anything you marked with `space` stays visible even when healthy,
   so it doubles as a focus mode. With nothing wrong it says *nothing needs
-  you* rather than going blank, and the way out of the mode is never among the
-  things it hides.
+  you*, with the count of what is fine under it, rather than going blank — and
+  the way out of the mode is never among the things it hides.
+
+  It is a different LAYOUT, not the same one with rows removed. The terminal
+  draws a centred list — one line per component, dependencies that are down at
+  the top because they are usually the cause, worst first, no table header, no
+  column pair, no graphs. The desktop app narrows its content column, centres
+  the Overview, and turns Components into one flat list with no group headings
+  and no column header. Filtering the old layout instead just left a wide,
+  mostly-blank table: three group headings over four rows, and two header rows
+  above a single service.
 - **Native Windows**, under Git Bash (2.35+) or MSYS2. The shell was never the
   problem — that is real bash 5 — the POSIX userland underneath it was. So the
   process table comes from `wmic` (or PowerShell where wmic has been removed),
