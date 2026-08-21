@@ -180,7 +180,9 @@ test_the_cap_label_follows_the_override() {
 
 test_the_menu_feeds_one_line_per_component_and_per_size() {
   reset_limits
-  local lines; lines=$(limit_choices | wc -l)
+  # grep -c, not `wc -l`: BSD wc pads its count with spaces and GNU wc does
+  # not, so this compared "       4" against "4" and failed only on macOS.
+  local lines; lines=$(limit_choices | grep -c .)
   assert_eq "$lines" "${#PITCREW_COMPS[@]}" "a component picker entry each"
   assert_eq "$(limit_choices | head -1 | cut -f1)" "${PITCREW_COMPS[0]}" "keyed by component, tab-delimited"
 

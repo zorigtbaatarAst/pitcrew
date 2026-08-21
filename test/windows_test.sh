@@ -18,7 +18,11 @@ load_pitcrew
 # wmic's CSV, as it comes off the wire: CRLF line endings, a header row, and a
 # Node column nobody asked for.
 _wmic_fixture() { # $1 = process creation epoch
-  local born; born=$(date -d "@$1" +%Y%m%d%H%M%S 2>/dev/null) || born=20260820110000
+  # printf's %(...)T, not `date -d`: -d is a GNU extension and BSD date spells
+  # it -r, so the fixture built an empty timestamp on macOS and the assertions
+  # failed there while passing on Linux. bash 5 has this builtin, and "no GNU
+  # coreutils" is a rule this project holds everywhere else.
+  local born; printf -v born '%(%Y%m%d%H%M%S)T' "$1"
   printf 'Node,CreationDate,KernelModeTime,Name,ParentProcessId,ProcessId,UserModeTime,WorkingSetSize\r\n'
   printf 'DESKTOP,%s.123456+060,12000000,java.exe,4242,9100,138000000,2147483648\r\n' "$born"
   printf 'DESKTOP,%s.123456+060,500000,bash.exe,1,4242,1500000,10485760\r\n' "$born"

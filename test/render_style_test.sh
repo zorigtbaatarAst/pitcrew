@@ -119,7 +119,11 @@ test_the_frame_draws_the_gauges_as_bars_by_default() {
   PITCREW_GAUGE=graph
   collect_frame; build_frame
   body=$(plain "$FRAME")
-  assert_match "$body" 'CPU [▁-█]' "the graph style still draws history"
+  # Spelled out rather than written as the range [▁-█]: a multibyte RANGE is a
+  # collation question, and C.UTF-8 refuses one outright with "Invalid
+  # collation character" — so the assertion failed on a machine where the
+  # gauge was drawn perfectly.
+  assert_match "$body" 'CPU [▁▂▃▄▅▆▇█]' "the graph style still draws history"
   PITCREW_GAUGE=bar
 }
 

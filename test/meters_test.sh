@@ -56,11 +56,11 @@ test_spark_colours_each_cell_by_its_own_height() {
   # before you read a number. One hue for the whole series cannot show that.
   PITCREW_GRAPH=block
   spark "1 2 3 4 5 6 7 8" 8 1
-  local hues; hues=$(printf '%s' "$R" | grep -oE '\[38;2;[0-9;]+m' | sort -u | wc -l)
+  local hues; hues=$(printf '%s' "$R" | grep -oE '\[38;2;[0-9;]+m' | sort -u | grep -c .)
   [ "$hues" -ge 3 ] || _t_bad "a rising series used only $hues colour(s); expected a gradient"
   # a flat series is one colour, because every cell is the same height
   spark "5 5 5 5 5 5 5 5" 8 1
-  hues=$(printf '%s' "$R" | grep -oE '\[38;2;[0-9;]+m' | sort -u | wc -l)
+  hues=$(printf '%s' "$R" | grep -oE '\[38;2;[0-9;]+m' | sort -u | grep -c .)
   assert_eq "$hues" 1 "flat series is a single hue"
 }
 

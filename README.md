@@ -123,25 +123,20 @@ optional but strongly recommended for the interactive menu. Nothing here needs
 GNU coreutils — no `timeout`, no `readlink -f`, no GNU-only `sed`/`grep`
 flags — so a stock macOS has what it needs after the bash upgrade.
 
-One line, clone to ready:
+**One line, clone to ready:**
 
 ```bash
-git clone https://github.com/zorigtbaatarAst/pitcrew ~/.local/share/pitcrew && ~/.local/share/pitcrew/setup.sh
+git clone https://github.com/zorigtbaatarAst/pitcrew.git ~/.local/share/pitcrew && ~/.local/share/pitcrew/setup.sh
 ```
 
-Add `--yes` on the end to let it install the packages it reports as missing —
-that step needs sudo on Linux, which is why it is opt-in rather than the
-default. `--no-gui` gets you the command line only.
+Add `--yes` to let it install the packages it reports as missing (that step
+needs sudo on Linux, which is why it is opt-in). `--no-gui` gets you the
+command line only. Re-run it any time after a `git pull`.
 
-Not a `curl | bash`, on purpose: you clone it, then you run a script you can
-read first, out of a directory you can `git pull` later. The same three
-commands, if you would rather see them apart:
-
-```bash
-git clone https://github.com/zorigtbaatarAst/pitcrew ~/.local/share/pitcrew
-cd ~/.local/share/pitcrew
-./setup.sh            # or: ./setup.sh --yes   to let it install packages
-```
+HTTPS in the line above because it works for anyone; if you have push access,
+clone `git@github.com:zorigtbaatarAst/pitcrew.git` instead — everything after
+the clone is identical. And it is not a `curl | bash`: you get a script you can
+read first, in a directory you can update later.
 
 `setup.sh` takes a fresh clone to a working tool on any OS, and is safe to
 re-run after a pull:

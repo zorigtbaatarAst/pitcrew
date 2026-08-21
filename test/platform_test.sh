@@ -104,7 +104,7 @@ test_the_ps_collector_walks_the_whole_process_tree() {
   sleep 0.5
 
   snapshot
-  local n; n=$(printf '%s\n' ${SNAP_PIDS[be-both]} | wc -l)
+  local n; n=$(printf '%s\n' ${SNAP_PIDS[be-both]} | grep -c .)
   [ "$n" -ge 2 ] || _t_bad "tree walk found $n pid(s) under a parent with children"
   case " ${SNAP_PIDS[be-both]} " in
     " $root "*) ;;

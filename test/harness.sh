@@ -10,6 +10,40 @@
 # A test is any function named test_*. Assertions record failures against the
 # running test rather than aborting, so one test can report several problems.
 
+# ── the environment these tests are ABOUT ───────────────────────────────────
+#
+# pitcrew draws box-drawing and braille characters and emits 24-bit colour, and
+# a lot of the assertions below are about exactly those bytes. Both are
+# properties of the TERMINAL, not of pitcrew — so inheriting them from whoever
+# happens to be running the suite makes the result depend on their shell.
+#
+# That is not theoretical. CI has no COLORTERM and no LANG, so it ran every
+# palette assertion against 16-colour escapes and counted `█` as three
+# characters instead of one — and the suite failed there while passing on every
+# developer's machine, for months.
+#
+# So: pin both. A test that wants a different depth still sets PITCREW_COLOR
+# itself; this is the default it overrides.
+_pick_utf8_locale() {
+  local candidate
+  for candidate in "${LC_ALL:-}" "${LANG:-}" en_US.UTF-8 C.UTF-8 en_GB.UTF-8; do
+    [ -n "$candidate" ] || continue
+    # Not "does this locale exist" but "can bash do the two things the
+    # assertions need in it" — and both have bitten. COUNT a multibyte
+    # character, which every width assertion depends on; and accept a
+    # multibyte RANGE in a regex, which C.UTF-8 refuses outright with
+    # "Invalid collation character" — so a gauge that drew perfectly still
+    # failed its test.
+    LC_ALL=$candidate bash -c \
+      'hi=$(printf "\u2588"); lo=$(printf "\u2581")
+       [ ${#hi} = 1 ] && [[ $hi =~ [$lo-$hi] ]]' 2>/dev/null && {
+        printf '%s' "$candidate"; return 0; }
+  done
+  return 1
+}
+_PITCREW_TEST_LOCALE=$(_pick_utf8_locale) && export LC_ALL="$_PITCREW_TEST_LOCALE"
+export PITCREW_COLOR="${PITCREW_COLOR:-truecolor}"
+
 _T_RUN=0; _T_FAIL=0; _T_NAME=""; _T_OK=1; _T_MSGS=()
 
 _t_bad() { _T_OK=0; _T_MSGS+=("$1"); }

@@ -181,6 +181,30 @@ field is removed or changes meaning.
   still lives on Resources, where it has room.
 
 ### Fixed
+- **CI had never passed.** Every run in the visible history was red, going back
+  months, and all of it came down to the tests assuming the environment they
+  happened to be written in:
+  - **No `COLORTERM` in CI**, so every palette assertion compared 24-bit escape
+    sequences against 16-colour ones.
+  - **No `LANG` either**, so bash counted `█` as three characters and every
+    width assertion was off by a factor of three.
+  - `C.UTF-8` **refuses a multibyte range in a regex** outright ("Invalid
+    collation character"), so `CPU [▁-█]` failed against a gauge that had drawn
+    perfectly. Written out as an explicit set now.
+  - **`wc -l` pads its output on BSD** and not on GNU, so three tests compared
+    `"       4"` with `"4"` and failed only on macOS.
+  - **The fork budget never counted macOS's memory gauge.** macOS has no
+    /proc/meminfo, so a frame there pays a `vm_stat` on top of the `ps` and the
+    port listing — three forks, against a budget that said two. It had been
+    failing there since it was written.
+  - **Sixteen GUI tests need a display** and did not say so: a widget with an
+    icon name reaches for the icon theme, which is per-display, and GTK aborts
+    the process rather than raising. They skip cleanly now, and the Linux job
+    runs under Xvfb so they are actually exercised somewhere.
+
+  The harness now pins a UTF-8 locale and a colour depth, probing for a locale
+  bash can both *count* and *collate* in. A test whose result depends on the
+  terminal running it is not a test.
 - **The status dot in the component list was showing the wrong thing.** It was
   the colour of that component's line on the Resources graph — meaningless on
   a tab with no graph — and it never changed when a service crashed. A green

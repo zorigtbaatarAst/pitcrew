@@ -322,6 +322,14 @@ make check             # lint + test — what CI runs
 ./bin/pitcrew check <file>   # load a config and report what is wrong with it
 ```
 
+The harness pins `LC_ALL` to a UTF-8 locale and `PITCREW_COLOR=truecolor`,
+because a lot of assertions are about box-drawing characters and 24-bit escape
+sequences — properties of the terminal, not of pitcrew. Do not remove that: CI
+has neither, and without it the suite fails there while passing everywhere
+else. Two portability rules the tests themselves must follow: **no GNU-only
+tools** (`date -d`, and `wc -l` pads on BSD — use `grep -c`), and **no
+multibyte ranges in a regex** (`C.UTF-8` rejects them; spell the set out).
+
 `test/perf_test.sh` asserts **zero forks** across 25 frames and is the guard on
 constraint 4 — run it after touching anything in the render or snapshot path.
 

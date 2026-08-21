@@ -89,8 +89,20 @@ test_a_frame_forks_nothing() {
   # would sail past a flat "≤ 2 total" budget on this path.
   local budget=2 what="budget 2 total"
   if [ "$PITCREW_COLLECTOR" != proc ]; then
-    budget=$(( FRAMES * 2 + 2 ))
-    what="budget 2 per frame — one ps, one port listing, independent of ${#PITCREW_COMPS[@]} components"
+    # One `ps` and one port listing — and on a platform that cannot read its
+    # memory gauge out of a file, one more for that. macOS has no
+    # /proc/meminfo, so every frame there also pays a `vm_stat`: three, not
+    # two. The budget said two and macOS has been failing this since it was
+    # written, which is worse than useless — it is a red check nobody reads.
+    #
+    # PITCREW_SYS_CPU_SELF is exactly "this platform reads its gauges from a
+    # file", so it is the right thing to key on rather than `uname`.
+    local per=2 extra=""
+    if [ "${PITCREW_SYS_CPU_SELF:-0}" != 1 ]; then
+      per=3; extra=", one vm_stat"
+    fi
+    budget=$(( FRAMES * per + 2 ))
+    what="budget $per per frame — one ps, one port listing$extra, independent of ${#PITCREW_COMPS[@]} components"
   fi
   [ "$FORKS" -le "$budget" ] \
     || _t_bad "$FORKS forks over $FRAMES frames ($what) — something in the frame path is forking"

@@ -19,7 +19,8 @@ config_finalize "$PITCREW_CFG"
 test_every_menu_key_is_unique() {
   local dupes; dupes=$(menu_keys | sort | uniq -d | tr '\n' ' ')
   assert_empty "$dupes" "duplicate menu keys"
-  local n u; n=$(menu_keys | wc -l); u=$(menu_keys | sort -u | wc -l)
+  # grep -c rather than `wc -l` — BSD wc pads its output, GNU does not.
+  local n u; n=$(menu_keys | grep -c .); u=$(menu_keys | sort -u | grep -c .)
   assert_eq "$n" "$u" "item count vs unique key count"
 }
 

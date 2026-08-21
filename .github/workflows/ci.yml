@@ -96,6 +96,13 @@ jobs:
       # where it is actually enforced.
       - name: install ruff
         run: pipx install ruff || pip install --user ruff
+      # A GTK widget with an icon name reaches for the icon theme, the icon
+      # theme is per-display, and without one GTK aborts the process. Sixteen
+      # tests skip themselves in that case — which is honest, and also means
+      # they were never actually running here. Xvfb makes them run.
+      - name: a display for the widget tests
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
       # --yes exits non-zero if anything is still missing, but say it loudly:
       # a silent "installed" that did not is the failure worth catching here.
       - name: and they really are importable now
@@ -103,7 +110,9 @@ jobs:
       - name: lint (shellcheck + ruff)
         run: make lint
       - name: gui tests
-        run: make test T=gui
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a make test T=gui
+          else make test T=gui; fi
       - name: the launcher finds an interpreter and runs
         run: ./gui/pitcrew-gui --help
       # A fresh clone, start to finish, on both OSes.

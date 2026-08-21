@@ -35,6 +35,18 @@ gui_available() {
   [ -d "$GUI_DIR/pitcrewgui" ] && [ -n "$PY_WITH_GI" ]
 }
 
+# Anything that BUILDS a widget needs a display, not just the bindings: a
+# Gtk.Button with an icon name reaches for the icon theme, the icon theme is
+# per-display, and without one GTK aborts the process rather than raising —
+# which arrives here as an empty string and an assertion about nothing.
+#
+# So these skip rather than fail where there is no display, and CI runs the
+# Linux job under Xvfb so they are actually exercised somewhere. Pure-logic
+# tests (the parsers, the model) need none of this and must not use it.
+gui_display() {
+  gui_available && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]
+}
+
 # The GUI is a package now, so the whole public surface is assembled into one
 # namespace here rather than rewriting every assertion below to know which
 # module a name ended up in.
@@ -211,8 +223,7 @@ print(','.join(pgui.ansi.spans('the next line')[0][1]) or '-')
 }
 
 test_the_view_colours_by_the_log_and_falls_back_to_the_error_pattern() {
-  gui_available || return 0
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  gui_display || return 0
   local dir; dir=$(mktemp -d)
   local out; out=$(_logview_drive "$dir" "
 (d / 'be-api.log').write_text(
@@ -270,7 +281,7 @@ $2
 }
 
 test_a_blank_line_does_not_end_the_log_tail() {
-  gui_available || return 0
+  gui_display || return 0
   # read_line_finish reports EOF as (b'', 0) — and a BLANK LINE as (b'', 0) too.
   # Treating the pair as EOF stopped the tail at the first empty line, which a
   # starting Spring Boot or npm process emits within its first few. The view
@@ -293,7 +304,7 @@ print(','.join(v._raw))
 }
 
 test_a_log_that_appears_later_is_picked_up() {
-  gui_available || return 0
+  gui_display || return 0
   # Open Logs, then start the stack: the component was selected while it had no
   # log file, and nothing ever re-checked. The view showed "no log yet" for the
   # rest of the session, which looks exactly like a frozen tail.
@@ -314,7 +325,7 @@ print(len(before), ','.join(v._raw))
 }
 
 test_the_tail_follows_a_restart_that_rotates_the_log() {
-  gui_available || return 0
+  gui_display || return 0
   # Restarting a component renames its log and starts a new one (rotate_log in
   # lib/07a-start.sh). Plain `tail -f` goes on following the RENAMED file, so
   # after a restart the view showed the previous run and never moved again.
@@ -336,7 +347,7 @@ print('run2' in v._raw)
 }
 
 test_the_picker_is_not_rebuilt_on_every_frame() {
-  gui_available || return 0
+  gui_display || return 0
   # update_sources compared whole component dicts, which carry live rss/cpu — so
   # the comparison was false every frame and the rebuild ran every frame.
   local dir; dir=$(mktemp -d)
@@ -516,11 +527,10 @@ print(int(rows[0][2]))
 }
 
 test_the_whole_window_renders_a_frame_without_a_project() {
-  gui_available || return 0
+  gui_display || return 0
   # A smoke test over the real widget tree: every view is built, then one
   # synthetic frame is pushed through the same path the stream uses. A typo in
   # a rarely-taken render branch is otherwise only found by opening the app.
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
   local out; out=$(_settings_drive "
 from gi.repository import Adw
 Adw.init()
@@ -572,10 +582,9 @@ print(''.join(f['title'] for f in pgui.merge_findings(live, [])))
 }
 
 test_the_overview_shows_what_it_will_never_propose() {
-  gui_available || return 0
+  gui_display || return 0
   # A candidate list that silently omits your biggest idle service reads as a
   # bug. The lock has to be visible.
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
   local out; out=$(_settings_drive "
 from gi.repository import Adw
 Adw.init()
@@ -603,8 +612,7 @@ print(w._deep_button.get_visible())
 }
 
 test_a_deep_frame_does_not_offer_to_run_deeper() {
-  gui_available || return 0
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  gui_display || return 0
   local out; out=$(_settings_drive "
 from gi.repository import Adw
 Adw.init()
@@ -641,9 +649,8 @@ for fix in ['rm -rf /', 'pitcrew limit be-api 2G', 'pitcrew stop ../../etc',
 }
 
 test_the_process_tree_comes_from_the_stream() {
-  gui_available || return 0
+  gui_display || return 0
   # The GUI must never run its own ps — the tree arrives in the state object.
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
   local out; out=$(_settings_drive "
 from gi.repository import Adw
 Adw.init()
@@ -661,10 +668,9 @@ print(len(t._rows))
 }
 
 test_the_detail_dialog_keeps_up_with_later_frames() {
-  gui_available || return 0
+  gui_display || return 0
   # Watching a heap climb is what someone opens this for. A dialog frozen at
   # the instant you clicked is a screenshot, not a monitor.
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
   local out; out=$(_settings_drive "
 from gi.repository import Adw
 Adw.init()
@@ -683,8 +689,7 @@ print(len(d._procs._rows), d._status.get_subtitle())
 }
 
 test_dependencies_can_be_acted_on_not_just_looked_at() {
-  gui_available || return 0
-  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  gui_display || return 0
   local out; out=$(_settings_drive "
 from gi.repository import Adw
 Adw.init()
@@ -987,7 +992,7 @@ test_dry_run_succeeds_even_when_things_are_missing() {
 # ── the log viewer ──────────────────────────────────────────────────────────
 
 test_the_log_view_tails_and_marks_the_error_lines() {
-  gui_available || return 0
+  gui_display || return 0
   local dir; dir=$(mktemp -d)
   printf 'starting up\nready on :8080\n' > "$dir/be-demo.log"
   local out; out=$(_drive "
@@ -1032,7 +1037,7 @@ loop.run()
 }
 
 test_the_log_view_says_so_when_there_is_no_log_yet() {
-  gui_available || return 0
+  gui_display || return 0
   # A component that has never started has no file. An empty pane would read as
   # a broken viewer rather than as "nothing has run".
   local dir; dir=$(mktemp -d)
@@ -1047,7 +1052,7 @@ print(view._status.get_text())
 }
 
 test_the_log_picker_separates_backends_from_frontends() {
-  gui_available || return 0
+  gui_display || return 0
   # Backends and frontends fail differently and you are usually after one kind.
   # Backends lead: they start first, and are what a frontend is failing to reach.
   local out; out=$(_drive "
@@ -1102,7 +1107,7 @@ print(fired)
 }
 
 test_the_log_filter_hides_lines_as_they_arrive() {
-  gui_available || return 0
+  gui_display || return 0
   # Filtering a LIVE tail cannot re-read the file — it may already have been
   # truncated by a restart — so every line is kept and the view is rebuilt.
   local out; out=$(_drive "
@@ -1137,7 +1142,7 @@ print(profile_names(None), profile_targets('$dir', 'nope'))
 }
 
 test_every_icon_the_gui_asks_for_actually_exists() {
-  gui_available || return 0
+  gui_display || return 0
   # A missing icon name is not an error — GTK draws NOTHING. The Resources tab
   # and the "open URL" button both shipped invisible because the names looked
   # plausible (`utilities-system-monitor-symbolic`, `external-link-symbolic`)
