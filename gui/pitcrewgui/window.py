@@ -34,6 +34,7 @@ from .model import (
     verdict_of,
 )
 from .notify import CrashWatcher
+from .platform import cli_argv
 from .profiles import profile_names
 from .registry import current_project, declared_root, known_projects, project_file
 from .runner import Runner, Stream
@@ -1377,7 +1378,7 @@ class Window(Adw.ApplicationWindow):
     def _run_action(self, verb: str, *components: str) -> None:
         """One component, a whole app, a profile, or everything — same path."""
         component = components[0] if len(components) == 1 else f"{len(components)} components"
-        argv = [self._pitcrew, "-p", self._project, verb, *components]
+        argv = cli_argv(self._pitcrew, ["-p", self._project, verb, *components])
         try:
             proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDERR_PIPE)
         except GLib.Error as error:

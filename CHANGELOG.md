@@ -35,6 +35,19 @@ field is removed or changes meaning.
   native tool's output is interpreted, against captured output, which is where
   this class of port actually breaks: a swapped column, a unit off by 1024, an
   unstripped `\r`. The integration is what remains unverified.
+- **The desktop app launches from the Windows Start Menu**, with an icon and
+  no console window behind it (`pythonw.exe`, not `python.exe` — that is the
+  whole difference between an app and someone's script). `gui/install.sh` grew
+  a Windows branch that builds the `.lnk` through PowerShell, and a `.ico` is
+  shipped so the shortcut and taskbar look right without ImageMagick on the
+  target. Needs MSYS2's `mingw-w64-*-{python-gobject,gtk4,libadwaita}`.
+- **The GUI could not have run the CLI on Windows at all.** `pitcrew` is a bash
+  script with a shebang; Linux and macOS honour that so the path alone is
+  executable, but `CreateProcess` on a file starting with `#!` fails with "not
+  a valid application" — which from a GUI with no console attached is a button
+  that does nothing and says nothing. Every invocation now goes through
+  `platform.cli_argv`, which names the interpreter only where it has to, and a
+  test fails if anything builds an argv by hand again.
 - `install.sh` writes a shim rather than a symlink on Windows: a symlink there
   needs Developer Mode, and a *copy* of the launcher cannot find its own `lib/`.
 - **The desktop app can now reach everything the CLI can**, apart from what a

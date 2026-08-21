@@ -699,6 +699,45 @@ print(w._dep_rows['pg'][2].get_text(), len(w._dep_rows))
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "up 1" "and updated in place, not duplicated"
 }
 
+# ── running the CLI from a GUI ──────────────────────────────────────────────
+
+test_the_cli_argv_names_an_interpreter_only_where_it_has_to() {
+  gui_available || return 0
+  # `pitcrew` is a bash script with a shebang. Linux and macOS honour that, so
+  # the path alone is executable. Windows has no shebang — CreateProcess on a
+  # file starting with `#!` fails with "not a valid application", which from a
+  # GUI with no console is a button that does nothing at all.
+  local out; out=$(_settings_drive "
+import pitcrewgui.platform as pf
+print(' '.join(pf.cli_argv('/home/me/.local/bin/pitcrew', ['status', '--json'])))
+pf.IS_WINDOWS = True
+pf.find_bash = lambda: 'C:/msys64/usr/bin/bash.exe'
+print(' '.join(pf.cli_argv('C:/x/pitcrew', ['status'])))
+pf.find_bash = lambda: None
+print(' '.join(pf.cli_argv('C:/x/pitcrew', ['status'])))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" \
+    "/home/me/.local/bin/pitcrew status --json" "off Windows the path is the command"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" \
+    "C:/msys64/usr/bin/bash.exe C:/x/pitcrew status" "on Windows bash runs it"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" \
+    "C:/x/pitcrew status" "and with no bash it still spawns, so the error names the file"
+}
+
+test_nothing_in_the_gui_builds_a_pitcrew_argv_by_hand() {
+  gui_available || return 0
+  # One function builds every invocation. The alternative is being right in the
+  # three places someone remembered and wrong in the fourth — and the fourth
+  # only fails on an OS nobody testing this is running.
+  # Look for the CLI path at the head of a list literal, which is what building
+  # an argv by hand looks like — not for the spawn call, which takes a variable
+  # and would have let exactly that through.
+  local stray
+  stray=$(grep -n '\[ *self\._pitcrew\|\[ *pitcrew,\|\[ *self\.pitcrew' \
+            "$GUI_DIR"/pitcrewgui/*.py | grep -v 'platform\.py' || true)
+  assert_empty "$stray" "every CLI argv comes from cli_argv"
+}
+
 # ── project registry and config editing ─────────────────────────────────────
 
 test_the_config_editor_follows_the_source_indirection() {

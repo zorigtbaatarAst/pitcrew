@@ -9,7 +9,7 @@ import tempfile
 
 from gi.repository import Gio, GLib
 
-from .platform import bash5, missing_bash_message
+from .platform import bash5, cli_argv, missing_bash_message
 
 
 class LineReader:
@@ -105,10 +105,13 @@ class Stream:
     """
 
     def __init__(self, pitcrew: str, project: str | None, interval: int, on_state, on_error):
-        self._argv = [pitcrew]
+        stream_args = []
         if project:
-            self._argv += ["-p", project]
-        self._argv += ["json", "--watch", "--interval", str(interval)]
+            stream_args += ["-p", project]
+        stream_args += ["json", "--watch", "--interval", str(interval)]
+        # Built through the platform layer: on Windows the CLI is a bash script
+        # and the path alone is not executable.
+        self._argv = cli_argv(pitcrew, stream_args)
         self._on_state = on_state
         self._on_error = on_error
         self._proc: Gio.Subprocess | None = None
@@ -204,7 +207,7 @@ class Runner:
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
         launcher.setenv("NO_COLOR", "1", True)
         try:
-            proc = launcher.spawnv([self._pitcrew, *args])
+            proc = launcher.spawnv(cli_argv(self._pitcrew, args))
         except GLib.Error as error:
             on_done(None, f"could not run pitcrew: {error.message}")
             return
@@ -230,7 +233,7 @@ class Runner:
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
         launcher.setenv("NO_COLOR", "1", True)
         try:
-            proc = launcher.spawnv([self._pitcrew, *args])
+            proc = launcher.spawnv(cli_argv(self._pitcrew, args))
         except GLib.Error as error:
             on_done(False, f"could not run pitcrew: {error.message}")
             return
@@ -261,7 +264,8 @@ def yaml_config_error(pitcrew: str, text: str) -> str:
     except OSError as error:
         return f"could not write a temporary file to check: {error}"
     try:
-        result = subprocess.run([pitcrew, "check", probe], env={**os.environ, "NO_COLOR": "1"},
+        result = subprocess.run(cli_argv(pitcrew, ["check", probe]),
+                                env={**os.environ, "NO_COLOR": "1"},
                                 capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.SubprocessError) as error:
         return f"could not run pitcrew check: {error}"

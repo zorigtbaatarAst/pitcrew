@@ -45,7 +45,54 @@ def _cli_fallbacks() -> tuple[Path, ...]:
     if IS_MACOS:
         # Homebrew's bin is not on a GUI-launched process's PATH either.
         paths += [Path("/opt/homebrew/bin/pitcrew"), Path("/usr/local/bin/pitcrew")]
+    if IS_WINDOWS:
+        # A Start Menu shortcut starts with the Windows PATH, which knows
+        # nothing about MSYS2's /usr/local/bin or the shim install.sh writes.
+        paths += [home / "AppData" / "Local" / "pitcrew" / "pitcrew",
+                  Path(r"C:\msys64\usr\local\bin\pitcrew")]
     return tuple(paths)
+
+
+# ── running the CLI ─────────────────────────────────────────────────────────
+# `pitcrew` is a bash script with a shebang. On Linux and macOS the kernel
+# honours that and the path alone is executable. Windows has no shebang: handing
+# CreateProcess a file starting with `#!` fails with "not a valid application",
+# which from a GUI with no console attached is an app that simply does nothing
+# when you click a button. So there the interpreter has to be named explicitly.
+#
+# One function builds every argv, and nothing else in the GUI constructs one —
+# otherwise this would be right in the three places someone remembered and
+# wrong in the fourth.
+
+_BASH_FALLBACKS = (
+    r"C:\Program Files\Git\bin\bash.exe",
+    r"C:\Program Files (x86)\Git\bin\bash.exe",
+    r"C:\msys64\usr\bin\bash.exe",
+)
+
+
+def find_bash() -> str | None:
+    """The bash that will run the CLI, or None where one is not needed."""
+    if not IS_WINDOWS:
+        return None
+    found = shutil.which("bash")
+    if found:
+        return found
+    for candidate in _BASH_FALLBACKS:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def cli_argv(pitcrew: str, args: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """The argv for one pitcrew invocation, correct for this OS."""
+    if not IS_WINDOWS:
+        return [pitcrew, *args]
+    bash = find_bash()
+    # No bash found: return the plain argv anyway. The spawn will fail with a
+    # message naming the file, which is a better diagnostic than this function
+    # inventing one — and `find_pitcrew` will usually have failed first.
+    return [bash, pitcrew, *args] if bash else [pitcrew, *args]
 
 
 def find_pitcrew() -> str | None:
@@ -53,7 +100,10 @@ def find_pitcrew() -> str | None:
     if found:
         return found
     for candidate in _cli_fallbacks():
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        # The executable bit is meaningless on Windows and os.access reports it
+        # for anything readable, so testing it there proves nothing — but a
+        # missing file still has to be skipped.
+        if candidate.is_file() and (IS_WINDOWS or os.access(candidate, os.X_OK)):
             return str(candidate)
     return None
 
@@ -116,7 +166,16 @@ def python_candidates() -> tuple[str, ...]:
     if IS_MACOS:
         return ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "python3")
     if IS_WINDOWS:
-        return ("python3", "python")
+        # MSYS2 keeps the GTK stack in a per-environment prefix, and the plain
+        # `python` on the Windows PATH is a store stub or a python.org build
+        # with no bindings at all. pythonw first: it is the same interpreter
+        # without a console window attached, which is the difference between an
+        # app and a script.
+        return ("C:\\msys64\\ucrt64\\bin\\pythonw.exe",
+                "C:\\msys64\\ucrt64\\bin\\python3.exe",
+                "C:\\msys64\\mingw64\\bin\\pythonw.exe",
+                "C:\\msys64\\mingw64\\bin\\python3.exe",
+                "pythonw", "python3", "python")
     return ("/usr/bin/python3", "python3")
 
 

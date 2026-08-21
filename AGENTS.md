@@ -113,6 +113,11 @@ attribute, and most are pinned by a test.
    use it. Three separate "the log view is frozen" bugs came out of that one
    ambiguity.
 
+   **Never build a pitcrew argv by hand** — use `platform.cli_argv`. On Windows
+   the CLI is a bash script and the path alone is not executable, so a literal
+   `[self._pitcrew, ...]` is a button that silently does nothing there. A test
+   greps for it.
+
    For one-shot answers the GUI may shell out through `Runner.run_json`
    (`doctor --json`, `diagnose --json`) — that is rendering the CLI's answer,
    not computing its own. A finding's `fix` string is checked by

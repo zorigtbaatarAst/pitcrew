@@ -8,6 +8,8 @@
 #
 #   Linux    XDG: a .desktop file and an icon in the hicolor theme
 #   macOS    a .app bundle in ~/Applications (Launchpad and Spotlight read it)
+#   Windows  a Start Menu shortcut, launched with pythonw so there is no
+#            console window behind the app
 #
 # The GTK bindings are NOT checked against a hardcoded interpreter here: the
 # launcher finds one at runtime (pitcrewgui/bootstrap.py), because the right
@@ -20,9 +22,10 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${1:-$HOME/.local/bin}"
 
 case "$(uname -s)" in
-  Darwin) PLATFORM=macos ;;
-  Linux)  PLATFORM=linux ;;
-  *)      PLATFORM=unknown ;;
+  Darwin)               PLATFORM=macos ;;
+  Linux)                PLATFORM=linux ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;
+  *)                    PLATFORM=unknown ;;
 esac
 
 have_bindings() { # any interpreter that can import both counts
@@ -118,9 +121,66 @@ PLIST
   echo "bundle  $bundle"
 }
 
+# ── Windows ─────────────────────────────────────────────────────────────────
+# A .lnk, because that is what the Start Menu reads. Building one needs
+# PowerShell's WScript.Shell — there is no file format to write by hand.
+#
+# The shortcut targets pythonw.exe, not python.exe: the two are the same
+# interpreter and the difference is a console window sitting behind the app for
+# its whole life. That window is the single thing that makes a GTK app on
+# Windows feel like someone's script rather than a program.
+install_windows() {
+  local start_menu ico target
+  start_menu="$APPDATA/Microsoft/Windows/Start Menu/Programs"
+  [ -d "$start_menu" ] || { echo "note    no Start Menu directory at $start_menu — skipped"; return 0; }
+
+  target=$(have_bindings) || target=""
+  if [ -z "$target" ]; then
+    echo "note    no python with the GTK bindings yet — the shortcut would not run, so it is not written"
+    return 0
+  fi
+  # pythonw is the same interpreter without a console. Prefer it where it sits
+  # next to the one we found.
+  case "$target" in
+    *python3.exe) [ -f "${target%python3.exe}pythonw.exe" ] && target="${target%python3.exe}pythonw.exe" ;;
+    *python.exe)  [ -f "${target%python.exe}pythonw.exe" ]  && target="${target%python.exe}pythonw.exe" ;;
+  esac
+
+  ico="$SELF_DIR/$APP_ID.ico"
+  [ -f "$ico" ] || ico=""
+
+  # The shortcut is built by a SCRIPT FILE rather than `powershell -Command`.
+  # A .lnk needs five properties set on a COM object, and inlining that meant
+  # bash quoting wrapped around PowerShell quoting wrapped around paths with
+  # spaces in them — unreadable, and wrong in a way that writes a shortcut
+  # pointing nowhere instead of failing.
+  #
+  # cygpath throughout: PowerShell wants Windows paths and everything here is
+  # a POSIX one.
+  local ps1; ps1=$(mktemp).ps1
+  {
+    printf '$s = (New-Object -ComObject WScript.Shell).CreateShortcut("%s")\n' "$(cygpath -w "$start_menu/$APP_NAME.lnk")"
+    printf '$s.TargetPath = "%s"\n'        "$(cygpath -w "$target")"
+    printf '$s.Arguments = %s\n'           "'\"$(cygpath -w "$SELF_DIR/pitcrew-gui")\"'"
+    printf '$s.WorkingDirectory = "%s"\n'  "$(cygpath -w "$SELF_DIR")"
+    printf '$s.Description = "pitcrew - local dev-stack launcher"\n'
+    [ -n "$ico" ] && printf '$s.IconLocation = "%s"\n' "$(cygpath -w "$ico")"
+    printf '$s.Save()\n'
+  } > "$ps1"
+
+  if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+       -File "$(cygpath -w "$ps1")" >/dev/null 2>&1; then
+    echo "shortcut $start_menu/$APP_NAME.lnk"
+  else
+    echo "note    could not write the Start Menu shortcut (PowerShell refused) — run pitcrew-gui directly"
+  fi
+  rm -f "$ps1"
+}
+
 case "$PLATFORM" in
-  linux) install_linux ;;
-  macos) install_macos ;;
+  linux)   install_linux ;;
+  macos)   install_macos ;;
+  windows) install_windows ;;
   *)     echo "note    $(uname -s) has no app-listing step yet — run pitcrew-gui directly" ;;
 esac
 

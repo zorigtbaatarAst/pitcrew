@@ -123,8 +123,22 @@ optional but strongly recommended for the interactive menu. Nothing here needs
 GNU coreutils — no `timeout`, no `readlink -f`, no GNU-only `sed`/`grep`
 flags — so a stock macOS has what it needs after the bash upgrade.
 
+One line, clone to ready:
+
 ```bash
-git clone https://github.com/<you>/pitcrew ~/.local/share/pitcrew
+git clone https://github.com/zorigtbaatarAst/pitcrew ~/.local/share/pitcrew && ~/.local/share/pitcrew/setup.sh
+```
+
+Add `--yes` on the end to let it install the packages it reports as missing —
+that step needs sudo on Linux, which is why it is opt-in rather than the
+default. `--no-gui` gets you the command line only.
+
+Not a `curl | bash`, on purpose: you clone it, then you run a script you can
+read first, out of a directory you can `git pull` later. The same three
+commands, if you would rather see them apart:
+
+```bash
+git clone https://github.com/zorigtbaatarAst/pitcrew ~/.local/share/pitcrew
 cd ~/.local/share/pitcrew
 ./setup.sh            # or: ./setup.sh --yes   to let it install packages
 ```
@@ -940,7 +954,40 @@ selectable text. A plugin can put anything in that field, so anything else —
 |---|---|
 | **Linux** | a `.desktop` entry and a hicolor icon, per XDG |
 | **macOS** | a `.app` bundle in `~/Applications`, for Launchpad and Spotlight |
-| **Windows** | not yet — the launcher and package are ready, the install step is not. The CLI runs natively; the desktop app needs PyGObject, which MSYS2 has |
+| **Windows** | a Start Menu shortcut, launched with `pythonw` so no console sits behind the app. Needs MSYS2's GTK stack (below) |
+
+### Windows, as an app rather than a script
+
+```
+pacman -S mingw-w64-ucrt64-x86_64-python-gobject \
+          mingw-w64-ucrt64-x86_64-gtk4 \
+          mingw-w64-ucrt64-x86_64-libadwaita
+./gui/install.sh          # writes a Start Menu shortcut
+```
+
+Then it launches from the Start Menu with a taskbar icon and no console window
+— `pythonw.exe`, not `python.exe`, is the difference between an app and
+someone's script.
+
+Two things are worth knowing before you decide this is what you want.
+
+**It will not look like a Windows program.** libadwaita is GNOME's design
+language and does not try to blend in; you get GNOME-shaped controls in a
+Windows window manager. That is a taste question, not a bug.
+
+**The engine is still bash.** pitcrew's 7,000 lines of shell are the product;
+the GUI is a renderer for `pitcrew json --watch`. So there is no version of
+this that does not need Git Bash or MSYS2 underneath — a "pure native" app
+would mean rewriting the engine, not repackaging the front end. What the
+platform layer does is name the interpreter explicitly, because Windows has no
+shebang: handing `CreateProcess` a file starting with `#!` fails with "not a
+valid application", which from a GUI with no console attached is a button that
+does nothing at all.
+
+If you want to hand this to someone who has no MSYS2 at all, that is a
+different job — bundling GTK4, Python and a portable Git into one installer
+(~250 MB, and re-bundled on every release). Worth doing only if Windows becomes
+a first-class target rather than a supported one.
 
 macOS support is **written but untested** — there is no Mac here to run it on.
 The parts that were Linux-only have been fixed (see the seam below); what
