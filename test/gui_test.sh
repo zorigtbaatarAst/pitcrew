@@ -46,6 +46,10 @@ for _name in ('platform', 'model', 'registry', 'settings', 'runner', 'widgets',
               'dialogs', 'window', 'app'):
     _mod = importlib.import_module('pitcrewgui.' + _name)
     pgui.__dict__.update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
+# As a module, not flattened: ansi.plain and model.plain are different functions
+# with the same name, and one of them would silently win.
+import pitcrewgui.ansi as _ansi_mod
+pgui.ansi = _ansi_mod
 "
 
 _drive() { # $1 = python body, with Stream / Counting / GLib in scope
@@ -125,6 +129,117 @@ print(len(frames), 'quiet' if s.reads - after < 20 else f'SPUN({s.reads - after}
       len([e for e in errors if 'stream read failed' in e]))
 ")
   assert_eq "$out" "0 quiet 0" "silent after stop, and cancelling is not an error"
+}
+
+# ── ANSI in a log file ──────────────────────────────────────────────────────
+#
+# A dev server's log is not plain text: Spring Boot, Vite, gradle and npm all
+# write SGR colour into it. Rendering those bytes literally is what turned a
+# Spring log into a wall of `▯▯[2m…▯▯[0;39m` with the message off-screen.
+
+test_sgr_colour_becomes_spans_and_the_escapes_are_gone() {
+  gui_available || return 0
+  local out; out=$(_settings_drive "
+line = ('\x1b[2m2026-08-20 11:04:19.670\x1b[0;39m \x1b[32mINFO\x1b[0;39m '
+        '\x1b[34m[backoffice]\x1b[0;39m started')
+for text, tags in pgui.ansi.spans(line):
+    print(','.join(tags) or '-', '|', text)
+print('PLAIN', pgui.ansi.plain(line))
+print('ESC', '\x1b' in pgui.ansi.plain(line))
+")
+  assert_match "$out" 'dim \| 2026-08-20'   "the timestamp keeps its dim attribute"
+  assert_match "$out" 'fg:green \| INFO'    "the level keeps its colour"
+  assert_match "$out" 'fg:blue \| \[backoffice\]' "and so does the logger"
+  assert_match "$out" 'PLAIN 2026-08-20 11:04:19.670 INFO \[backoffice\] started' "text is text"
+  assert_match "$out" 'ESC False' "nothing escaped survives into the buffer"
+}
+
+test_every_other_escape_sequence_is_dropped_not_printed() {
+  gui_available || return 0
+  # An erase-line or a window-title has no meaning in a scrollback buffer, but
+  # it is not text either — printing it is how `▯▯[K` ends up on screen.
+  local out; out=$(_settings_drive "
+for raw in ['text\x1b[K more', 'a\x1b[2Jb', '\x1b]0;window title\x07visible',
+            'x\x1b(By', 'keep\x07me']:
+    print(repr(pgui.ansi.plain(raw)))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "'text more'" "erase-line"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "'ab'"        "erase-display"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "'visible'"   "an OSC window title"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "'xy'"        "a charset selection"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "'keepme'"    "and a stray control byte"
+}
+
+test_a_progress_line_shows_its_final_state() {
+  gui_available || return 0
+  # npm, pip and gradle draw progress by returning to column zero and writing
+  # again. Kept verbatim, one download is two hundred copies of itself.
+  local out; out=$(_settings_drive "
+print(repr(pgui.ansi.plain('downloading 10%\rdownloading 90%\rdone')))
+print(repr(pgui.ansi.plain('no carriage return here')))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "'done'" "what a terminal would have left on screen"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "'no carriage return here'" "and nothing else is touched"
+}
+
+test_256_and_24_bit_colour_are_kept_as_written() {
+  gui_available || return 0
+  # Their arguments must be consumed, not read as further codes — that is how a
+  # truecolor sequence ends up setting something at random in a naive parser.
+  local out; out=$(_settings_drive "
+print(pgui.ansi.spans('\x1b[38;2;255;128;0mwarn')[0][1][0])
+print(pgui.ansi.spans('\x1b[38;5;244mgrey')[0][1][0])
+print(pgui.ansi.spans('\x1b[38;5;2mgreen')[0][1][0])
+print(','.join(pgui.ansi.spans('\x1b[1;31mboth')[0][1]))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "fg:#ff8000"  "24-bit is used as given"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "fg:#808080"  "a 256-colour grey keeps its shade"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "fg:green"    "the low 16 map onto the palette"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "fg:red,bold" "attributes and colour together"
+}
+
+test_style_does_not_leak_between_lines() {
+  gui_available || return 0
+  # It can in a real terminal. A log buffer is scrolled, filtered and trimmed,
+  # so one unterminated sequence would otherwise colour everything after it.
+  local out; out=$(_settings_drive "
+print(','.join(pgui.ansi.spans('\x1b[31mnever closed')[0][1]))
+print(','.join(pgui.ansi.spans('the next line')[0][1]) or '-')
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "fg:red" "the line that opened it is coloured"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "-"      "the one after it is not"
+}
+
+test_the_view_colours_by_the_log_and_falls_back_to_the_error_pattern() {
+  gui_available || return 0
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+(d / 'be-api.log').write_text(
+    '\x1b[32mINFO\x1b[0;39m fine\n'
+    'plain ERROR with no colour\n'
+    '\x1b[33mWARN\x1b[0;39m ERROR word inside a coloured line\n')
+v = LogView(lambda m: None)
+v.update_sources(str(d), COMPS, 'ERROR')
+spin(700)
+b = v._buffer
+it = b.get_start_iter()
+runs = []
+while True:
+    names = tuple(t.get_property('name') for t in it.get_tags())
+    if not runs or runs[-1][0] != names:
+        runs.append((names, it.get_char()))
+    if not it.forward_char():
+        break
+v.stop()
+for names, ch in runs:
+    print((','.join(names) or '-'), repr(ch))
+")
+  rm -rf "$dir"
+  assert_match "$out" "fg:green 'I'"  "the log's own colour is used"
+  assert_match "$out" "fg:error 'p'"  "an uncoloured error line is coloured by the pattern"
+  assert_match "$out" "fg:yellow 'W'" "a line the app already coloured is left as it asked"
+  assert_not_match "$out" "fg:error 'E'" "the pattern never overrides a colour the log chose"
 }
 
 # ── the log tail ────────────────────────────────────────────────────────────
@@ -860,7 +975,7 @@ def check():
         end = it.copy()
         if not end.forward_to_line_end():
             break
-        if any(t.props.name == 'error' for t in it.get_tags()):
+        if any(t.props.name == 'fg:error' for t in it.get_tags()):
             tagged.append(buf.get_text(it, end, False))
         if not it.forward_line():
             break

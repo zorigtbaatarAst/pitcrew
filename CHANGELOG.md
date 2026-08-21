@@ -108,6 +108,25 @@ field is removed or changes meaning.
   `diagnose` samples for one second and inherits the rest.
 
 ### Fixed
+- **The desktop app printed ANSI escapes instead of obeying them.** A dev
+  server's log is not plain text — Spring Boot, Vite, gradle and npm all write
+  SGR colour into it, and pitcrew captures stdout verbatim (as it should; the
+  file is meant to be readable with `less -R` too). The view rendered those
+  bytes literally, so a Spring log came out as a wall of
+  `▯▯[2m2026-08-20 11:04:19.670▯▯[0;39m ▯▯[32mINFO▯▯[0;39m` with the actual
+  message pushed off the right-hand edge. The colours are now interpreted:
+  timestamps dim, `INFO` green, `WARN` yellow, loggers in their own colour,
+  with a light and a dark palette because colours chosen for a dark terminal
+  are unreadable on a white background. 24-bit and 256-colour sequences are
+  kept as written; every other escape (erase-line, cursor moves, window
+  titles) is dropped rather than printed, and `\r` progress lines collapse to
+  what a terminal would have left on screen instead of two hundred copies of
+  themselves. pitcrew's own error pattern still colours a line the log did not
+  colour itself — and leaves alone one it did, which is how its WARN stays
+  distinguishable from its ERROR.
+- **Long lines had nowhere to go.** A Spring line is ~200 characters before the
+  message starts. A wrap toggle sits next to the filter; off by default,
+  because a log is read as columns.
 - **The desktop app's log view froze, for three separate reasons.** All three
   looked identical — a tail that stopped moving — and none was visible in a
   screenshot:

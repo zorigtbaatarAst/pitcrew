@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import re
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
+from . import ansi
 from .runner import LineReader
 
 TAIL_LINES = 400          # what a fresh selection shows before following live
@@ -43,6 +44,38 @@ class LogView(Gtk.Box):
         # what scrolled past — the file may already have been truncated.
         self._raw: list[str] = []
 
+        bar = self._build_bar()
+
+        self._buffer = Gtk.TextBuffer()
+        self._buffer.create_tag("bold", weight=700)
+        self._buffer.create_tag("italic", style=Pango.Style.ITALIC)
+        self._buffer.create_tag("underline", underline=Pango.Underline.SINGLE)
+        self._apply_palette()
+        # The palette has to change with the desktop theme, not with a restart:
+        # the colours that make a Spring log readable on a dark background are
+        # the ones that are illegible on a light one.
+        Adw.StyleManager.get_default().connect(
+            "notify::dark", lambda *_: self._apply_palette())
+        self._view = Gtk.TextView(buffer=self._buffer, editable=False, monospace=True,
+                                  cursor_visible=False, top_margin=8, bottom_margin=8,
+                                  left_margin=10, right_margin=10)
+        view = self._view
+        self._apply_wrap()
+        self._scroller = Gtk.ScrolledWindow(child=view, vexpand=True,
+                                            margin_start=12, margin_end=12, margin_bottom=12)
+        self._scroller.add_css_class("card")
+
+        self._status = Gtk.Label(halign=Gtk.Align.START, margin_start=14, margin_bottom=8)
+        self._status.add_css_class("caption")
+        self._status.add_css_class("dim-label")
+
+        self.append(bar)
+        self.append(self._scroller)
+        self.append(self._status)
+
+    def _build_bar(self) -> Gtk.Widget:
+        """The controls above the log. Its own method because the constructor
+        was doing three jobs: the toolbar, the text view, and the state."""
         self._picker = Gtk.DropDown(model=Gtk.StringList.new([]), hexpand=True)
         self._picker.connect("notify::selected", lambda *_: self._selection_changed())
 
@@ -67,6 +100,14 @@ class LogView(Gtk.Box):
                                              tooltip_text="Errors only")
         self._errors_only.connect("toggled", lambda _b: self._refilter())
 
+        # Off by default: a log is read as columns — timestamp, level, logger —
+        # and wrapping shuffles them. But a Spring line is 200 characters before
+        # the message even starts, so the thing you are actually looking for is
+        # off the right-hand edge until you ask for this.
+        self._wrap = Gtk.ToggleButton(icon_name="format-justify-left-symbolic",
+                                      tooltip_text="Wrap long lines")
+        self._wrap.connect("toggled", lambda _b: self._apply_wrap())
+
         clear = Gtk.Button(icon_name="edit-clear-all-symbolic", tooltip_text="Clear")
         clear.connect("clicked", lambda _b: self._clear())
 
@@ -76,28 +117,88 @@ class LogView(Gtk.Box):
         bar.append(self._picker)
         bar.append(self._filter)
         bar.append(self._errors_only)
+        bar.append(self._wrap)
         bar.append(self._follow)
         bar.append(clear)
 
-        self._buffer = Gtk.TextBuffer()
-        # Two tags, because an error line you have to hunt for is a line you did
-        # not see. `error` is the same set the dashboard counts.
-        self._buffer.create_tag("error", foreground="#ff7b72", weight=700)
-        self._buffer.create_tag("dim", foreground="#8b949e")
-        view = Gtk.TextView(buffer=self._buffer, editable=False, monospace=True,
-                            cursor_visible=False, top_margin=8, bottom_margin=8,
-                            left_margin=10, right_margin=10)
-        self._scroller = Gtk.ScrolledWindow(child=view, vexpand=True,
-                                            margin_start=12, margin_end=12, margin_bottom=12)
-        self._scroller.add_css_class("card")
+        return bar
 
-        self._status = Gtk.Label(halign=Gtk.Align.START, margin_start=14, margin_bottom=8)
-        self._status.add_css_class("caption")
-        self._status.add_css_class("dim-label")
+    # ── colour ──────────────────────────────────────────────────────────────
+    # Two palettes rather than one: a log's own ANSI colours are chosen by an
+    # author who assumed a dark terminal, and rendering #00ff00 on a white
+    # background is not "the colours the app asked for", it is unreadable.
+    # These are the sixteen names, mapped to something that works on each.
+    DARK = {
+        "black": "#6c7086", "red": "#f38ba8", "green": "#a6e3a1", "yellow": "#f9e2af",
+        "blue": "#89b4fa", "magenta": "#cba6f7", "cyan": "#94e2d5", "white": "#cdd6f4",
+        "bright-black": "#7f849c", "bright-red": "#eba0ac", "bright-green": "#b9e6b0",
+        "bright-yellow": "#f5e0b0", "bright-blue": "#a6c8ff", "bright-magenta": "#d7b8f8",
+        "bright-cyan": "#a8e8dd", "bright-white": "#ffffff", "error": "#f38ba8",
+    }
+    LIGHT = {
+        "black": "#4c4f69", "red": "#d20f39", "green": "#40a02b", "yellow": "#df8e1d",
+        "blue": "#1e66f5", "magenta": "#8839ef", "cyan": "#179299", "white": "#5c5f77",
+        "bright-black": "#8c8fa1", "bright-red": "#e64553", "bright-green": "#4c9a2a",
+        "bright-yellow": "#c88a1e", "bright-blue": "#3b7dd8", "bright-magenta": "#9853f0",
+        "bright-cyan": "#2a9d8f", "bright-white": "#2c2f45", "error": "#d20f39",
+    }
 
-        self.append(bar)
-        self.append(self._scroller)
-        self.append(self._status)
+    def _apply_wrap(self) -> None:
+        # WORD_CHAR, not WORD: a wrapped log line is usually a stack trace or a
+        # URL, and WORD alone leaves an unbroken 300-character token running off
+        # the edge anyway.
+        self._view.set_wrap_mode(
+            Gtk.WrapMode.WORD_CHAR if self._wrap.get_active() else Gtk.WrapMode.NONE)
+
+    def _apply_palette(self) -> None:
+        """Point the named colour tags at the palette for the current theme.
+
+        The tags are updated in place, so text already in the buffer re-colours
+        rather than needing the view to be rebuilt.
+        """
+        dark = Adw.StyleManager.get_default().get_dark()
+        palette = self.DARK if dark else self.LIGHT
+        table = self._buffer.get_tag_table()
+        for name, colour in palette.items():
+            tag = table.lookup(f"fg:{name}")
+            if tag is None:
+                tag = self._buffer.create_tag(f"fg:{name}")
+            tag.set_property("foreground", colour)
+
+    def _tag_names(self, span_tags: tuple[str, ...], is_error: bool) -> list[str]:
+        """The tags to apply to one span, with the conflicts already resolved.
+
+        A GtkTextTag either sets a foreground or does not, and two that both do
+        fight by priority rather than by intent — so at most one colour is
+        chosen here:
+
+          * the colour the log asked for, if it asked for one;
+          * otherwise the dim grey, if the span was dim (which is how every
+            Spring line prints its timestamp);
+          * otherwise the error colour, if the line matched pitcrew's error
+            pattern. A line the application already coloured is left alone —
+            it has said what it thinks, and overriding it would lose the
+            distinction between its WARN and its ERROR.
+        """
+        colour = next((t for t in span_tags if t.startswith("fg:")), None)
+        if colour is None and "dim" in span_tags:
+            colour = "fg:bright-black"
+        if colour is None and is_error:
+            colour = "fg:error"
+        names = [colour] if colour else []
+        names += [a for a in ("bold", "italic", "underline") if a in span_tags]
+        return names
+
+    def _ensure_tag(self, name: str) -> None:
+        """Create a tag for a colour the palette does not name.
+
+        24-bit and 256-colour sequences carry their own value, so they cannot be
+        themed — they are used as given. Created once and reused, because a
+        chatty process can emit thousands of spans a second.
+        """
+        table = self._buffer.get_tag_table()
+        if table.lookup(name) is None:
+            self._buffer.create_tag(name, foreground=name[3:])
 
     # ── what the stream tells us ────────────────────────────────────────────
     def update_sources(self, log_dir: str | None, components: list[dict],
@@ -237,11 +338,15 @@ class LogView(Gtk.Box):
             self._waiting = self._current
 
     def _shown(self, line: str) -> bool:
+        # Against the TEXT, never the raw line: a filter for "INFO" must not be
+        # satisfied by the escape sequence that colours it, and must not be
+        # defeated by one sitting in the middle of the word.
+        text = ansi.plain(line)
         needle = self._filter.get_text().strip().lower()
-        if needle and needle not in line.lower():
+        if needle and needle not in text.lower():
             return False
         if self._errors_only.get_active():
-            return bool(self._pattern and self._pattern.search(line))
+            return bool(self._pattern and self._pattern.search(text))
         return True
 
     def _refilter(self) -> None:
@@ -268,9 +373,20 @@ class LogView(Gtk.Box):
             GLib.idle_add(self._scroll_to_end, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
     def _insert(self, line: str) -> None:
-        end = self._buffer.get_end_iter()
-        tag = "error" if self._pattern and self._pattern.search(line) else "dim"
-        self._buffer.insert_with_tags_by_name(end, line + "\n", tag)
+        pieces = ansi.spans(line)
+        is_error = bool(self._pattern and self._pattern.search(
+            "".join(text for text, _ in pieces)))
+        for text, span_tags in pieces:
+            names = self._tag_names(span_tags, is_error)
+            for name in names:
+                if name.startswith("fg:#"):
+                    self._ensure_tag(name)
+            end = self._buffer.get_end_iter()
+            if names:
+                self._buffer.insert_with_tags_by_name(end, text, *names)
+            else:
+                self._buffer.insert(end, text)
+        self._buffer.insert(self._buffer.get_end_iter(), "\n")
         self._lines += 1
         if self._lines > MAX_LINES:
             start = self._buffer.get_start_iter()

@@ -78,6 +78,11 @@ attribute, and most are pinned by a test.
    the state object; do not re-derive it in Python. `model.py` is pure
    presentation (no GTK, no OS calls) and is where testable logic goes.
 
+   Log text arrives with **ANSI escapes in it** — pitcrew captures stdout
+   verbatim. `ansi.py` turns SGR into span tags and drops everything else; it
+   is pure (no GTK) and tested. Do not "simplify" it into a strip, and do not
+   render raw lines into a TextView.
+
    **Never use `Gio.DataInputStream.read_line_async` on a pipe.** It reports
    EOF as `(b"", 0)` and a blank line as `(b"", 0)`, so any code built on it has
    to choose between stopping at the first empty line and spinning the main
