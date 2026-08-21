@@ -43,6 +43,9 @@ cmd_watch() {
       l|L) log_view "${VIEW[$SEL]:-}" ;;
       e|E) err_view ;;
       d|D) diag_view ;;
+      z|Z) if [ "$ZEN" = 1 ]; then ZEN=0; toast "${C_MUTED}zen off — everything is back${RESET}"
+           else ZEN=1; SEL=0
+                toast "${C_ACCENT}◦${RESET} zen — only what needs you, plus anything you mark"; fi ;;
       o|O) case "$SORT" in name) SORT=state ;; state) SORT=ram ;; ram) SORT=cpu ;; *) SORT=name ;; esac ;;
       /)   filter_prompt ;;
       a|A) target_set

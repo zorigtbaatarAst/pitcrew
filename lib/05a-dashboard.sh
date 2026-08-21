@@ -95,6 +95,40 @@ toast() { TOAST=$1; TOAST_AT=${SNAP_NOW_S:-0}; }
 # solve it while you are still working out which three.
 FILTER=""                      # substring match on the app name
 SORT=name                      # name | ram | cpu | state
+
+# ── zen ─────────────────────────────────────────────────────────────────────
+# The dashboard's default answer to "what is happening" is everything: six
+# apps, two gauges, a dep rule, a legend, a graph per component. That is the
+# right answer when you are looking AT it, and the wrong one when it is sitting
+# on a second monitor while you write code — there, twelve healthy rows are
+# twelve rows of nothing, and the one that broke has to compete with them.
+#
+# Zen keeps the verdict and shows only what is not fine. Everything that is
+# context rather than content goes: gauges, deps that are up, the legend, the
+# graph column, and every healthy component.
+#
+# It is also the focus mode, and deliberately the same switch. A component you
+# MARK stays visible in zen even when it is healthy — that is "I am working on
+# this one", which is the other half of the same question. Same for an active
+# filter. So `space` on the app you are working on plus `z` gives you exactly
+# that app and anything that breaks, and nothing else.
+ZEN=${PITCREW_ZEN:-0}
+case "$ZEN" in 1|true|yes|on) ZEN=1 ;; *) ZEN=0 ;; esac
+
+# Does this app earn a row in zen? Anything not plainly up, anything you marked,
+# and anything an active filter narrowed to.
+_zen_keeps() { # $1 app
+  local app=$1 c
+  [ -n "$FILTER" ] && return 0                 # you already said what you wanted
+  for c in "be-$app" "fe-$app"; do
+    [ -n "${MARKED[$c]:-}" ] && return 0
+    case "${SNAP_STATE[$c]:-}" in
+      ''|n/a|up) ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
 declare -gA MARKED=()          # comp -> 1, the set that `a` and `s` act on
 VIEW_APPS=()                   # apps visible this frame, in display order
 VIEW=()                        # their components, flattened — SEL indexes THIS
@@ -126,6 +160,7 @@ build_view() {
   VIEW_APPS=(); VIEW=()
   for app in "${PITCREW_APPS[@]}"; do
     if [ -n "$FILTER" ]; then case "$app" in *"$FILTER"*) ;; *) continue ;; esac; fi
+    [ "$ZEN" = 1 ] && ! _zen_keeps "$app" && continue
     VIEW_APPS+=("$app")
   done
   if [ "$SORT" != name ]; then

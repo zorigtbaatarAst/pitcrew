@@ -74,6 +74,7 @@ menu_choices() { # $1 = "overlay" trims entries meaningless inside the watch ove
     $'theme\t🌈  change theme…'
     $'render\t📈  graph & gauge style…'
     $'limits\t🧠  RAM caps…'
+    $'zen\t🧘  zen — hide everything that is fine'
     $'diagnose\t🔎  diagnose — what is wrong with the stack'
     $'doctor\t🩺  doctor — check my environment'
     $'urls\t🌐  open all frontend URLs'
@@ -252,6 +253,8 @@ dispatch_choice() {
                        fi
                      fi
                    fi ;;
+    zen)           if [ "$ZEN" = 1 ]; then ZEN=0; else ZEN=1; SEL=0; fi
+                   MENU_CLOSE=1 ;;
     diagnose)      if [ "$mode" = overlay ]; then diag_view; MENU_CLOSE=1
                    else cmd_diagnose; read -rp "  press Enter…"; fi ;;
     doctor)        cmd_doctor; read -rp "  press Enter…" ;;

@@ -11,12 +11,32 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **Zen mode** (`z` in the dashboard, `Ctrl+Z` or the menu in the desktop app,
+  `PITCREW_ZEN=1` to start in it). Answers one question — is there anything I
+  need to do? — by hiding everything that says no: healthy components, deps
+  that are up, the gauges, the legend, the machine meters, the consumer
+  ranking. Anything you marked with `space` stays visible even when healthy,
+  so it doubles as a focus mode. With nothing wrong it says *nothing needs
+  you* rather than going blank, and the way out of the mode is never among the
+  things it hides.
 - **Native Windows**, under Git Bash (2.35+) or MSYS2. The shell was never the
   problem — that is real bash 5 — the POSIX userland underneath it was. So the
   process table comes from `wmic` (or PowerShell where wmic has been removed),
   listening ports from `netstat -ano`, and pidfiles keep holding MSYS pids so
   `kill` and `kill_tree` work unchanged, translated to Windows pids only where
   a native tool is on the other end.
+
+### Fixed
+- A component group's heading counted the rows a filter left behind rather than
+  the group: `orders 0/1 up` over a group of two, and a "Stop all" that stopped
+  one of them. Headings now describe the group and say `1 not shown`, and the
+  heading's start/restart/stop act on every member.
+- The desktop app's error banner rendered pitcrew's coloured stderr as raw
+  escape bytes across the top of the window — the one message whose whole job
+  is to explain a failure.
+- The dashboard's key-hint row is truncated from the end, and `q quit` was last
+  — adding one more hint pushed the way out off a 160-column terminal. It is
+  first now, as it already was in the log viewer.
 
   There is no third collector: `PITCREW_PS` is an array whose first word bash
   resolves normally, so on Windows it points at a shell *function* that emits

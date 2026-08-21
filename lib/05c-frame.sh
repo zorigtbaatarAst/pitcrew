@@ -112,13 +112,14 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     printf -v ts '%(%H:%M:%S)T' -1        # builtin strftime — no `date` fork
 
     # ── title rule ──
-    printf -v line '%b──%b %b%s%b %blive%b %b' "$C_FAINT" "$RESET" "$C_ACCENT$BOLD" "${PITCREW_PROJECT_NAME:-pitcrew}" "$RESET" "$C_MUTED" "$RESET" "$C_FAINT"
+    local _mode=live; [ "$ZEN" = 1 ] && _mode=zen
+    printf -v line '%b──%b %b%s%b %b%s%b %b' "$C_FAINT" "$RESET" "$C_ACCENT$BOLD" "${PITCREW_PROJECT_NAME:-pitcrew}" "$RESET" "$C_MUTED" "$_mode" "$RESET" "$C_FAINT"
     # visible chrome: "── " + name + " live " + rule + " " + ts + " ──", and
     # one column short of the edge on purpose. Auto-wrap is off so a full-width
     # line is legal, but a printable character in the very last cell is the
     # classic place for a terminal (tmux especially) to disagree about whether
     # the cursor wrapped — and a single wrong wrap scrolls the whole frame.
-    rule_len=$((W - 14 - ${#PITCREW_PROJECT_NAME} - ${#ts})); [ $rule_len -lt 0 ] && rule_len=0
+    rule_len=$((W - 10 - ${#_mode} - ${#PITCREW_PROJECT_NAME} - ${#ts})); [ $rule_len -lt 0 ] && rule_len=0
     r=""; while [ ${#r} -lt $rule_len ]; do r+="─"; done
     frame+="$line$r $ts ──$RESET"$'\e[K\n'; ln=$((ln + 1))
 
@@ -146,7 +147,11 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # ── system gauges, as history rather than a single instant ──
     # Scale floors of 100 and total-RAM make these absolute rather than
     # auto-scaled: 4% CPU should look like 4%, not like a full bar.
-    if [ $micro = 0 ]; then
+    #
+    # Gone in zen: the machine's CPU and RAM are the definition of context. If
+    # either is actually a problem the verdict line above says so, which is the
+    # whole point of having a verdict.
+    if [ $micro = 0 ] && [ "$ZEN" != 1 ]; then
       local cpuline used="" total="" have_mem=0
       if [ -n "$SYS_MEM_TOTAL_KB" ] && [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ]; then
         have_mem=1
@@ -214,12 +219,22 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # Six deps used to run 40 columns past the right edge, and with auto-wrap
     # off the terminal ate them without a trace. Wrap onto a continuation line;
     # when there are no rows to spare, say how many did not fit.
-    if [ ${#PITCREW_DEPS[@]} -gt 0 ] && [ $micro = 0 ]; then
-      local dep dline dvis dshown=0 dtotal=${#PITCREW_DEPS[@]}
+    # In zen only the deps that are DOWN are worth a line — a running postgres
+    # is not news, and a stopped one explains everything else on the screen.
+    local _deps_shown=("${PITCREW_DEPS[@]:-}")
+    if [ "$ZEN" = 1 ]; then
+      _deps_shown=()
+      local _d
+      for _d in "${PITCREW_DEPS[@]:-}"; do
+        [ -n "$_d" ] && [ "${SNAP_DEP[$_d]:-down}" != up ] && _deps_shown+=("$_d")
+      done
+    fi
+    if [ ${#_deps_shown[@]} -gt 0 ] && [ -n "${_deps_shown[0]:-}" ] && [ $micro = 0 ]; then
+      local dep dline dvis dshown=0 dtotal=${#_deps_shown[@]}
       local DEPS_INDENT_W=10        # visible width of "── deps   "
       printf -v dline '%b──%b %b%s%b   ' "$C_FAINT" "$RESET" "$C_TEXT$BOLD" "deps" "$RESET"
       dvis=$DEPS_INDENT_W
-      for dep in "${PITCREW_DEPS[@]}"; do
+      for dep in "${_deps_shown[@]}"; do
         if [ $(( dvis + ${#dep} + 5 )) -gt "$W" ]; then
           # nothing on this line yet means it will never fit — truncate, do not
           # loop forever widening a line the terminal cannot hold
@@ -269,6 +284,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # screen. The footer is blank + legend + status + toast + keys; compact
     # drops the blank and the legend, so it is three rows instead of five.
     local foot=5; [ $compact = 1 ] && foot=3; [ $micro = 1 ] && foot=2
+    [ "$ZEN" = 1 ] && [ $micro = 0 ] && foot=3
     avail=$(( H - ln - foot ))
     [ $avail -lt 0 ] && avail=0
 
@@ -292,6 +308,14 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       centre "$W" $(( 16 + ${#FILTER} + 2 )) "$nomatch"
       frame+="$R"$'\e[K\n'; ln=$((ln + 1))
       avail=$(( avail - 1 ))
+    elif [ "$ZEN" = 1 ] && [ ${#VIEW_APPS[@]} -eq 0 ]; then
+      # Not an error state — the answer. Everything is fine and there is
+      # nothing here on purpose, which is what you left it open to find out.
+      local zmsg
+      printf -v zmsg '%bnothing needs you%b' "$C_SUBTLE" "$RESET"
+      _vcentre 1
+      centre "$W" 17 "$zmsg"
+      frame+="$R"$'\e[K\n'; ln=$((ln + 1)); avail=$(( avail - 1 ))
     elif [ $empty = 1 ]; then
       local msg1 msg2
       printf -v msg1 '%b%s%b' "$C_TEXT$BOLD" "nothing is running yet" "$RESET"
@@ -376,7 +400,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     local pad=$(( H - foot - ln ))
     while [ "$pad" -gt 0 ]; do frame+=$'\e[K\n'; ln=$((ln + 1)); pad=$((pad - 1)); done
 
-    if [ $compact = 0 ]; then
+    if [ $compact = 0 ] && [ "$ZEN" != 1 ]; then
       frame+=$'\e[K\n'; ln=$((ln + 1))
       # Auto-wrap is off, so anything wider than the terminal is silently
       # truncated by it — drop legend entries that will not fit instead.
@@ -409,8 +433,16 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # rather than as a line of shell output
     line=" "
     local kc cap lbl kvis=1 addw
-    for kc in "↑↓:select" "␣:mark" "a:start" "s:stop" "r:restart" "⏎:tree" \
-            "d:diagnose" "/:filter" "o:sort" "l:logs" "e:errors" "p:project" "m:menu" "q:quit"; do
+    # `q quit` FIRST, for the same reason the log viewer puts it first: entries
+    # that do not fit are dropped from the end, and a hint bar you cannot read
+    # all of should still tell you the way out. Adding `z` to the end of the
+    # old order pushed `q` off a 160-column terminal.
+    local -a keycaps=("q:quit" "↑↓:select" "␣:mark" "a:start" "s:stop" "r:restart" "⏎:tree" \
+            "z:zen" "d:diagnose" "/:filter" "o:sort" "l:logs" "e:errors" "p:project" "m:menu")
+    # In zen the hint row is chrome too — but not knowing the way out of a mode
+    # is the one thing that makes a mode a trap.
+    [ "$ZEN" = 1 ] && keycaps=("q:quit" "z:leave zen" "␣:mark" "s:stop" "r:restart" "l:logs" "d:diagnose")
+    for kc in "${keycaps[@]}"; do
       cap=${kc%%:*}; lbl=${kc#*:}
       addw=$(( ${#cap} + 2 + 1 + ${#lbl} + 2 ))     # " cap " + " " + label + "  "
       [ $(( kvis + addw )) -gt "$W" ] && break

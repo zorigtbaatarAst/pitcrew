@@ -102,4 +102,30 @@ test_cancelling_the_render_picker_changes_nothing() {
   rm -f "$pref"
 }
 
+test_zen_is_reachable_from_the_menu_and_from_the_environment() {
+  # Two entry points and both have to land on the same variable: the README
+  # documents `PITCREW_ZEN=1 pitcrew watch`, and the menu is how you find the
+  # mode at all if you never read the key row.
+  local choice; choice=$(menu_choices overlay | grep '^zen')
+  assert_match "$choice" 'zen' "the menu offers it"
+
+  ZEN=0; SEL=3
+  dispatch_choice "$choice" overlay
+  assert_eq "$ZEN" 1   "the menu turns it on"
+  assert_eq "$SEL" 0   "and puts the cursor on the first row that survived"
+  dispatch_choice "$choice" overlay
+  assert_eq "$ZEN" 0   "and off again"
+
+  # Sourced at lib-load time, so this is a subshell re-source, not a re-render.
+  local v out
+  for v in 1 true on yes; do
+    out=$(PITCREW_ZEN=$v bash -c 'for f in "'"$PITCREW_DIR"'"/lib/*.sh; do source "$f"; done; echo "$ZEN"')
+    assert_eq "$out" 1 "PITCREW_ZEN=$v starts in zen"
+  done
+  for v in 0 no bogus; do
+    out=$(PITCREW_ZEN=$v bash -c 'for f in "'"$PITCREW_DIR"'"/lib/*.sh; do source "$f"; done; echo "$ZEN"')
+    assert_eq "$out" 0 "PITCREW_ZEN=$v does not"
+  done
+}
+
 run_tests

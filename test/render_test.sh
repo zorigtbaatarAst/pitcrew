@@ -421,4 +421,78 @@ test_the_process_tree_renders_in_both_layouts() {
   assert_not_match "$body" '[├└] [0-9]+ ' "and folds away again"
 }
 
+# ── zen mode ────────────────────────────────────────────────────────────────
+# Zen answers one question — "is there anything I need to do?" — so the test
+# for it is about what DISAPPEARS. Each of these plants a state and re-renders
+# rather than re-collecting, because collect_frame would overwrite it.
+
+_all_up() { local c; for c in "${PITCREW_COMPS[@]}"; do SNAP_STATE[$c]=up; done; }
+
+test_zen_hides_what_is_fine_and_keeps_what_is_not() {
+  _render_at 150 40
+  _all_up; SNAP_STATE[be-beonly]=crashed
+  ZEN=1; build_frame
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'beonly' "the crashed app stays"
+  assert_not_match "$body" 'feonly' "a healthy one does not"
+  assert_match     "$body" 'zen'    "and the title says which mode you are in"
+  ZEN=0
+}
+
+test_zen_keeps_what_you_marked_even_when_it_is_healthy() {
+  # the focus half of the same switch: mark the app you are working on, press
+  # z, and you get that app plus anything that breaks — nothing else
+  _render_at 150 40
+  _all_up
+  MARKED[be-feonly]=1
+  ZEN=1; build_frame
+  local body; body=$(plain "$FRAME")
+  assert_match     "$body" 'feonly' "the marked app is what you are focused on"
+  assert_not_match "$body" 'beonly' "the rest is still gone"
+  MARKED=(); ZEN=0
+}
+
+test_zen_with_nothing_wrong_says_so_rather_than_going_blank() {
+  _render_at 150 40
+  _all_up
+  ZEN=1; build_frame
+  assert_match "$(plain "$FRAME")" 'nothing needs you' "an empty zen screen is the answer, not a bug"
+  ZEN=0
+}
+
+test_zen_sheds_chrome_but_never_the_way_out() {
+  _render_at 150 40
+  _all_up; SNAP_STATE[be-beonly]=crashed
+  ZEN=1; build_frame
+  local body; body=$(plain "$FRAME")
+  assert_not_match "$body" 'CPU'              "the gauges are not what you came for"
+  assert_not_match "$body" '● up  ◐ starting' "nor the legend"
+  assert_match     "$body" 'q  quit'          "but the way out is always readable"
+  assert_match     "$body" 'leave zen'        "and so is the way back"
+  ZEN=0
+}
+
+test_zen_still_fits_the_terminal_in_both_directions() {
+  # foot= changes in zen, and every past row-accounting slip scrolled the alt
+  # screen a row at a time until the display never recovered
+  local h w
+  _render_at 160 40
+  _all_up; SNAP_STATE[be-beonly]=crashed
+  ZEN=1
+  for h in 6 8 10 14 24 40; do
+    PITCREW_COLS=160 PITCREW_LINES=$h TERM_DIRTY=1; build_frame
+    _frame_rows
+    assert_eq "$ROWS" "$h" "zen at 160x${h} occupies exactly ${h} rows"
+  done
+  local line vis
+  for w in 40 80 110 160; do
+    PITCREW_COLS=$w PITCREW_LINES=24 TERM_DIRTY=1; build_frame
+    while IFS= read -r line; do
+      vis=$(plain "${line//$'\e[K'/}")
+      [ "${#vis}" -le "$w" ] || _t_bad "zen at ${w} cols drew a ${#vis}-char row"
+    done <<< "$FRAME"
+  done
+  ZEN=0
+}
+
 run_tests

@@ -321,6 +321,15 @@ writer or the Python, it belongs here instead.
 - **A cap is a property of the machine, not the project.** Per-component
   overrides live in `~/.config/pitcrew/<session>/limits`, never in the repo's
   config. Resolution: machine-local override -> per-app cap -> role default.
+- **A mode never hides the way out of itself.** Zen strips gauges, legends,
+  meters, healthy rows — but keeps `q quit` and `z leave zen` in the terminal
+  hint row and keeps the view switcher in the desktop app. The hint row is
+  truncated from the END, so `q quit` is listed FIRST; adding one hint to the
+  tail of the old order silently pushed it off a 160-column terminal.
+- **A filter's summary describes the whole, not the slice.** A group heading
+  reading `0/1 up` because a filter hid the healthy half is a wrong number
+  stated confidently, and a "Stop all" under it that stops half the group is
+  worse. Headings count the group and say how many rows are not shown.
 - **Derived values are rebuilt after the config loads.** Themes, icon tables
   and render settings are resolved from env at lib-source time, i.e. *before*
   the project config is read; `config_finalize` re-runs `icons_load`,

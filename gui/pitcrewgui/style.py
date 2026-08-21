@@ -47,6 +47,18 @@ row.finding-info { border-left-color: alpha(@accent_color, 0.55); }
   opacity: 0.55;
   padding: 2px 14px 6px 14px;
 }
+
+/* The zen indicator. Accent-tinted rather than `suggested-action`, which is
+   for the one button you are meant to press: this is a state you are
+   in, not the button you should hit next. */
+.zen-pill {
+  background: alpha(@accent_bg_color, 0.20);
+  color: @accent_color;
+  border-radius: 999px;
+  padding: 2px 12px;
+  min-height: 22px;
+}
+.zen-pill:hover { background: alpha(@accent_bg_color, 0.32); }
 """
 
 

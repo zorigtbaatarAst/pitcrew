@@ -842,13 +842,36 @@ boot report, failure log tails and URL table.
 | `/` | filter by name — the list narrows as you type |
 | `o` | cycle sort: name → state → ram → cpu |
 | `x` | clear marks, filter and sort |
+| `z` | **zen** — hide everything that is fine (see below) |
 | `⏎` | expand/collapse that service's process tree |
 | `e` | the error radar's actual matched log lines, not just the count |
 | `l` `r` `s` `m` `q` | logs · restart · stop · menu · quit |
 | `m` → 🌈 / 📈 | change theme · change graph & gauge style, both with live swatches |
 
+#### Zen mode
+
+`z` answers one question — *is there anything I need to do?* — so it hides
+everything that says no. Healthy components go, dependencies that are up go,
+the CPU/RAM gauges go, the legend goes. What stays is the verdict line, the
+deps that are down, and every component that is not plainly `up`.
+
+It is also the **focus** mode, and deliberately the same key. Anything you
+`space`-marked stays visible in zen even when it is perfectly healthy — that
+is *"I am working on this one"*, which is the other half of the same question.
+So `space` on the app you are working on, then `z`, gives you that app plus
+anything that breaks, and nothing else. An active `/` filter does the same.
+
+When there is genuinely nothing, the screen says **nothing needs you** rather
+than going blank — an empty list and a broken tool look identical otherwise.
+The title rule reads `── project zen ──` instead of `live`, and `q quit` and
+`z leave zen` stay in the hint row: a mode that hides the way out of itself is
+a trap rather than a mode.
+
+Start there with `PITCREW_ZEN=1 pitcrew watch`.
+
 | Variable | Default | Purpose |
 |---|---|---|
+| `PITCREW_ZEN` | `0` | start the dashboard in zen mode |
 | `PITCREW_REFRESH` | `1` | seconds between frames; fractions like `0.25` are fine |
 | `PITCREW_GRAPH` | `block` | `block` (▁▂▃), `braille` (⣀⣤⣶) which packs 2 samples per cell, or `bar` |
 | `PITCREW_GRAPH_SCALE` | `range` | `range` (height is movement) or `cap` (absolute against the RAM cap) |
@@ -1077,8 +1100,14 @@ GUI is a renderer plus start/stop/restart buttons.
   **Start everything**, **Stop everything**, and your saved **Profiles**
 - the log view has a **filter box** and an **errors-only** toggle, both of
   which work on a live tail
-- **keyboard**: `Ctrl+1…4` for views, `/` to filter the log, `Ctrl+M` for RAM
-  caps, `Ctrl+Enter` to start everything, `?` for the list
+- **zen mode** (`Ctrl+Z`, or the menu) — the same filter as the terminal's
+  `z`: healthy components, dependencies that are up, the machine meters and the
+  consumer ranking all go, and the verdict, the findings and anything broken
+  stay. The view switcher does *not* go: navigation is not chrome, and a focus
+  mode you cannot leave is a trap. An accent `zen` pill in the header says you
+  are in it and clicking it gets you out
+- **keyboard**: `Ctrl+1…4` for views, `Ctrl+Z` for zen, `/` to filter the log,
+  `Ctrl+M` for RAM caps, `Ctrl+Enter` to start everything, `?` for the list
 - window size and last view are remembered
 - **Resources** says what the project costs against what the box actually has:
   *"using 1.5 GiB of 31.0 GiB · machine total 11.2 GiB used · 5% cpu · caps

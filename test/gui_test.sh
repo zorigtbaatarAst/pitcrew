@@ -1244,4 +1244,191 @@ print(round(rows[0][1] / total * 100))
   assert_eq "$(printf '%s' "$out" | sed -n 4p)" "75" "shares are of the drawn total"
 }
 
+# ── zen mode ────────────────────────────────────────────────────────────────
+# The desktop zen is the same promise as the terminal's: hide what is fine.
+# It is a filter over the existing views, not a sixth view, and the thing that
+# makes it safe is that nothing about LEAVING it is hidden.
+
+test_zen_hides_what_is_fine_and_keeps_what_is_not() {
+  gui_display || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+def comp(name, state):
+    return {'name': name, 'app': name[3:], 'role': 'be', 'state': state, 'rss': 10,
+            'cpu': 0, 'errors': 0, 'since': 1}
+state = {
+  'at': 1000, 'machine': {'memTotal': 100, 'memUsed': 10, 'cpuPercent': 1},
+  'components': [comp('be-api', 'up'), comp('be-etl', 'crashed')],
+  'deps': [{'name': 'postgres', 'state': 'up'}, {'name': 'redis', 'state': 'down'}],
+  'health': {'verdict': 'crit', 'headline': 'be-etl crashed', 'deep': False,
+             'counts': {'crit': 1}, 'findings': [], 'recoverable': {}},
+  'summary': {'up': 1, 'crashed': 1}}
+w._on_state(state)
+print(len(w._rows), w._meters_group.get_visible(), w._consumers_group.get_visible())
+w._toggle_zen()
+print(sorted(w._rows), w._zen_pill.get_visible())
+print(w._meters_group.get_visible(), w._consumers_group.get_visible())
+print([n for n, (row, _d, _b) in w._dep_rows.items() if row.get_visible()])
+w._toggle_zen()
+print(len(w._rows), w._meters_group.get_visible(),
+      [n for n, (row, _d, _b) in w._dep_rows.items() if row.get_visible()])
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "2 True True" "everything is shown to begin with"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "['be-etl'] True" "zen keeps only the crashed one, and says it is on"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "False False" "the meters and the ranking are not what you came for"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "['redis']" "a running postgres is not news; a stopped redis is"
+  assert_match "$(printf '%s' "$out" | sed -n 5p)" "^2 True" "and leaving zen puts all of it back"
+  assert_match "$(printf '%s' "$out" | sed -n 5p)" "postgres" "dependencies included"
+}
+
+test_zen_with_nothing_wrong_says_so_rather_than_going_blank() {
+  gui_display || return 0
+  # An empty list is indistinguishable from a broken app. In zen it is the
+  # answer, so it has to be written down.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._on_state({
+  'at': 1000, 'machine': {'memTotal': 100, 'memUsed': 10, 'cpuPercent': 1},
+  'components': [{'name': 'be-api', 'app': 'api', 'role': 'be', 'state': 'up',
+                  'rss': 10, 'cpu': 0, 'errors': 0, 'since': 1}],
+  'deps': [], 'summary': {'up': 1},
+  'health': {'verdict': 'ok', 'headline': 'all up', 'deep': False,
+             'counts': {}, 'findings': [], 'recoverable': {}}})
+w._toggle_zen()
+print(w._empty_group.get_visible())
+print(w._empty_label.get_text())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "the empty state is shown"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "Nothing needs you." "and it is an answer, not an error"
+}
+
+test_zen_never_hides_the_way_out_of_zen() {
+  gui_display || return 0
+  # A mode you cannot see you are in, or cannot navigate out of, is a trap.
+  # The switcher is navigation, not chrome, and it stays.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw, Gtk
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._toggle_zen()
+def switcher(widget):
+    if isinstance(widget, Adw.ViewSwitcher) and widget.get_visible():
+        return True
+    child = widget.get_first_child()
+    while child is not None:
+        if switcher(child):
+            return True
+        child = child.get_next_sibling()
+    return False
+print(w._zen_pill.get_visible(), w._zen_pill.get_sensitive())
+print(switcher(w))
+w._zen_pill.emit('clicked')
+print(w._zen, w._zen_pill.get_visible())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True True" "the indicator is visible and clickable"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and the view switcher is still there"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "False False" "clicking the indicator leaves"
+}
+
+test_zen_is_reachable_by_keyboard_and_by_menu() {
+  gui_available || return 0
+  local src="$GUI_DIR/pitcrewgui/window.py"
+  assert_match "$(grep -c 'win.zen' "$src")" '^[2-9]' "the action is bound and listed"
+  assert_ok grep -q 'set_accels_for_action("win.zen", \["<Primary>z"\])' "$src"
+  assert_ok grep -q 'menu.append("Zen mode", "win.zen")' "$src"
+  assert_ok grep -q 'Ctrl+Z' "$src"
+}
+
+test_a_module_that_does_not_import_says_why() {
+  gui_available || return 0
+  # Every assertion in this file runs python with stderr closed, so ANY import
+  # error anywhere in the package arrives as forty tests reporting
+  # "expected [x] got []" and nothing about the cause. This one keeps stderr.
+  #
+  # Not hypothetical: style.py holds its sheet as a BYTES literal, so one
+  # em dash in a CSS comment is a SyntaxError that takes the whole app down at
+  # launch -- and that is exactly how it was found.
+  local out
+  out=$("$PY_WITH_GI" -c "
+import importlib, sys
+sys.path.insert(0, '$GUI_DIR')
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+for name in ('ansi', 'platform', 'model', 'registry', 'settings', 'style', 'runner',
+             'widgets', 'dialogs', 'logview', 'notify', 'profiles', 'bootstrap',
+             'window', 'app'):
+    importlib.import_module('pitcrewgui.' + name)
+print('ok')
+" 2>&1)
+  assert_eq "${out##*$'\n'}" "ok" "every module in the package imports"
+}
+
+test_a_group_heading_describes_the_group_not_the_filter() {
+  gui_display || return 0
+  # A heading that says "0/1 up" over a group of two, because a filter hid the
+  # healthy one, is a wrong number stated confidently. Worse, "Stop all" under
+  # that heading would stop one of the two -- and you would believe the port
+  # was free.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+def comp(name, state, rss):
+    return {'name': name, 'app': 'orders', 'role': name[:2], 'state': state,
+            'rss': rss, 'cpu': 0, 'errors': 0, 'since': 1}
+w._on_state({
+  'at': 1000, 'machine': {'memTotal': 100, 'memUsed': 10, 'cpuPercent': 1},
+  'components': [comp('be-orders', 'crashed', 0), comp('fe-orders', 'up', 100)],
+  'deps': [], 'summary': {'up': 1, 'crashed': 1},
+  'health': {'verdict': 'crit', 'headline': 'be-orders crashed', 'deep': False,
+             'counts': {'crit': 1}, 'findings': [], 'recoverable': {}}})
+heading = next(iter(w._group_widgets))
+print(w._group_widgets[heading].get_description())
+w._toggle_zen()
+print(sorted(w._rows))
+print(w._group_widgets[heading].get_description())
+
+calls = []
+w._run_action = lambda verb, *targets: calls.append((verb, targets))
+box = w._group_widgets[heading].get_header_suffix()
+child = box.get_first_child()
+while child is not None:
+    if child.get_icon_name() == 'media-playback-stop-symbolic':
+        child.emit('clicked')
+    child = child.get_next_sibling()
+print(calls)
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1/2 up  ·  100 B" "unfiltered, the summary is just the group"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "['be-orders']" "zen hides the healthy half"
+  assert_match "$(printf '%s' "$out" | sed -n 3p)" "^1/2 up" "the count still describes the group, not the rows"
+  assert_match "$(printf '%s' "$out" | sed -n 3p)" "1 not shown" "and says the rows are not all of it"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" \
+    "[('stop', ('be-orders', 'fe-orders'))]" "\"Stop all\" stops all of orders, hidden rows included"
+}
+
+test_the_error_banner_shows_the_error_not_the_escape_codes() {
+  gui_display || return 0
+  # pitcrew colours its own errors and AdwBanner parses its title as Pango
+  # markup, so the failure the banner exists to explain arrived as SGR bytes
+  # across the top of the window. AdwBanner is also the one title in this app
+  # that does NOT parse markup, so escaping it turned `pitcrew init <dir>`
+  # into a literal `&lt;dir&gt;` -- both halves are asserted here.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._fail('pitcrew stopped: \x1b[38;2;243;139;168mno project\x1b[0m at /srv/a&b <dir>')
+print(w._banner.get_title())
+print(w._banner.get_revealed())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" \
+    "pitcrew stopped: no project at /srv/a&b <dir>" "colour stripped, the text left alone"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and it is actually shown"
+}
+
 run_tests

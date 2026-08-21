@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from . import ansi
 from .dialogs import (
     ConfigDialog,
     DetailDialog,
@@ -86,17 +87,15 @@ class Window(Adw.ApplicationWindow):
         self._stack.add_titled_with_icon(
             self._build_projects(), "projects", "Projects", "folder-symbolic")
 
-        header = Adw.HeaderBar()
-        # NARROW stacks the icon over the label, which is what makes four views
-        # fit: WIDE puts them side by side and truncated every title to "Comp…"
-        # the moment a fourth tab arrived.
-        header.set_title_widget(
-            Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.NARROW))
-        header.pack_start(self._build_project_button())
-        header.pack_start(self._build_running_pill())
-        header.pack_end(self._build_menu_button())
+        header = self._build_header()
 
         self._banner = Adw.Banner(revealed=False)
+        # Stated rather than assumed: the messages here are pitcrew's own
+        # stderr, which contains `<dir>` and paths, and whether they are parsed
+        # as markup decides whether _fail must escape them. Guarded because the
+        # property is newer than the libadwaita floor this app supports.
+        if hasattr(self._banner, "set_use_markup"):
+            self._banner.set_use_markup(False)
         self._banner.set_button_label("Retry")
         self._banner.connect("button-clicked", lambda _b: self._restart_stream())
 
@@ -159,6 +158,9 @@ class Window(Adw.ApplicationWindow):
         self._detail: object | None = None
         self._machine_total = 0
         self._last_at = 0
+        self._last_state: dict | None = None
+        # Zen is a FILTER, not a separate screen. See _apply_zen.
+        self._zen = False
 
     # ── keyboard ────────────────────────────────────────────────────────────
     def _install_shortcuts(self) -> None:
@@ -180,6 +182,10 @@ class Window(Adw.ApplicationWindow):
         focus.connect("activate", lambda *_: self._focus_filter())
         self.add_action(focus)
 
+        zen = Gio.SimpleAction.new("zen", None)
+        zen.connect("activate", lambda *_: self._toggle_zen())
+        self.add_action(zen)
+
         shortcuts = Gio.SimpleAction.new("shortcuts", None)
         shortcuts.connect("activate", lambda *_: self._show_shortcuts())
         self.add_action(shortcuts)
@@ -189,8 +195,42 @@ class Window(Adw.ApplicationWindow):
         app.set_accels_for_action("win.focusfilter", ["slash", "<Primary>f"])
         app.set_accels_for_action("win.shortcuts", ["<Primary>question", "question"])
         app.set_accels_for_action("win.limits", ["<Primary>m"])
+        app.set_accels_for_action("win.zen", ["<Primary>z"])
         app.set_accels_for_action("win.up", ["<Primary>Return"])
         app.set_accels_for_action("win.stopall", ["<Primary><Shift>Return"])
+
+    def _toggle_zen(self) -> None:
+        self._zen = not self._zen
+        self._apply_zen()
+        self._toasts.add_toast(Adw.Toast.new(
+            "Zen on — only what needs you" if self._zen else "Zen off — everything is back"))
+
+    def _apply_zen(self) -> None:
+        """Zen answers one question: is there anything I need to do?
+
+        So it hides what is fine — healthy components, dependencies that are
+        up, the machine meters, the consumer ranking — and keeps the verdict,
+        the findings, and anything broken.
+
+        It does NOT hide the view switcher. Chrome is the meters and the
+        rankings; navigation is not chrome, and a focus mode you cannot
+        navigate out of is a trap rather than a mode. Same reason the terminal
+        keeps `q quit` in the hint row.
+        """
+        self._zen_pill.set_visible(self._zen)
+        # The whole left COLUMN, not just the groups inside it: it carries a
+        # 360px width-request, so hiding only its contents left the findings
+        # pinned to the right of a dead gutter a third of the window wide.
+        self._left.set_visible(not self._zen)
+        self._meters_group.set_visible(not self._zen)
+        self._layout_key = None            # the visible set changed; rebuild
+        if self._last_state is not None:
+            self._on_state(self._last_state)
+
+    @staticmethod
+    def _zen_wants(comp: dict) -> bool:
+        """Anything not plainly up earns its row in zen."""
+        return comp.get("state") not in ("up", None, "")
 
     def _focus_filter(self) -> None:
         if self._stack.get_visible_child_name() == "logs":
@@ -206,6 +246,7 @@ class Window(Adw.ApplicationWindow):
         for keys, what in (
             ("Ctrl+1 … Ctrl+5", "Overview / Components / Resources / Logs / Projects"),
             ("/  or  Ctrl+F", "Filter the log"),
+            ("Ctrl+Z", "Zen mode — hide everything that is fine"),
             ("Ctrl+M", "RAM caps"),
             ("Ctrl+,", "Preferences"),
             ("Ctrl+Enter", "Start everything"),
@@ -226,6 +267,29 @@ class Window(Adw.ApplicationWindow):
         return False        # let the window close
 
     # ── construction ────────────────────────────────────────────────────────
+    def _build_header(self) -> Gtk.Widget:
+        header = Adw.HeaderBar()
+        # NARROW stacks the icon over the label, which is what makes four views
+        # fit: WIDE puts them side by side and truncated every title to "Comp…"
+        # the moment a fourth tab arrived.
+        header.set_title_widget(
+            Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.NARROW))
+        header.pack_start(self._build_project_button())
+        header.pack_start(self._build_running_pill())
+        header.pack_end(self._build_menu_button())
+        # Zen hides rows, so it has to announce itself: a window that is quietly
+        # not showing you six services is worse than one that never had them.
+        # Clicking it is the way out, because the first thing you do with a mode
+        # you did not mean to enter is click the thing that says you are in it.
+        zen_label = Gtk.Label(label="zen")
+        zen_label.add_css_class("caption")
+        self._zen_pill = Gtk.Button(child=zen_label, visible=False, valign=Gtk.Align.CENTER,
+                                    tooltip_text="Only what needs you. Click or Ctrl+Z to leave.")
+        self._zen_pill.add_css_class("zen-pill")
+        self._zen_pill.connect("clicked", lambda _b: self._toggle_zen())
+        header.pack_end(self._zen_pill)
+        return header
+
     def _build_project_button(self) -> Gtk.Widget:
         self._project_button = Gtk.MenuButton(
             label=self._project or "no project", tooltip_text="Switch project")
@@ -320,6 +384,7 @@ class Window(Adw.ApplicationWindow):
             "activate", lambda _a, t: self._run_action("start", f"@{t.get_string()}"))
         self.add_action(profile_action)
 
+        menu.append("Zen mode", "win.zen")
         menu.append("RAM caps…", "win.limits")
         menu.append("Doctor…", "win.doctor")
         menu.append("Ports, plugins & shells…", "win.tools")
@@ -661,7 +726,8 @@ class Window(Adw.ApplicationWindow):
             row.connect("activated", lambda _r, n=name: self._show_detail(n))
             self._consumers_group.add(row)
             self._consumer_rows.append(row)
-        self._consumers_group.set_visible(bool(rows))
+        # "What is eating my RAM" is a good question and not this one.
+        self._consumers_group.set_visible(bool(rows) and not self._zen)
 
     def _build_components(self) -> Gtk.Widget:
         # Twelve rows plus six headings is a lot of scrolling to answer "is
@@ -1141,13 +1207,21 @@ class Window(Adw.ApplicationWindow):
         self._restart_stream()
 
     def _fail(self, message: str) -> None:
-        self._banner.set_title(message)
+        # pitcrew colours its own errors, so raw from the pipe the failure this
+        # banner exists to explain arrives as SGR bytes across the top of the
+        # window. Every banner message comes through here, so strip them here.
+        #
+        # NOT markup-escaped, unlike every other title in this file: AdwBanner
+        # is the one that does not parse markup (use-markup defaults off), and
+        # escaping turned `pitcrew init <dir>` into a literal `&lt;dir&gt;`.
+        self._banner.set_title(ansi.plain(message))
         self._banner.set_revealed(True)
 
     # ── rendering ───────────────────────────────────────────────────────────
     def _on_state(self, state: dict) -> None:
         self._banner.set_revealed(False)
         self._have_frame = True
+        self._last_state = state
         components = state.get("components", [])
         self._last_components = components
         # The stream's own clock, not the GUI's: uptime is measured against the
@@ -1189,6 +1263,7 @@ class Window(Adw.ApplicationWindow):
     def _render_components(self, components: list[dict], colors: dict[str, str]) -> None:
         mode = self._settings["group"]
         total = len(components)
+        everything = components
         needle = self._comp_filter.get_text().strip().lower()
         if needle:
             components = [c for c in components
@@ -1196,20 +1271,41 @@ class Window(Adw.ApplicationWindow):
         if self._settings["stopped"] == "hide":
             components = [c for c in components
                           if c.get("state") in ("up", "starting", "external", "crashed")]
+        if self._zen:
+            components = [c for c in components if self._zen_wants(c)]
 
         buckets: dict[tuple[str, str], list[dict]] = {}
         for comp in components:
             buckets.setdefault(group_of(comp, mode), []).append(comp)
         ordered = sorted(buckets.items())
+
+        # The heading counts describe the GROUP, never the filtered slice of it.
+        # "orders 0/1 up" under a filter that hid the healthy half of orders is
+        # not a summary, it is a wrong number stated confidently.
+        whole: dict[str, list[dict]] = {}
+        for comp in everything:
+            whole.setdefault(group_of(comp, mode)[1], []).append(comp)
         self._show_empty_state(len(components), total, needle)
 
         # Rebuild only when the shape changed — a new project, a settings change,
         # or a component appearing. Otherwise every frame would throw away and
         # recreate every widget, losing scroll position and focus twice a second.
-        layout_key = (mode, tuple((heading, tuple(c["name"] for c in comps))
+        # Which buttons a heading gets depends on whether ANY and whether ALL
+        # of the whole group is running, so those two bits are part of the
+        # shape — otherwise a component going up while zen hid it would never
+        # re-add that group's Stop button. Two bits, not the states themselves:
+        # a rebuild costs scroll position and focus, and a group crosses these
+        # boundaries a handful of times a day, not twice a second.
+        def _buttons_for(heading: str) -> tuple[bool, bool]:
+            members = whole.get(heading) or ()
+            live = [c for c in members if c.get("state") in ("up", "starting", "external")]
+            return bool(live), len(live) == len(members)
+
+        layout_key = (mode, tuple((heading, tuple(c["name"] for c in comps),
+                                   _buttons_for(heading))
                                   for (_sort, heading), comps in ordered))
         if layout_key != self._layout_key:
-            self._rebuild_components(ordered, colors)
+            self._rebuild_components(ordered, colors, whole)
             self._layout_key = layout_key
 
         now = self._last_at
@@ -1222,9 +1318,11 @@ class Window(Adw.ApplicationWindow):
             self._apply_collapse(heading)
             group = self._group_widgets.get(heading)
             if group is not None:
-                group.set_description(self._group_summary(comps))
+                group.set_description(self._group_summary(whole.get(heading, comps),
+                                                          hidden=len(whole.get(heading, comps)) - len(comps)))
 
-    def _rebuild_components(self, ordered, colors: dict[str, str]) -> None:
+    def _rebuild_components(self, ordered, colors: dict[str, str],
+                            whole: dict[str, list[dict]] | None = None) -> None:
         for group in self._groups:
             self._comp_page.remove(group)
         self._groups.clear()
@@ -1245,7 +1343,13 @@ class Window(Adw.ApplicationWindow):
             # Starting "sales" means both its roles. Doing that one row at a
             # time is the commonest thing anyone does here, so it belongs on
             # the heading rather than in a menu.
-            group.set_header_suffix(self._group_actions(heading, comps))
+            # The WHOLE group, not the rows a filter left behind: a button
+            # labelled "Stop all" under a heading called `orders` has to stop
+            # orders. Under zen the healthy half of the group is hidden, and
+            # "all" meaning "the two you can see" is how you end up with a
+            # service you thought you stopped still holding its port.
+            group.set_header_suffix(
+                self._group_actions(heading, (whole or {}).get(heading, comps)))
             for comp in comps:
                 row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action,
                                    self._show_logs_for)
@@ -1266,6 +1370,9 @@ class Window(Adw.ApplicationWindow):
             self._empty_label.set_text("Waiting for the first sample from pitcrew…")
         elif needle:
             self._empty_label.set_text(f"Nothing matches “{needle}”.")
+        elif self._zen and total:
+            # Not "the list is broken" — the answer you turned zen on to get.
+            self._empty_label.set_text("Nothing needs you.")
         else:
             self._empty_label.set_text(empty_message(total))
         self._empty_group.set_visible(True)
@@ -1320,7 +1427,7 @@ class Window(Adw.ApplicationWindow):
         return button
 
     @staticmethod
-    def _group_summary(comps: list[dict]) -> str:
+    def _group_summary(comps: list[dict], hidden: int = 0) -> str:
         up = sum(1 for c in comps if c.get("state") == "up")
         rss = sum(c.get("rss") or 0 for c in comps)
         capped = sum(c.get("limit") or 0 for c in comps)
@@ -1329,9 +1436,22 @@ class Window(Adw.ApplicationWindow):
             parts.append(human_bytes(rss))
         if capped:
             parts.append(f"capped at {human_bytes(capped)}")
+        # Says the rows below are not all of them, so the count above reads as
+        # the group's rather than as a contradiction of what you can see.
+        if hidden > 0:
+            parts.append(f"{hidden} not shown")
         return "  ·  ".join(parts)
 
     def _render_deps(self, deps: list[dict]) -> None:
+        # A running postgres is not news. A stopped one explains everything
+        # else on the screen, so in zen that is the only kind worth a row.
+        if self._zen:
+            deps = [d for d in deps if d.get("state") != "up"]
+            for name, (row, _dot, _badge) in self._dep_rows.items():
+                row.set_visible(any(d["name"] == name for d in deps))
+        elif self._dep_rows:
+            for row, _dot, _badge in self._dep_rows.values():
+                row.set_visible(True)
         # Dependencies were the one thing on this page you could look at and not
         # touch — `pitcrew start deps` existed and had no button. A dead
         # postgres is the commonest reason a stack looks broken, so the fix
@@ -1359,7 +1479,8 @@ class Window(Adw.ApplicationWindow):
             row, dot, badge = self._dep_rows[dep["name"]]
             dot.set_color(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1])
             badge.set_text(dep["state"])
-        self._dep_group.set_visible(bool(self._dep_rows))
+        self._dep_group.set_visible(bool(self._dep_rows)
+                                   and (not self._zen or bool(deps)))
 
     def _restart_dep(self, name: str) -> None:
         # `pitcrew stop --deps` refuses PITCREW_PROTECTED_DEPS, which is the
