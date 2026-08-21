@@ -36,7 +36,7 @@ from .model import (
 from .notify import CrashWatcher
 from .platform import cli_argv
 from .profiles import profile_names
-from .registry import current_project, declared_root, known_projects, project_file
+from .registry import current_project, known_projects
 from .runner import Runner, Stream
 from .settings import SETTINGS_BY_KEY, Settings
 from .style import install as install_css
@@ -118,6 +118,7 @@ class Window(Adw.ApplicationWindow):
         breakpoint_ = Adw.Breakpoint.new(
             Adw.BreakpointCondition.parse("max-width: 880px"))
         breakpoint_.add_setter(self._columns, "orientation", Gtk.Orientation.VERTICAL)
+        breakpoint_.add_setter(self._left, "width-request", -1)
         self.add_breakpoint(breakpoint_)
 
         self._install_shortcuts()
@@ -425,10 +426,16 @@ class Window(Adw.ApplicationWindow):
         # NOT homogeneous. Four meters and a list of findings are not the same
         # size and never will be, and splitting the width evenly left half the
         # Machine column empty while the findings wrapped to two lines each.
-        self._meters_group.set_size_request(360, -1)
-        self._meters_group.set_hexpand(False)
+        # Machine and Largest-consumers are one thought — "what is this
+        # costing" — so they share the left column, and findings get the right
+        # one at full height. Stacked instead, the left column ran out at a
+        # third of the page while consumers pushed itself below the fold.
+        self._left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22)
+        self._left.append(self._meters_group)
+        self._left.set_size_request(360, -1)
+        self._left.set_hexpand(False)
         self._columns = Gtk.Box(spacing=24)
-        self._columns.append(self._meters_group)
+        self._columns.append(self._left)
         self._columns.append(self._findings_group)
 
         # Recovery: the review step. Every candidate is named, with what it is
@@ -457,11 +464,11 @@ class Window(Adw.ApplicationWindow):
 
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22,
                        margin_top=20, margin_bottom=24, margin_start=18, margin_end=18)
+        self._left.append(self._consumers_group)
         body.append(self._verdict_banner)
         body.append(self._columns)
         body.append(self._recover_group)
         body.append(self._protected_group)
-        body.append(self._consumers_group)
 
         clamp = Adw.Clamp(maximum_size=1240, tightening_threshold=900, child=body)
         return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp)
@@ -689,6 +696,11 @@ class Window(Adw.ApplicationWindow):
         # enough for the columns below to line up.
         clamp = Adw.Clamp(maximum_size=1240, tightening_threshold=900,
                           child=self._comp_page)
+        # Names the columns once, so the rows below stop needing to be read:
+        # without it you infer that `:19871` is a port and `8s` is uptime from
+        # every row, every time. Built by ComponentRow itself, from the widths
+        # the rows actually use.
+        self._comp_page.prepend(ComponentRow.header())
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                       child=clamp, vexpand=True)
         # The filter stays put while the list scrolls under it — a search box
@@ -769,54 +781,116 @@ class Window(Adw.ApplicationWindow):
         return self._logs
 
     def _build_projects(self) -> Gtk.Widget:
+        """What pitcrew knows about every checkout on this machine.
+
+        This was the one view still inside an AdwPreferencesPage — clamped to
+        600px with most of the window empty — and it showed a name and a path
+        while `pitcrew projects` already printed running counts and
+        `pitcrew ports` printed clashes. The GUI was worse than the CLI at the
+        one thing the tool sells: several projects on one machine.
+        """
         self._projects_group = Adw.PreferencesGroup(
             title="Projects", description="Everything pitcrew knows about on this machine")
-        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add project",
-                         valign=Gtk.Align.CENTER)
-        add.add_css_class("flat")
+        add = Gtk.Button(valign=Gtk.Align.CENTER)
+        add.set_child(Adw.ButtonContent(icon_name="list-add-symbolic", label="Add"))
         add.connect("clicked", lambda _b: self._add_project())
         self._projects_group.set_header_suffix(add)
-
-        self._projects_page = Adw.PreferencesPage()
-        self._projects_page.add(self._projects_group)
         self._project_rows: list[Adw.ActionRow] = []
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
+                       margin_top=20, margin_bottom=24, margin_start=18, margin_end=18)
+        body.append(self._projects_group)
+        clamp = Adw.Clamp(maximum_size=1240, tightening_threshold=900, child=body)
         self._refresh_projects()
-        return self._projects_page
+        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp)
 
     def _refresh_projects(self) -> None:
+        # Asked of the CLI, not worked out here: liveness means reading pidfiles
+        # and testing pids, which is process discovery — the one thing the GUI
+        # does not do. `pitcrew projects --json` already knows.
+        self._runner.run_json(["projects", "--json"], self._render_projects)
+
+    def _render_projects(self, state: dict | None, problem: str) -> None:
         for row in self._project_rows:
             self._projects_group.remove(row)
         self._project_rows.clear()
 
-        names = known_projects()
-        if not names:
+        projects = (state or {}).get("projects") or []
+        if not projects:
             row = Adw.ActionRow(
-                title="No projects yet",
+                title=plain(problem) if problem else "No projects yet",
+                use_markup=False,
                 subtitle="Add one to have pitcrew look at a checkout and write its config")
             self._projects_group.add(row)
             self._project_rows.append(row)
             return
 
-        for name in names:
-            root = declared_root(project_file(name))
-            row = Adw.ActionRow(title=name, use_markup=False,
-                                subtitle=plain(str(root)) if root else "root unknown")
-            if name == self._project:
-                badge = Gtk.Label(label="current", valign=Gtk.Align.CENTER)
-                badge.add_css_class("caption")
-                badge.add_css_class("accent")
-                row.add_prefix(badge)
-            box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-            box.append(self._project_button_for(
-                "document-edit-symbolic", "Edit config", lambda n=name: self._edit_config(n)))
-            box.append(self._project_button_for(
-                "media-playback-start-symbolic", "Watch this project",
-                lambda n=name: self._switch_to(n)))
-            box.append(self._project_button_for(
-                "user-trash-symbolic", "Forget", lambda n=name: self._confirm_forget(n)))
-            row.add_suffix(box)
-            self._projects_group.add(row)
-            self._project_rows.append(row)
+        for project in projects:
+            self._projects_group.add(self._project_row(project))
+
+    def _project_row(self, project: dict) -> Adw.ActionRow:
+        name = project.get("name", "?")
+        row = Adw.ActionRow(title=plain(name), use_markup=False,
+                            subtitle=self._project_subtitle(project))
+        row.set_subtitle_lines(2)
+
+        # A dot that means what it means everywhere else in this app: green if
+        # something is running, red if the checkout has gone, grey if idle.
+        if not project.get("exists", True):
+            row.add_prefix(Dot(STATE_STYLE["crashed"][1]))
+        elif project.get("running"):
+            row.add_prefix(Dot(STATE_STYLE["up"][1]))
+        else:
+            row.add_prefix(Dot(STATE_STYLE["down"][1]))
+
+        if project.get("current"):
+            badge = Gtk.Label(label="current", valign=Gtk.Align.CENTER)
+            badge.add_css_class("caption")
+            badge.add_css_class("accent")
+            row.add_suffix(badge)
+
+        # A port two projects both claim is not cosmetic: pitcrew decides a
+        # component is up from its port, so each project reports the other's
+        # services as its own. Worth a warning next to the name.
+        clashes = project.get("clashes") or []
+        if clashes:
+            warn = Gtk.Image(icon_name="dialog-warning-symbolic", valign=Gtk.Align.CENTER)
+            warn.add_css_class("warning")
+            warn.set_tooltip_text("\n".join(
+                f"port {c['port']}: {name}/{c['component']} vs "
+                f"{c['project']}/{c['theirs']}" for c in clashes))
+            row.add_suffix(warn)
+
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        box.append(self._project_button_for(
+            "document-edit-symbolic", "Edit config", lambda n=name: self._edit_config(n)))
+        box.append(self._project_button_for(
+            "media-playback-start-symbolic", "Watch this project",
+            lambda n=name: self._switch_to(n)))
+        box.append(self._project_button_for(
+            "user-trash-symbolic", "Forget", lambda n=name: self._confirm_forget(n)))
+        row.add_suffix(box)
+        self._project_rows.append(row)
+        return row
+
+    @staticmethod
+    def _project_subtitle(project: dict) -> str:
+        if not project.get("exists", True):
+            return plain(f"{project.get('root', '?')}   ·   that directory is gone")
+        bits = []
+        running = project.get("running") or 0
+        bits.append(f"{running} running" if running else "idle")
+        ports = project.get("ports") or []
+        if ports:
+            shown = "  ".join(f":{p['port']}" for p in ports[:6])
+            if len(ports) > 6:
+                shown += f"  +{len(ports) - 6}"
+            bits.append(shown)
+        clashes = project.get("clashes") or []
+        if clashes:
+            others = sorted({c["project"] for c in clashes})
+            bits.append(f"shares a port with {', '.join(others)}")
+        return plain(f"{project.get('root', '?')}\n" + "   ·   ".join(bits))
 
     @staticmethod
     def _project_button_for(icon: str, tooltip: str, action) -> Gtk.Button:
@@ -1162,7 +1236,10 @@ class Window(Adw.ApplicationWindow):
         # Lift the dependencies group out once, then put it back last, so it
         # stays pinned below the components however many groups there are.
         # AdwPreferencesPage only appends, so ordering means re-adding.
+        # Deps FIRST. A dead postgres is the likeliest reason six services are
+        # failing, and it was the last thing on the page, under every app.
         self._comp_page.remove(self._dep_group)
+        self._comp_page.append(self._dep_group)
         for (_sort, heading), comps in ordered:
             group = Adw.PreferencesGroup(title=plain(heading))
             # Starting "sales" means both its roles. Doing that one row at a
@@ -1180,7 +1257,6 @@ class Window(Adw.ApplicationWindow):
             self._comp_page.append(group)
             self._groups.append(group)
             self._group_widgets[heading] = group
-        self._comp_page.append(self._dep_group)
 
     def _show_empty_state(self, shown: int, total: int, needle: str = "") -> None:
         if shown:

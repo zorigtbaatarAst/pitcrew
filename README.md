@@ -411,6 +411,7 @@ pitcrew status --json     # the whole state, for a status line or a CI gate
 pitcrew json --watch      # the same object once per interval, as NDJSON
 pitcrew wait sales --timeout 90   # block until it is up
 pitcrew ps                # everything running, across every registered project
+pitcrew projects --json   # the registry as data: running counts, ports, clashes
 pitcrew ports             # every port every project claims, and any clashes
 ```
 
@@ -460,6 +461,7 @@ renamed or dropped field fails there rather than in your dashboard.
 | | |
 |---|---|
 | top level | `schema` `project` `root` `collector` `at` `logDir` `errorPattern` `shells` `machine` `components` `deps` `health` `summary` |
+| `projects --json` | per project: `name` `root` `exists` `current` `running` `ports[]` `clashes[]` |
 | component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` `url` `health` `since` `restarts` `idle` `protected` `processes` |
 | machine | `memTotal` `memUsed` `cpuPercent` `swapTotal` `swapUsed` |
 | dep | `name` `state` |

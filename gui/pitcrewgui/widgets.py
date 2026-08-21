@@ -542,14 +542,20 @@ class FindingRow(Adw.ActionRow):
             verb, args, label, destructive = action
             self._button(label, lambda: on_run(verb, args, destructive), destructive)
         elif fix:
+            # Monospace, because it is a command to copy rather than a control.
             hint = Gtk.Label(label=fix, valign=Gtk.Align.CENTER, selectable=True)
             hint.add_css_class("caption")
             hint.add_css_class("dim-label")
+            hint.add_css_class("monospace")
             self.add_suffix(hint)
 
     def _button(self, label: str, action, destructive: bool) -> None:
+        # Framed, not flat. Next to it sits a suggested command that is NOT
+        # clickable (`pitcrew limit …`, plain text you copy), and as flat text
+        # the two were indistinguishable — the only way to find out which was
+        # which was to click one.
         button = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
-        button.add_css_class("flat")
+        button.add_css_class("pill")
         if destructive:
             button.add_css_class("destructive-action")
         button.connect("clicked", lambda _b: action())
@@ -635,6 +641,33 @@ class ProcessTree(Gtk.Box):
 class ComponentRow(Adw.ActionRow):
     """One component: state, what it is using, and the buttons that act on it."""
 
+    # The column geometry, in one place, because a header that names these has
+    # to line up with them exactly — and a header whose widths are guessed
+    # separately is worse than none at all.
+    W_BADGE, W_MEM, W_CPU, W_PORT, W_AGE, W_NOTE = 8, 16, 5, 7, 6, 10
+    W_CAP = 58          # pixels, not characters: it is a bar
+    W_ACTIONS = 11      # the icon buttons at the end, in characters
+
+    @classmethod
+    def header(cls) -> Adw.ActionRow:
+        """A row of column names built from the same geometry as a real row.
+
+        An AdwActionRow, not a Box, for the same reason: its internal padding
+        and suffix spacing are what the rows below use, and reproducing those
+        by hand is how a header ends up two columns out of step.
+        """
+        row = Adw.ActionRow(title="component", use_markup=False)
+        row.add_css_class("table-head")
+        row.set_activatable(False)
+        for text, chars in (("state", cls.W_BADGE), ("memory / cap", cls.W_MEM),
+                            ("", cls.W_CAP // 8), ("cpu", cls.W_CPU),
+                            ("port", cls.W_PORT), ("up", cls.W_AGE),
+                            ("", cls.W_NOTE), ("", cls.W_ACTIONS)):
+            label = Gtk.Label(label=text, valign=Gtk.Align.CENTER, width_chars=chars,
+                              xalign=0 if text == "state" else 1)
+            row.add_suffix(label)
+        return row
+
     def __init__(self, name: str, color: str, on_action, on_show_logs=None) -> None:
         # Component names and ports come from a config file, not from us.
         super().__init__(title=name, use_markup=False)
@@ -658,18 +691,18 @@ class ComponentRow(Adw.ActionRow):
         # The badge first, so it packs immediately after the title. State was
         # appearing twice at opposite ends of the row — a dot on the left and
         # the word on the right, with six columns of figures between them.
-        self._badge = Gtk.Label(valign=Gtk.Align.CENTER, xalign=0, width_chars=8)
+        self._badge = Gtk.Label(valign=Gtk.Align.CENTER, xalign=0, width_chars=self.W_BADGE)
         self._badge.add_css_class("caption")
         self._badge_class = ""
         self.add_suffix(self._badge)
 
-        self._mem = self._column(16)
+        self._mem = self._column(self.W_MEM)
         self._cap = Bar()
-        self._cap.set_size_request(58, -1)
-        self._cpu = self._column(5)
-        self._port = self._column(7)
-        self._age = self._column(6)
-        self._note = self._column(10)          # exit code, restarts — the exceptions
+        self._cap.set_size_request(self.W_CAP, -1)
+        self._cpu = self._column(self.W_CPU)
+        self._port = self._column(self.W_PORT)
+        self._age = self._column(self.W_AGE)
+        self._note = self._column(self.W_NOTE)  # exit code, restarts — the exceptions
         for widget in (self._mem, self._cap, self._cpu, self._port, self._age, self._note):
             self.add_suffix(widget)
 

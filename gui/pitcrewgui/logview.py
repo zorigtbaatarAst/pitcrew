@@ -107,7 +107,10 @@ class LogView(Gtk.Box):
                                       tooltip_text="Wrap long lines")
         self._wrap.connect("toggled", lambda _b: self._apply_wrap())
 
-        clear = Gtk.Button(icon_name="edit-clear-all-symbolic", tooltip_text="Clear")
+        # Labelled, not an icon. It sat in a row of four unlabelled toggles and
+        # its glyph reads as "copy" — the one control there that throws
+        # something away was the one you could not identify.
+        clear = Gtk.Button(label="Clear", tooltip_text="Empty this view (the log file is untouched)")
         clear.connect("clicked", lambda _b: self._clear())
 
         bar = Gtk.Box(spacing=8, margin_top=10, margin_bottom=4,

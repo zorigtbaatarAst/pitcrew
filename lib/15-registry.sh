@@ -212,8 +212,62 @@ cmd_ports() { # the whole port map across every registered project
   return 0
 }
 
+# Everything the registry knows, as data. The desktop app was showing a name
+# and a path while `pitcrew projects` showed running counts and `pitcrew ports`
+# showed clashes — the GUI was strictly worse than the CLI at the one thing the
+# tool claims as a feature, because there was no structured way to ask.
+#
+# A cold path: it loads every registered project's config in a subshell to read
+# its ports. That is fine here and would not be in a frame.
+projects_json() {
+  local n root cur first=1 pfirst
+  cur=$(project_current || true)
+  printf '{"schema":%s,"projects":[' "$PITCREW_JSON_SCHEMA"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    root=$(project_root_of "$n" || echo "")
+    [ $first = 1 ] || printf ','
+    first=0
+    local j_name j_root j_exists=false j_current=false j_running=0
+    _json_str "$n";    j_name=$JSTR
+    _json_str "$root"; j_root=$JSTR
+    [ -n "$root" ] && [ -d "$root" ] && { j_exists=true; j_running=$(project_running_count "$root"); }
+    [ "$n" = "$cur" ] && j_current=true
+    printf '{"name":%s,"root":%s,"exists":%s,"current":%s,"running":%s,"ports":[' \
+      "$j_name" "$j_root" "$j_exists" "$j_current" "$j_running"
+    pfirst=1
+    local port comp j_port j_comp
+    while read -r port comp; do
+      [ -n "$port" ] || continue
+      [ $pfirst = 1 ] || printf ','
+      pfirst=0
+      _json_num "$port"; j_port=$JNUM
+      _json_str "$comp"; j_comp=$JSTR
+      printf '{"port":%s,"component":%s}' "$j_port" "$j_comp"
+    done < <(project_ports "$n" | sort -n)
+    printf '],"clashes":['
+    pfirst=1
+    local other ocomp j_other j_ocomp
+    while read -r port comp other ocomp; do
+      [ -n "$port" ] || continue
+      [ $pfirst = 1 ] || printf ','
+      pfirst=0
+      _json_num "$port";  j_port=$JNUM
+      _json_str "$comp";  j_comp=$JSTR
+      _json_str "$other"; j_other=$JSTR
+      _json_str "$ocomp"; j_ocomp=$JSTR
+      printf '{"port":%s,"component":%s,"project":%s,"theirs":%s}' \
+        "$j_port" "$j_comp" "$j_other" "$j_ocomp"
+    done < <(port_conflicts "$n" 2>/dev/null)
+    printf ']}'
+  done < <(project_list)
+  printf ']}\n'
+  return 0
+}
+
 # shellcheck disable=SC2120  # callers pass nothing; the args are for `pitcrew ls`
 cmd_projects() {
+  [ "${1:-}" = --json ] && { projects_json; return 0; }
   if [ "${1:-}" = --show ]; then
     [ -n "${2:-}" ] || die "usage: pitcrew projects --show <name>"
     project_info "$2"

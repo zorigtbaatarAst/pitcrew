@@ -290,6 +290,54 @@ test_a_project_is_registered_and_becomes_current() {
   assert_eq "$(project_root_of fixrepo)" "$ROOTFIX" "root recorded"
 }
 
+test_the_registry_can_be_read_as_data() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  # The desktop app was showing a name and a path while `pitcrew projects`
+  # already knew how much was running and `pitcrew ports` knew about clashes.
+  # There was no structured way to ask, so the GUI was worse than the CLI at
+  # the one thing the tool sells: several projects on one machine.
+  _init_repo
+  local rival="$PROJECTS_DIR/rival.sh"
+  printf 'PITCREW_ROOT=%s\nPITCREW_APPS=(thing)\npitcrew_app thing --be-cmd "true" --be-port 8111\n' \
+    "$ROOTFIX" > "$rival"
+
+  local out; out=$(cmd_projects --json)
+  printf '%s' "$out" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
+    || { _t_bad "projects --json is not valid JSON"; rm -f "$rival"; return; }
+
+  local got; got=$(printf '%s' "$out" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+p = {x["name"]: x for x in d["projects"]}
+f = p["fixrepo"]
+print(" ".join(sorted(p)))
+print(" ".join(sorted(f)))
+print(f["exists"], f["current"])
+print(sorted(x["port"] for x in f["ports"]))
+print([c["project"] for c in f["clashes"]])')
+  assert_eq "$(printf '%s' "$got" | sed -n 1p)" "fixrepo rival" "every registered project"
+  assert_eq "$(printf '%s' "$got" | sed -n 2p)" \
+    "clashes current exists name ports root running" "the fields a UI needs"
+  assert_eq "$(printf '%s' "$got" | sed -n 3p)" "True True" "the checkout is there, and it is current"
+  assert_match "$(printf '%s' "$got" | sed -n 4p)" '8111' "the ports it claims"
+  assert_match "$(printf '%s' "$got" | sed -n 5p)" 'rival' "and who else claims one of them"
+  rm -f "$rival"
+}
+
+test_a_registry_entry_pointing_at_a_deleted_checkout_says_so() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  # A path that is gone is the commonest stale-registry state, and a UI that
+  # renders it like any other project sends you hunting.
+  local gone; gone=$(mktemp -d); rmdir "$gone"
+  printf 'root: %s\nname: ghost\n' "$gone" > "$PROJECTS_DIR/ghost.yaml"
+  local got; got=$(cmd_projects --json | python3 -c '
+import json, sys
+g = {x["name"]: x for x in json.load(sys.stdin)["projects"]}["ghost"]
+print(g["exists"], g["running"])')
+  assert_eq "$got" "False 0" "reported as missing, not as idle"
+  rm -f "$PROJECTS_DIR/ghost.yaml"
+}
+
 test_a_directory_resolves_to_the_project_that_contains_it() {
   _init_repo
   assert_eq "$(project_for_dir "$ROOTFIX/sales/backend")" "fixrepo" "deep inside the checkout"

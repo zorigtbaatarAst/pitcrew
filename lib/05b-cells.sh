@@ -254,6 +254,16 @@ comp_cell() { # $1 comp, $2 graph width (0 = no graph column) → R: one aligned
       cell+="$R"
       [ "$CELL_RAM" = 1 ] && { printf -v R ' %6s' ""; cell+="$R"; }
       [ "$CELL_CPU" = 1 ] && { printf -v R ' %4s' ""; cell+="$R"; }
+    elif [ "$st" = n/a ]; then
+      # NOT the baseline below. "down" is a component that exists and is not
+      # running — an empty chart is the truth. "n/a" is an app with no frontend
+      # at all, and drawing a chart there is a claim about something that does
+      # not exist. The asymmetric-role model is the whole point; the two must
+      # not look identical.
+      printf -v R '%*s' "$gw" ""
+      cell+="$R"
+      [ "$CELL_RAM" = 1 ] && { printf -v R ' %6s' ""; cell+="$R"; }
+      [ "$CELL_CPU" = 1 ] && { printf -v R ' %4s' ""; cell+="$R"; }
     else
       # a faint baseline, not a lone dot: the column reads as an empty chart
       # rather than as something broken

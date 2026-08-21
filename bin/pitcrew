@@ -106,6 +106,8 @@ Usage:
                                      exit 0 up · 1 timed out · 2 crashed
                                      --strict rejects ports served by anything
                                      pitcrew did not start
+  pitcrew projects [--json]         every registered project: what is running,
+                                     the ports it claims, and any clashes
   pitcrew ps                        everything running, across all projects
   pitcrew watch                     same as bare `pitcrew` — live dashboard, no auto-start
   pitcrew logs [<component>]        in-place log viewer

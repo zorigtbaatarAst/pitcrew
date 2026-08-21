@@ -134,7 +134,42 @@ field is removed or changes meaning.
   the first sample, which at a 10-second interval is ten seconds of a window
   that looks broken.
 
+### Added
+- **`pitcrew projects --json`** — the registry as data: what is running in each
+  checkout, the ports it claims, whether the directory still exists, and any
+  port another project also claims.
+
 ### Changed
+- **The Projects view was worse than `pitcrew projects`.** It was the last view
+  still inside an `AdwPreferencesPage`, so it clamped to 600px and left most of
+  the window empty — and it showed a name and a path while the CLI already
+  printed running counts and clashes. It now fills the window and each row
+  carries a state dot, a running count, the ports, and a warning naming the
+  other project when two claim the same one. For a tool whose pitch is "several
+  projects on one machine", that view should be the one that sells it.
+- **The Overview no longer pushes its own content below the fold.** Machine and
+  Largest-consumers are one thought — what is this costing — so they share the
+  left column and findings take the right at full height. Before, the left
+  column ran out a third of the way down while consumers pushed itself off the
+  bottom of a 740px window.
+- **You can tell what is clickable now.** A finding's runnable fix is a framed
+  pill; a suggested command you copy is monospace text. They were both flat
+  text in the same row, so the only way to learn which was which was to click.
+- **Dependencies moved to the top of the Components view.** A dead postgres is
+  the likeliest reason six services are failing, and it was the last thing on
+  the page, under every app.
+- **A column header** over the component rows, built from the row widths
+  themselves rather than guessed alongside them — the figures have been aligned
+  since the last change, and without a header you infer that `:19871` is a port
+  and `8s` is uptime from every row, every time.
+- **`n/a` and `down` no longer render identically** in the terminal. Both drew a
+  faint baseline. For `down` that is right — a component that exists and is not
+  running has an empty chart. For `n/a` there is no component at all, and a
+  chart there is a claim about something that does not exist. The asymmetric
+  role model is the whole point; the two must not look the same.
+- The log view's **Clear** control is a labelled button. It sat in a row of four
+  unlabelled toggles and its glyph reads as "copy" — the one control there that
+  throws something away was the one you could not identify.
 - **`pitcrew json` got 12× faster and stopped forking.** Every field was
   escaped through `$(_json_str …)`, and a command substitution is a subshell —
   so one state object cost one fork per field per component. Twelve components
