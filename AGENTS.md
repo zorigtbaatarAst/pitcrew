@@ -78,6 +78,13 @@ attribute, and most are pinned by a test.
    the state object; do not re-derive it in Python. `model.py` is pure
    presentation (no GTK, no OS calls) and is where testable logic goes.
 
+   **Never use `Gio.DataInputStream.read_line_async` on a pipe.** It reports
+   EOF as `(b"", 0)` and a blank line as `(b"", 0)`, so any code built on it has
+   to choose between stopping at the first empty line and spinning the main
+   loop at EOF. `runner.LineReader` reads raw bytes and splits lines itself;
+   use it. Three separate "the log view is frozen" bugs came out of that one
+   ambiguity.
+
    For one-shot answers the GUI may shell out through `Runner.run_json`
    (`doctor --json`, `diagnose --json`) — that is rendering the CLI's answer,
    not computing its own. A finding's `fix` string is checked by

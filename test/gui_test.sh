@@ -56,14 +56,21 @@ gi.require_version('Gtk', '4.0')
 from gi.repository import Gio, GLib
 $_PRELUDE
 
+# Counts completed reads — the direct measure of the spin. Patched into the
+# module rather than hooked through a seam in Stream: production code should
+# not carry a hole cut for a test.
+import pitcrewgui.runner as _runner
+_READS = [0]
+class _CountingReader(_runner.LineReader):
+    def _done(self, stream, result):
+        _READS[0] += 1
+        return super()._done(stream, result)
+_runner.LineReader = _CountingReader
+
 class Counting(pgui.Stream):
-    '''Counts completed reads — the direct measure of the spin.'''
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self.reads = 0
-    def _finish_line(self, stream, result):
-        self.reads += 1
-        return super()._finish_line(stream, result)
+    @property
+    def reads(self):
+        return _READS[0]
 
 def spin(ms):
     loop = GLib.MainLoop()
@@ -118,6 +125,119 @@ print(len(frames), 'quiet' if s.reads - after < 20 else f'SPUN({s.reads - after}
       len([e for e in errors if 'stream read failed' in e]))
 ")
   assert_eq "$out" "0 quiet 0" "silent after stop, and cancelling is not an error"
+}
+
+# ── the log tail ────────────────────────────────────────────────────────────
+#
+# All three of these were "the log view is frozen" with three different causes,
+# and none of them was visible in a screenshot.
+
+_logview_drive() { # $1 = python body, with LogView / GLib / a temp dir in scope
+  "$PY_WITH_GI" -c "
+import pathlib, sys
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Adw, GLib
+$_PRELUDE
+Adw.init()
+LogView = pgui.LogView
+d = pathlib.Path('$1')
+d.mkdir(parents=True, exist_ok=True)
+COMPS = [{'name': 'be-api', 'role': 'be', 'app': 'api'}]
+
+def spin(ms):
+    loop = GLib.MainLoop()
+    GLib.timeout_add(ms, lambda: (loop.quit(), False)[1])
+    loop.run()
+$2
+" 2>/dev/null
+}
+
+test_a_blank_line_does_not_end_the_log_tail() {
+  gui_available || return 0
+  # read_line_finish reports EOF as (b'', 0) — and a BLANK LINE as (b'', 0) too.
+  # Treating the pair as EOF stopped the tail at the first empty line, which a
+  # starting Spring Boot or npm process emits within its first few. The view
+  # then sat there showing a stale prefix of the log forever.
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+log = d / 'be-api.log'
+log.write_text('first\n\nthird\n')
+v = LogView(lambda m: None)
+v.update_sources(str(d), COMPS, 'ERROR')
+spin(500)
+with log.open('a') as f:
+    f.write('\nfourth\n'); f.flush()
+spin(800)
+v.stop()
+print(','.join(v._raw))
+")
+  rm -rf "$dir"
+  assert_eq "$out" "first,,third,,fourth" "every line, blanks included, and it kept going"
+}
+
+test_a_log_that_appears_later_is_picked_up() {
+  gui_available || return 0
+  # Open Logs, then start the stack: the component was selected while it had no
+  # log file, and nothing ever re-checked. The view showed "no log yet" for the
+  # rest of the session, which looks exactly like a frozen tail.
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+v = LogView(lambda m: None)
+v.update_sources(str(d), COMPS, 'ERROR')
+spin(200)
+before = list(v._raw)
+(d / 'be-api.log').write_text('now it exists\n')
+v.update_sources(str(d), COMPS, 'ERROR')      # the next frame from the stream
+spin(800)
+v.stop()
+print(len(before), ','.join(v._raw))
+")
+  rm -rf "$dir"
+  assert_eq "$out" "0 now it exists" "nothing before it started, and following after"
+}
+
+test_the_tail_follows_a_restart_that_rotates_the_log() {
+  gui_available || return 0
+  # Restarting a component renames its log and starts a new one (rotate_log in
+  # lib/07a-start.sh). Plain `tail -f` goes on following the RENAMED file, so
+  # after a restart the view showed the previous run and never moved again.
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+log = d / 'be-api.log'
+log.write_text('run1\n')
+v = LogView(lambda m: None)
+v.update_sources(str(d), COMPS, 'ERROR')
+spin(500)
+log.rename(d / 'be-api.log.1')
+log.write_text('run2\n')
+spin(2000)
+v.stop()
+print('run2' in v._raw)
+")
+  rm -rf "$dir"
+  assert_eq "$out" "True" "it re-opens by name, so the new run is what you see"
+}
+
+test_the_picker_is_not_rebuilt_on_every_frame() {
+  gui_available || return 0
+  # update_sources compared whole component dicts, which carry live rss/cpu — so
+  # the comparison was false every frame and the rebuild ran every frame.
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+v = LogView(lambda m: None)
+calls = []
+real = v._refill
+v._refill = lambda: (calls.append(1), real())[1]
+v.update_sources(str(d), [dict(COMPS[0], rss=1)], 'ERROR')
+v.update_sources(str(d), [dict(COMPS[0], rss=2)], 'ERROR')
+v.update_sources(str(d), [dict(COMPS[0], rss=3)], 'ERROR')
+v.stop()
+print(len(calls))
+")
+  rm -rf "$dir"
+  assert_eq "$out" "1" "only the first frame changes the shape"
 }
 
 # ── settings and grouping ───────────────────────────────────────────────────

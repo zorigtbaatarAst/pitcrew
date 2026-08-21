@@ -108,6 +108,27 @@ field is removed or changes meaning.
   `diagnose` samples for one second and inherits the rest.
 
 ### Fixed
+- **The desktop app's log view froze, for three separate reasons.** All three
+  looked identical — a tail that stopped moving — and none was visible in a
+  screenshot:
+  - **A blank line ended the tail.** `Gio.DataInputStream.read_line_finish`
+    reports end-of-stream as `(b"", 0)` and reports a BLANK LINE as `(b"", 0)`
+    too; there is no third value to tell them apart. Treating the pair as EOF
+    stopped the reader at the first empty line — which a starting Spring Boot
+    or `npm` process emits within its first few — and it never recovered.
+    Reading raw bytes and splitting lines here removes the ambiguity: on a
+    pipe, zero bytes means the writer is gone. The same conflation was latent
+    in the state stream, where one blank line on stdout would have ended the
+    whole GUI's updates.
+  - **A log that appeared later was never picked up.** Opening Logs and *then*
+    starting the stack left the view showing "no log yet" for the rest of the
+    session, because nothing re-checked after the selection was made.
+  - **A restart lost the tail.** Restarting rotates the log; plain `tail -f`
+    went on following the renamed file, so the view showed the previous run.
+    Now `tail -F`, which re-opens by name (both GNU and BSD have it).
+- **A burst of output made the window sluggish.** One scroll callback was
+  queued per line, so `npm install` put thousands of them in front of the
+  compositor. Coalesced to one per burst.
 - **Every YAML registry pointer pitcrew wrote was unloadable.** `pitcrew init`
   on a repo shipping its own `pitcrew.yaml` emitted `root:` before `include:`,
   and the loader requires `include` to be the first key — so the entry it had

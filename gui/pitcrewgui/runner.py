@@ -12,6 +12,90 @@ from gi.repository import Gio, GLib
 from .platform import bash5, missing_bash_message
 
 
+class LineReader:
+    """Complete lines out of a pipe, without confusing a blank line for EOF.
+
+    `Gio.DataInputStream.read_line_async` cannot express the difference. At end
+    of stream it completes with `(b"", 0)` — and a BLANK LINE completes with
+    `(b"", 0)` as well. There is no third value to tell them apart, so code
+    built on it has to pick which bug to have:
+
+      * treat the pair as EOF, and the reader stops dead at the first empty
+        line. A starting Spring Boot or npm process emits one within its first
+        dozen lines, so the log tail froze almost immediately and never
+        recovered.
+      * treat it as a line, and at real EOF the async read completes
+        IMMEDIATELY, forever. Re-arming spins the main loop above GTK's redraw
+        priority and the whole window stops painting.
+
+    Raw byte reads have no such ambiguity: on a pipe, zero bytes means the
+    writer is gone, and anything else is data. Splitting the lines here costs a
+    few lines of code and removes the choice entirely.
+    """
+
+    CHUNK = 65536
+    # A "line" longer than this is not a line. Flushed rather than buffered so
+    # a process spewing binary cannot grow this without bound.
+    MAX_PARTIAL = 1 << 20
+
+    def __init__(self, stream, on_line, on_eof=None, cancellable=None,
+                 priority: int = GLib.PRIORITY_DEFAULT):
+        self._stream = stream
+        self._on_line = on_line
+        self._on_eof = on_eof
+        self._cancel = cancellable
+        self._priority = priority
+        self._buffer = b""
+        self._stopped = False
+
+    def start(self) -> None:
+        self._arm()
+
+    def stop(self) -> None:
+        self._stopped = True
+
+    @property
+    def running(self) -> bool:
+        return not self._stopped
+
+    def _arm(self) -> None:
+        if self._stopped or (self._cancel is not None and self._cancel.is_cancelled()):
+            return
+        self._stream.read_bytes_async(self.CHUNK, self._priority, self._cancel, self._done)
+
+    def _done(self, stream, result) -> None:
+        try:
+            data = stream.read_bytes_finish(result)
+        except GLib.Error:
+            self._finish()               # cancelled, or the pipe went away
+            return
+        if data is None or data.get_size() == 0:
+            # Anything held back was a line with no terminator. It is still
+            # output someone wants to see.
+            if self._buffer:
+                self._emit(self._buffer)
+                self._buffer = b""
+            self._finish()
+            return
+        self._buffer += data.get_data()
+        parts = self._buffer.split(b"\n")
+        self._buffer = parts.pop()
+        for part in parts:
+            self._emit(part)
+        if len(self._buffer) > self.MAX_PARTIAL:
+            self._emit(self._buffer)
+            self._buffer = b""
+        self._arm()
+
+    def _emit(self, raw: bytes) -> None:
+        self._on_line(raw.rstrip(b"\r").decode("utf-8", "replace"))
+
+    def _finish(self) -> None:
+        self._stopped = True
+        if self._on_eof is not None:
+            self._on_eof()
+
+
 class Stream:
     """Owns the `pitcrew json --watch` child and turns its stdout into dicts.
 
@@ -44,12 +128,21 @@ class Stream:
         except GLib.Error as error:
             self._on_error(f"cannot start pitcrew: {error.message}")
             return
-        self._read(Gio.DataInputStream.new(self._proc.get_stdout_pipe()), self._on_line)
-        self._read(Gio.DataInputStream.new(self._proc.get_stderr_pipe()), self._on_stderr)
+        # Raw pipes, not DataInputStreams: see LineReader for why a blank line
+        # on either of these used to end the stream for good.
+        self._out = LineReader(self._proc.get_stdout_pipe(), self._on_line,
+                               cancellable=self._cancel)
+        self._err = LineReader(self._proc.get_stderr_pipe(), self._on_stderr,
+                               cancellable=self._cancel)
+        self._out.start()
+        self._err.start()
         self._proc.wait_check_async(None, self._on_exit)
 
     def stop(self) -> None:
         self._stopping = True
+        for reader in (getattr(self, "_out", None), getattr(self, "_err", None)):
+            if reader is not None:
+                reader.stop()
         self._cancel.cancel()            # our side first, then the child's
         if self._proc:
             # SIGKILL, so no half-dead bash lingers holding the pipe. Its `sleep`
@@ -57,52 +150,18 @@ class Stream:
             # and we have already stopped reading from it.
             self._proc.force_exit()
 
-    def _read(self, stream: Gio.DataInputStream, handler) -> None:
-        if self._stopping:
+    def _on_line(self, raw: str) -> None:
+        if not raw.strip():              # a blank line is not a malformed frame
             return
-        stream.read_line_async(GLib.PRIORITY_DEFAULT, self._cancel, handler)
+        try:
+            self._on_state(json.loads(raw))
+        except json.JSONDecodeError as error:
+            # Never silently: a malformed frame means the contract broke.
+            self._on_error(f"malformed state from pitcrew: {error}")
 
-    def _on_line(self, stream: Gio.DataInputStream, result) -> None:
-        raw = self._finish_line(stream, result)
-        if raw is None:                  # EOF or cancelled; _on_exit explains why
-            return
-        if raw.strip():                  # a blank line is not a malformed frame
-            try:
-                self._on_state(json.loads(raw))
-            except json.JSONDecodeError as error:
-                # Never silently: a malformed frame means the contract broke.
-                self._on_error(f"malformed state from pitcrew: {error}")
-        self._read(stream, self._on_line)
-
-    def _on_stderr(self, stream: Gio.DataInputStream, result) -> None:
-        raw = self._finish_line(stream, result)
-        if raw is None:
-            return
+    def _on_stderr(self, raw: str) -> None:
         if raw.strip():
             self._stderr_tail = (self._stderr_tail + [raw.strip()])[-5:]
-        self._read(stream, self._on_stderr)
-
-    def _finish_line(self, stream: Gio.DataInputStream, result) -> str | None:
-        """One line, or None at end-of-stream.
-
-        GIO reports EOF as a NULL *or empty* line — in PyGObject it is `b""`,
-        never None — and an async read on a pipe that has hit EOF completes
-        IMMEDIATELY, every time. Re-arming on that spins the main loop at
-        G_PRIORITY_DEFAULT (0), which outranks GTK's redraw (G_PRIORITY_HIGH_IDLE
-        + 20 = 120), so the window stops painting and the process pegs a core.
-        That is what "switching project freezes the GUI" was: stop() killed the
-        child, and the dead stream then starved the compositor.
-        """
-        try:
-            data, length = stream.read_line_finish(result)
-        except GLib.Error as error:
-            if not self._stopping and not error.matches(
-                    Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
-                self._on_error(f"stream read failed: {error.message}")
-            return None
-        if data is None or length == 0:
-            return None
-        return data.decode("utf-8", "replace")
 
     def _on_exit(self, proc: Gio.Subprocess, result) -> None:
         if self._stopping:               # we killed it; that is not a failure

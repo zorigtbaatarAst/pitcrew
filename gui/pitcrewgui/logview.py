@@ -12,6 +12,8 @@ import re
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from .runner import LineReader
+
 TAIL_LINES = 400          # what a fresh selection shows before following live
 MAX_LINES = 5000          # ceiling per component, so a chatty dev server cannot
                           # grow the buffer until the window stops repainting
@@ -24,11 +26,19 @@ class LogView(Gtk.Box):
         self._log_dir: str | None = None
         self._pattern: re.Pattern[str] | None = None
         self._all: list[dict] = []       # every component, with its role
+        self._shape: list[tuple] = []    # the part of that which affects the picker
         self._names: list[str] = []      # what the picker currently offers
         self._current: str | None = None
         self._proc: Gio.Subprocess | None = None
         self._cancel: Gio.Cancellable | None = None
+        self._reader: LineReader | None = None
+        # A component you selected before starting it has no log file to tail.
+        # Remembered so the next frame can pick it up the moment one appears —
+        # otherwise "open Logs, then start the stack" showed the same "no log
+        # yet" line forever, which looks exactly like a frozen view.
+        self._waiting: str | None = None
         self._lines = 0
+        self._scroll_pending = False
         # Every line as it arrived, so a filter can be changed without losing
         # what scrolled past — the file may already have been truncated.
         self._raw: list[str] = []
@@ -100,10 +110,31 @@ class LogView(Gtk.Box):
                 # losing the highlight beats losing the whole view.
                 self._pattern = None
         self._log_dir = log_dir
-        if components == self._all:
-            return
+        # Compare the SHAPE, not the frame: every component dict carries live
+        # rss/cpu, so `components == self._all` was false on every single frame
+        # and made this do its full rebuild work each time.
+        shape = [(c["name"], c.get("role"), c.get("app")) for c in components]
         self._all = components
-        self._refill()
+        if shape != self._shape:
+            self._shape = shape
+            self._refill()
+        self._retry_waiting()
+
+    def _retry_waiting(self) -> None:
+        """Start tailing a log that did not exist when it was selected.
+
+        Also covers the tailer dying — `tail -F` survives a restart's log
+        rotation, but if it is gone for any other reason a view that never
+        re-arms is indistinguishable from a stopped service.
+        """
+        if self._current is None or self._log_dir is None:
+            return
+        if self._reader is not None and self._reader.running:
+            return
+        if self._waiting != self._current:
+            return
+        if GLib.file_test(f"{self._log_dir}/{self._current}.log", GLib.FileTest.EXISTS):
+            self._open(self._current)
 
     def _refill(self) -> None:
         """Rebuild the picker for the selected role, backends first."""
@@ -150,6 +181,9 @@ class LogView(Gtk.Box):
         self._filter.grab_focus()
 
     def stop(self) -> None:
+        if self._reader:
+            self._reader.stop()
+        self._reader = None
         if self._cancel:
             self._cancel.cancel()
         if self._proc:
@@ -165,39 +199,42 @@ class LogView(Gtk.Box):
             return
         path = f"{self._log_dir}/{name}.log"
         if not GLib.file_test(path, GLib.FileTest.EXISTS):
-            self._status.set_text(f"{name} has no log yet — it has not been started")
+            self._waiting = name
+            self._status.set_text(
+                f"{name} has not been started yet — this will follow its log as soon as it is")
             return
+        self._waiting = None
         self._status.set_text(path)
 
-        # `tail -n N -f` is POSIX and handles the truncate-on-restart that
-        # launch_process does; re-implementing a follower here would be a second
-        # thing to get wrong.
+        # -F, not -f: restarting a component ROTATES its log (see rotate_log in
+        # lib/07a-start.sh), and plain -f goes on following the renamed file —
+        # so after a restart the view sat there showing the old run and looking
+        # frozen. -F re-opens by name. Both GNU and BSD tail have it, so this is
+        # not a GNU-only flag.
         self._cancel = Gio.Cancellable()
         try:
             self._proc = Gio.Subprocess.new(
-                ["tail", "-n", str(TAIL_LINES), "-f", path],
+                ["tail", "-n", str(TAIL_LINES), "-F", path],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
         except GLib.Error as error:
             self._on_error(f"cannot tail {name}: {error.message}")
             return
-        self._read(Gio.DataInputStream.new(self._proc.get_stdout_pipe()))
+        # PRIORITY_DEFAULT_IDLE, not PRIORITY_LOW: low sits BELOW GTK's redraw,
+        # so a service logging hard could keep the reader from ever being
+        # serviced. Idle still yields to painting without being starved by it.
+        self._reader = LineReader(self._proc.get_stdout_pipe(), self._append,
+                                  on_eof=self._tail_ended, cancellable=self._cancel,
+                                  priority=GLib.PRIORITY_DEFAULT_IDLE)
+        self._reader.start()
 
-    def _read(self, stream: Gio.DataInputStream) -> None:
-        if self._cancel is None or self._cancel.is_cancelled():
-            return
-        stream.read_line_async(GLib.PRIORITY_LOW, self._cancel, self._on_line)
+    def _tail_ended(self) -> None:
+        """The tailer exited — say so instead of silently showing a dead view.
 
-    def _on_line(self, stream: Gio.DataInputStream, result) -> None:
-        try:
-            data, length = stream.read_line_finish(result)
-        except GLib.Error:
-            return                       # cancelled, or the pipe went away
-        # EOF is an EMPTY line here, never None; re-arming on it spins the main
-        # loop and freezes the window. Same trap as the state stream.
-        if data is None or length == 0:
-            return
-        self._append(data.decode("utf-8", "replace"))
-        self._read(stream)
+        `_retry_waiting` picks it up again on the next frame if the log is
+        still there, so this is a note rather than a dead end.
+        """
+        if self._current is not None:
+            self._waiting = self._current
 
     def _shown(self, line: str) -> bool:
         needle = self._filter.get_text().strip().lower()
@@ -222,8 +259,13 @@ class LogView(Gtk.Box):
         if not self._shown(line):
             return
         self._insert(line)
-        if self._follow.get_active():
-            GLib.idle_add(self._scroll_to_end, priority=GLib.PRIORITY_LOW)
+        # One idle callback per burst, not per line. `npm install` arrives in
+        # chunks of hundreds of lines, and queueing a scroll for each of them
+        # put thousands of callbacks in front of the compositor — the view
+        # filled in, but the window stopped feeling alive while it did.
+        if self._follow.get_active() and not self._scroll_pending:
+            self._scroll_pending = True
+            GLib.idle_add(self._scroll_to_end, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
     def _insert(self, line: str) -> None:
         end = self._buffer.get_end_iter()
@@ -237,6 +279,7 @@ class LogView(Gtk.Box):
             self._lines = MAX_LINES
 
     def _scroll_to_end(self) -> bool:
+        self._scroll_pending = False
         adjustment = self._scroller.get_vadjustment()
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
         return False
