@@ -127,6 +127,11 @@ class Runner:
     def __init__(self, pitcrew: str):
         self._pitcrew = pitcrew
 
+    @property
+    def pitcrew(self) -> str:
+        """The CLI this Runner drives — some checks shell out to it directly."""
+        return self._pitcrew
+
     def run(self, args: list[str], on_done) -> None:
         launcher = Gio.SubprocessLauncher.new(
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
@@ -147,6 +152,37 @@ class Runner:
             on_done(False, error.message)
             return
         on_done(proc.get_successful(), (out or "").strip())
+
+def yaml_config_error(pitcrew: str, text: str) -> str:
+    """`pitcrew check` on a candidate YAML config: the message, or "" if it loads.
+
+    The tool's own parser, not a second one written here: a GUI that accepted a
+    file the CLI then refused would be the worst of both, and a YAML subset has
+    exactly one authoritative definition (lib/18-yaml.sh).
+    """
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False,
+                                         encoding="utf-8") as handle:
+            handle.write(text)
+            probe = handle.name
+    except OSError as error:
+        return f"could not write a temporary file to check: {error}"
+    try:
+        result = subprocess.run([pitcrew, "check", probe], env={**os.environ, "NO_COLOR": "1"},
+                                capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"could not run pitcrew check: {error}"
+    finally:
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
+    if result.returncode == 0:
+        return ""
+    output = f"{result.stdout}\n{result.stderr}".replace(probe, "config")
+    # `check` prints the path and a verdict line too; the middle is the reason.
+    return "\n".join(line.strip() for line in output.splitlines()
+                     if line.strip() and "not loadable" not in line).strip() or "pitcrew rejected it"
 
 def bash_syntax_error(text: str) -> str:
     """`bash -n` on a candidate config: the message, or "" if it parses."""

@@ -1,0 +1,138 @@
+# pitcrew.yaml — example config, annotated with every supported key.
+#
+# Drop a file like this at the root of your project as `pitcrew.yaml` (or run
+# `pitcrew init` to generate one from what is actually in the repo). pitcrew
+# walks up from your current directory looking for it, so you can run `pitcrew`
+# from any subdirectory — or from anywhere with `pitcrew -C <project dir>`.
+#
+# Everything is optional except `apps:` and at least one `cmd:` per app.
+#
+# This models a small monorepo: "storefront" (Rails API + React frontend),
+# "worker" (backend-only queue processor, no frontend) and "admin" (a Next.js
+# app with no separate backend process) — the asymmetric-role model pitcrew is
+# built around. A role exists for an app if, and only if, it has a `cmd:`.
+#
+# The older bash format (examples/pitcrew.config.example.sh) still loads
+# unchanged, and still wins nothing: if a directory holds both, the YAML is
+# read and pitcrew says so.
+
+# ── display ────────────────────────────────────────────────────────────────
+name: Storefront        # defaults to the project directory's name
+emoji: "🛒"             # defaults to 🏁
+
+# ── apps ───────────────────────────────────────────────────────────────────
+# The order they appear in here is the order they appear in the dashboard.
+apps:
+  storefront:
+    url_path: /api      # cosmetic suffix after the backend URL in `pitcrew urls`
+    be:
+      # `dir` is relative to the project root and becomes a `cd` in front of
+      # the command — so commands stay short and quoting stays correct.
+      dir: storefront
+      cmd: bundle exec rails s -p 4000
+      port: 4000        # used for health checks, URLs, and "is it up yet"
+      # When set, pitcrew curls http://127.0.0.1:<port><health> and requires
+      # the body to contain "UP" (Spring Boot Actuator convention) before
+      # calling the component up rather than starting. Omit it and an open
+      # port is enough.
+      health: /health
+      max: 2G           # this component's RAM cap, overriding max.be below
+      # Source directories for `pitcrew stale [--restart]`, which flags
+      # components whose code changed since they started. Relative to the root;
+      # defaults to `dir` when that is set.
+      watch: [storefront/app, storefront/lib]
+    fe:
+      dir: storefront/frontend
+      cmd: "{ [ -d node_modules ] || npm install; } && npm run dev"
+      port: 3000
+
+  worker:
+    be:
+      dir: worker
+      cmd: bundle exec sidekiq
+  # worker has no `fe:` — its frontend slot is simply absent. It shows as "n/a"
+  # in the dashboard, is never started, and is never counted as "down".
+
+  admin:
+    fe:
+      dir: admin
+      cmd: npm run dev
+      port: 3001
+
+# ── docker dependencies ────────────────────────────────────────────────────
+deps: [postgres, redis]
+# Containers pitcrew will never stop, even with `pitcrew stop --deps` — for
+# anything holding state you do not want torn down by accident.
+protected_deps: [postgres]
+# Run once, best-effort, right after deps are (re)started. Failures are ignored.
+deps_ready: docker exec postgres pg_isready >/dev/null 2>&1
+
+# ── extra environment for every start command of that role ─────────────────
+# Prepended verbatim in front of the command — JAVA_HOME, credentials for local
+# S3-alikes, whatever your processes need.
+env:
+  be: RAILS_ENV=development
+  fe: ""
+
+# ── RAM caps and boot timeout ──────────────────────────────────────────────
+# Role defaults; a per-app `max:` above overrides them, and `pitcrew limit`
+# overrides both with a machine-local value that is not shared through git.
+max:
+  be: 4G
+  fe: 6G
+wait: 180               # seconds `pitcrew start` waits for a component to come up
+
+# ── quick shells ───────────────────────────────────────────────────────────
+# `pitcrew shell <name>` runs one of these in your current terminal, as a real
+# foreground interactive shell — a db shell, a REPL, whatever you reach for.
+shells:
+  db: docker exec -it postgres psql -U postgres storefront_development
+  redis: docker exec -it redis redis-cli
+
+# ── project-specific doctor checks ─────────────────────────────────────────
+# Label on the left, a shell command on the right. `pitcrew doctor` runs each
+# after its own checks: exit 0 is a tick, anything else is a cross.
+doctor:
+  bundler present: command -v bundle
+  frontend deps installed: test -d storefront/frontend/node_modules
+
+# ── dashboard ──────────────────────────────────────────────────────────────
+# All of these are environment variables too (PITCREW_THEME, PITCREW_REFRESH,
+# ...); setting them here pins how this project wants to be drawn.
+dashboard:
+  # refresh: 0.5              # seconds between frames — fractions are fine
+  # graph: braille            # block (default) | braille — 2 samples per cell
+  # history: 240              # sparkline samples kept per component
+  # theme: tokyonight         # default | tokyonight | rosepine | gruvbox | mono
+  # color: truecolor          # truecolor | 16 | none — detected from $COLORTERM
+  # icons: nerd               # unicode (default) | nerd — needs a patched font
+  # narrow_at: 110            # below this width, one component per row
+  # compact_at: 24            # below this height, fold the gauges, drop the legend
+  # micro_at: 12              # below this height, title + table + keys, nothing else
+  # mouse: 1                  # click to select, click again to expand, wheel scrolls
+  #
+  # What the error radar (the ⚡ counter, and the `e` key) treats as an error.
+  # A Spring backend and a Vite frontend do not log failures the same way.
+  # error_pattern: 'ERROR|FATAL|Exception|UnhandledRejection'
+  #
+  # How often the health endpoint is probed, in seconds. Probes run in the
+  # background so a booting JVM can never stall a repaint, and back off to 3x
+  # this once a service reports UP.
+  # health_interval: 5
+  # dep_interval: 10          # how often `docker inspect` runs for deps
+  #
+  # Bring crashed components back automatically, with exponential backoff and a
+  # budget so a service that crashes on a syntax error is not relaunched
+  # forever. Only active while the live dashboard is open — pitcrew has no daemon.
+  # restart: 1
+  # restart_backoff: 2        # seconds before the first retry, doubling
+  # restart_max: 5            # attempts before giving up (press r to retry)
+  # restart_reset: 60         # seconds up before the attempt budget resets
+  #
+  # log_keep: 2               # previous runs' logs kept per component (0 = erase on restart)
+
+# ── uncommon ───────────────────────────────────────────────────────────────
+# Point pitcrew at a project root other than this file's directory. A registry
+# entry in ~/.config/pitcrew/projects/ is exactly this plus an `include:`.
+# root: ..
+# include: ../shared/pitcrew.yaml   # must be the first key in the file

@@ -47,10 +47,10 @@ _init_repo() { # → INITOUT, and the generated config path in GENCFG
   GENCFG=$(project_file fixrepo)
 }
 
-_load_generated_from() { # source a config the way bin/pitcrew does
+_load_generated_from() { # load a config the way bin/pitcrew does
   config_defaults
   ROOT=$(config_declared_root "$1")
-  source "$1"
+  if config_is_yaml "$1"; then yaml_config_load "$1"; else source "$1"; fi
   config_finalize "$1"
 }
 _load_generated() { _load_generated_from "$GENCFG"; }
@@ -177,9 +177,14 @@ pitcrew_app only --be-cmd "true" --be-port 19999'
   assert_eq "$PITCREW_PROJECT_NAME" "handwritten" "the repo's config is what loads"
   assert_eq "${PITCREW_BE_PORT[only]}" 19999 "with its own values"
 
-  # --detect overrides, for when you do want a fresh look
+  # --detect overrides, for when you do want a fresh look. It writes the
+  # current format, and replaces the pointer entry rather than sitting next to
+  # it — two registry files for one project means editing the wrong one.
   cmd_init --force --detect --name fixrepo "$ROOTFIX" >/dev/null 2>&1
-  assert_match "$(cat "$gen")" 'pitcrew_app' "--detect regenerates instead"
+  gen=$(project_file fixrepo)
+  assert_match "$gen" '\.yaml$' "--detect writes the YAML format"
+  assert_match "$(cat "$gen")" 'apps:' "--detect regenerates instead"
+  assert_eq "$(project_list | tr '\n' ' ')" "fixrepo " "one registry entry, not two"
   rm -f "$ROOTFIX/pitcrew.config.sh"
   cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
 }
@@ -190,23 +195,23 @@ test_switching_project_re_execs_into_the_same_view() {
   # dashboard showing one project's components with another's ports.
   ( SELF=/bin/echo
     PITCREW_CMD=logs
-    printf 'PITCREW_ROOT=/tmp\n' > "$(project_file other)"
+    printf 'root: /tmp\n' > "$PROJECTS_DIR/other.yaml"
     fzf() { echo other; }
     local out; out=$(switch_project)
     assert_match "$out" '\-p other logs' "re-execs into the picked project, same view"
     assert_eq "$(project_current)" "other" "and the choice persists"
-    rm -f "$(project_file other)" )
+    rm -f "$PROJECTS_DIR/other.yaml" )
 }
 
 test_cancelling_the_project_picker_switches_nothing() {
   ( SELF=/bin/echo
-    printf 'PITCREW_ROOT=/tmp\n' > "$(project_file other)"
+    printf 'root: /tmp\n' > "$PROJECTS_DIR/other.yaml"
     local before; before=$(project_current || echo none)
     fzf() { return 1; }
     local out; out=$(switch_project)
     assert_not_match "$out" '\-p other' "no re-exec"
     assert_eq "$(project_current || echo none)" "$before" "current project unchanged"
-    rm -f "$(project_file other)" )
+    rm -f "$PROJECTS_DIR/other.yaml" )
 }
 
 test_the_picker_preview_describes_a_project() {
@@ -219,7 +224,8 @@ test_the_picker_preview_describes_a_project() {
 
 test_port_clashes_between_projects_are_found() {
   _init_repo                                     # fixrepo: sales be 8111, fe 3111
-  local other; other=$(project_file rival)
+  # deliberately the OLD bash format: the two must interoperate in one registry
+  local other="$PROJECTS_DIR/rival.sh"
   printf 'PITCREW_ROOT=%s\nPITCREW_APPS=(thing)\npitcrew_app thing --be-cmd "true" --be-port 8111\n' \
     "$ROOTFIX" > "$other"
   local hits; hits=$(port_conflicts fixrepo)
@@ -254,6 +260,33 @@ test_init_refuses_to_clobber_without_force() {
   _init_repo
   assert_fails cmd_init --name fixrepo "$ROOTFIX"
   assert_ok    cmd_init --force --name fixrepo "$ROOTFIX"
+}
+
+test_init_writes_yaml_by_default_and_bash_when_asked() {
+  _init_repo
+  assert_match "$GENCFG" '\.yaml$' "the default format"
+  assert_match "$(cat "$GENCFG")" 'apps:' "and it is YAML"
+  cmd_init --force --sh --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  local gen; gen=$(project_file fixrepo)
+  assert_match "$gen" '\.sh$' "--sh still writes the bash format"
+  assert_match "$(cat "$gen")" 'pitcrew_app' "and it is bash"
+  _load_generated_from "$gen"
+  assert_eq "${PITCREW_BE_PORT[sales]}" 8111 "which still loads"
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1   # back to the default
+}
+
+test_the_two_formats_describe_the_same_project() {
+  # The YAML front end is not a second model, it is a second way of writing the
+  # one model. If the two ever disagree, everything downstream is a coin-flip.
+  _init_repo; _load_generated
+  local yaml_comps="${PITCREW_COMPS[*]}" yaml_port="${PITCREW_BE_PORT[sales]}"
+  local yaml_health="${PITCREW_BE_HEALTH_PATH[sales]}"
+  cmd_init --force --sh --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  _load_generated_from "$(project_file fixrepo)"
+  assert_eq "${PITCREW_COMPS[*]}"              "$yaml_comps"  "same components"
+  assert_eq "${PITCREW_BE_PORT[sales]}"        "$yaml_port"   "same ports"
+  assert_eq "${PITCREW_BE_HEALTH_PATH[sales]}" "$yaml_health" "same health path"
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
 }
 
 test_init_says_so_when_it_recognises_nothing() {

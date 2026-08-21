@@ -66,7 +66,7 @@ cmd_doctor() {
 
   local me="" conflicts=0 line
   case "$PITCREW_CFG" in
-    "$PROJECTS_DIR"/*) me=${PITCREW_CFG##*/}; me=${me%.sh} ;;
+    "$PROJECTS_DIR"/*) me=${PITCREW_CFG##*/}; me=${me%.*} ;;
   esac
   if [ -n "$me" ]; then
     while IFS= read -r line; do
@@ -118,7 +118,7 @@ cmd_doctor_json() {
   # in-repo config has no name to compare the others against.
   local me=""
   case "$PITCREW_CFG" in
-    "$PROJECTS_DIR"/*) me=${PITCREW_CFG##*/}; me=${me%.sh} ;;
+    "$PROJECTS_DIR"/*) me=${PITCREW_CFG##*/}; me=${me%.*} ;;
   esac
   clashes=0
   [ -n "$me" ] && clashes=$(port_conflicts "$me" 2>/dev/null | grep -c . || true)

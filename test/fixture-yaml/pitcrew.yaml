@@ -1,0 +1,53 @@
+# test/fixture-yaml/pitcrew.yaml — the YAML twin of test/fixture.
+#
+# Deliberately the same awkward shapes as the .sh fixture (an app with both
+# roles, a backend-only app, a frontend-only app, a health path on one backend
+# only) so the two loaders can be asserted to produce the same model — plus the
+# parser features the .sh format has no equivalent of.
+name: fixture
+emoji: "🧪"
+
+apps:
+  both:
+    url_path: /api
+    be:
+      cmd: "true"
+      port: 19801
+      health: /health
+      watch: src/be
+    fe:
+      cmd: "true"
+      port: 19802
+      watch: [src/fe, src/shared]
+  beonly:
+    be:
+      dir: services/beonly
+      cmd: "true"
+      port: 19803
+  feonly:
+    fe:
+      cmd: >-
+        true
+        --folded
+      port: 19804
+
+deps: [fixture-db, fixture-cache]
+protected_deps:
+  - fixture-db
+
+max:
+  be: 2G
+  fe: 4G
+
+env:
+  be: "FIX_BE=1"
+
+shells:
+  db: "echo db"          # an inline comment, which must not reach the value
+
+doctor:
+  bash is present: command -v bash
+
+dashboard:
+  theme: mono
+  error_pattern: 'BOOM|KABOOM'

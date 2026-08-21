@@ -8,7 +8,7 @@ from gi.repository import Adw, GLib, Gtk
 
 from .model import human_bytes, plain
 from .registry import project_config_path
-from .runner import Runner, bash_syntax_error
+from .runner import Runner, bash_syntax_error, yaml_config_error
 from .widgets import OutputView, human_age
 
 
@@ -108,12 +108,13 @@ class InitDialog(Adw.Dialog):
         self._on_created()
 
 class ConfigDialog(Adw.Dialog):
-    """The project's config, as the bash file it actually is.
+    """The project's config, as the file it actually is — YAML or bash.
 
-    A form over `pitcrew_app` calls would be nicer to look at and wrong: a config
-    is a sourced shell script that may branch, loop or source something else, and
-    a structured editor that cannot round-trip that would quietly drop it. So:
-    edit the text, and refuse to save something bash cannot even parse.
+    A form would be nicer to look at and wrong for the bash format: that config
+    is a sourced shell script that may branch, loop or source something else,
+    and a structured editor that cannot round-trip it would quietly drop what
+    it did not understand. So: edit the text, and refuse to save something the
+    tool itself cannot load — `bash -n` for a .sh, `pitcrew check` for a .yaml.
     """
 
     def __init__(self, runner: Runner, name: str, on_saved):
@@ -163,13 +164,19 @@ class ConfigDialog(Adw.Dialog):
         start, end = self._buffer.get_bounds()
         return self._buffer.get_text(start, end, False)
 
+    def _problem(self, text: str) -> str:
+        """Whatever stops this text from loading, in the config's own format."""
+        if self._path.suffix in (".yaml", ".yml"):
+            return yaml_config_error(self._runner.pitcrew, text)
+        return bash_syntax_error(text)
+
     def _save(self) -> None:
         text = self._text()
-        problem = bash_syntax_error(text)
+        problem = self._problem(text)
         if problem:
             # Saving a config bash cannot parse breaks every pitcrew command for
             # this project, including the one that would tell you why.
-            self._output.show_text(f"not saved — bash cannot parse this:\n\n{problem}")
+            self._output.show_text(f"not saved — pitcrew could not load this:\n\n{problem}")
             return
         try:
             self._path.write_text(text, encoding="utf-8")
@@ -180,9 +187,9 @@ class ConfigDialog(Adw.Dialog):
         self._on_saved()
 
     def _check(self) -> None:
-        problem = bash_syntax_error(self._text())
+        problem = self._problem(self._text())
         if problem:
-            self._output.show_text(f"bash cannot parse this:\n\n{problem}")
+            self._output.show_text(f"pitcrew could not load this:\n\n{problem}")
             return
         self._output.show_text("running pitcrew doctor…")
         self._runner.run(["-p", self._name, "doctor"],

@@ -11,6 +11,26 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **YAML configs.** A project can now be described by a `pitcrew.yaml` instead
+  of a `pitcrew.config.sh`: `apps: → <name>: → be:/fe: → cmd/port/health`, with
+  `dir:` folding the repeated `cd $ROOT/... &&` out of every start command, and
+  `dir:`/`watch:` resolved against the project root. `deps`, `env`, `max`,
+  `wait`, `shells`, `doctor` and `dashboard` cover the rest of the old
+  `PITCREW_*` surface, and `include:` does what `source` did for registry
+  entries. `pitcrew init` writes YAML by default; `--sh` still writes bash.
+  The bash format is not deprecated and loads unchanged — YAML is a front end
+  onto the same model, not a second one. Where a directory holds both, the
+  YAML is read and pitcrew says so instead of choosing silently.
+- **An unknown config key is now a message, not silence.** Every YAML key is
+  checked against the schema and reported with its exact path
+  (`unknown key 'apps.api.be.prot'`) — the failure mode a bash config could
+  never catch. The parser refuses tabs, anchors, flow mappings, tags and
+  sequences of mappings with a file and line number rather than half-parsing
+  them.
+- **`pitcrew check [<file>]`** — load a config and report what is wrong with
+  it, without starting anything. `bash -n` for a `.sh`, a full parse-and-
+  validate for a `.yaml`. The desktop app's config editor uses it as its
+  save-guard, so it can never accept a file the CLI would reject.
 - **Per-component RAM caps.** `pitcrew limit [<component> <size|default>]`, plus
   `pitcrew_app <app> --be-max/--fe-max` in a config. Resolution is
   machine-local override → per-app cap → role default.

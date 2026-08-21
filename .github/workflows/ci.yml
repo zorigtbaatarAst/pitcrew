@@ -21,12 +21,18 @@ jobs:
       # it fails on the fast job, minutes before the macOS one gets there.
       - name: test again on the portable collector
         run: PITCREW_FORCE_COLLECTOR=ps make test
+      # Both config formats, because they are two front ends onto one model and
+      # a regression in either is invisible from the other.
       - name: the tool runs at all
         run: |
-          ./bin/pitcrew -C test/fixture help
-          ./bin/pitcrew -C test/fixture status
-          ./bin/pitcrew -C test/fixture doctor
-          ./bin/pitcrew -C test/fixture status --json
+          for fix in test/fixture test/fixture-yaml; do
+            ./bin/pitcrew -C "$fix" help
+            ./bin/pitcrew -C "$fix" status
+            ./bin/pitcrew -C "$fix" doctor
+            ./bin/pitcrew -C "$fix" status --json
+            ./bin/pitcrew check "$fix"
+          done
+          ./bin/pitcrew check examples/pitcrew.yaml
 
   # macOS is a supported target, not a courtesy: it is the only job that runs
   # the real ps/lsof/vm_stat/kern.boottime code against the real commands, and
@@ -47,12 +53,18 @@ jobs:
         run: make lint
       - name: test
         run: make test
+      # Both config formats, because they are two front ends onto one model and
+      # a regression in either is invisible from the other.
       - name: the tool runs at all
         run: |
-          ./bin/pitcrew -C test/fixture help
-          ./bin/pitcrew -C test/fixture status
-          ./bin/pitcrew -C test/fixture doctor
-          ./bin/pitcrew -C test/fixture status --json
+          for fix in test/fixture test/fixture-yaml; do
+            ./bin/pitcrew -C "$fix" help
+            ./bin/pitcrew -C "$fix" status
+            ./bin/pitcrew -C "$fix" doctor
+            ./bin/pitcrew -C "$fix" status --json
+            ./bin/pitcrew check "$fix"
+          done
+          ./bin/pitcrew check examples/pitcrew.yaml
 
   # The GUI's tests skip themselves when the GTK bindings are absent, so without
   # this job those 22 tests never actually run anywhere. It also dogfoods

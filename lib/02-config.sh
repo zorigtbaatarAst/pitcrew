@@ -1,32 +1,65 @@
 #!/usr/bin/env bash
-# lib/01-config.sh — locate + load a project's pitcrew.config.sh, fill in
-# defaults, and expose small helpers over the resulting app/role model.
+# lib/02-config.sh — locate + load a project's config, fill in defaults, and
+# expose small helpers over the resulting app/role model.
 #
 # A project is: a list of named "apps" (PITCREW_APPS), each with up to two
 # roles — "be" (backend) and "fe" (frontend) — a role only exists for an app
 # if the config sets a start command for it (PITCREW_BE_CMD[app] /
 # PITCREW_FE_CMD[app]). Everything else (ports, health checks, env, deps) is
-# optional and keyed the same way. See examples/pitcrew.config.example.sh for
-# the full schema with comments.
+# optional and keyed the same way.
+#
+# Those PITCREW_* variables are the model. A config can be written two ways:
+# `pitcrew.yaml` (see examples/pitcrew.yaml, parsed by lib/18-yaml.sh) or the
+# older `pitcrew.config.sh` (examples/pitcrew.config.example.sh), which is
+# bash and sets them directly. The YAML is a front end onto the same
+# variables, so everything below this file is format-blind.
 
-# A config's start commands are written in terms of $ROOT and expand the moment
-# the file is sourced — so ROOT has to be known BEFORE that. For an in-project
-# config that is just the file's directory; for one of pitcrew's own it is
-# whatever PITCREW_ROOT declares. Read it out textually rather than sourcing
-# the file twice.
-config_declared_root() { # $1 config file → declared PITCREW_ROOT, or nothing
+# A config's paths are resolved against $ROOT — and in the .sh format its start
+# commands expand the moment the file is sourced — so ROOT has to be known
+# BEFORE the file is read. For an in-project config that is just the file's
+# directory; for one of pitcrew's own it is whatever the file declares. Read it
+# out textually rather than loading the file twice.
+config_declared_root() { # $1 config file → declared root, or nothing
   [ -r "$1" ] || return 0
+  config_is_yaml "$1" && { yaml_declared_root "$1"; return 0; }
   sed -n 's/^[[:space:]]*PITCREW_ROOT=//p' "$1" | head -1 \
     | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 
+# The names an in-project config may have, most preferred first. YAML wins:
+# it is the format `pitcrew init` writes and the one a newcomer will have, and
+# a project that still has a .sh alongside it is mid-migration — which is worth
+# one line of output, not a silent coin-flip.
+PITCREW_CONFIG_NAMES=(pitcrew.yaml pitcrew.yml pitcrew.config.sh)
+
 _walk_up_for_config() { # $1 start dir → the nearest in-project config
-  local d=$1
+  local d=$1 f found
   while [ -n "$d" ] && [ "$d" != "/" ]; do
-    [ -f "$d/pitcrew.config.sh" ] && { printf '%s' "$d/pitcrew.config.sh"; return 0; }
+    found=""
+    for f in "${PITCREW_CONFIG_NAMES[@]}"; do
+      [ -f "$d/$f" ] || continue
+      if [ -z "$found" ]; then found=$f
+      else warn "$d has both $found and $f — reading $found, ignoring $f"; fi
+    done
+    [ -n "$found" ] && { printf '%s' "$d/$found"; return 0; }
     d=$(dirname "$d")
   done
   return 1
+}
+
+config_is_yaml() { case "$1" in *.yaml|*.yml) return 0 ;; *) return 1 ;; esac; }
+
+# Read a config into the PITCREW_* model, whichever format it is written in.
+#
+# The .sh branch MUST run at the caller's top level, never inside a function:
+# bash scopes a bare `declare -A` in a sourced file to whatever function is
+# running, so a project's own `declare -A PITCREW_BE_CMD=(...)` would silently
+# shadow-and-discard the real global. That is why this is a wrapper the caller
+# expands rather than a function that does the sourcing — see bin/pitcrew.
+# The YAML branch has no such hazard: it only assigns into arrays that
+# config_defaults already created with `declare -gA`.
+config_load() { # $1 file — YAML only; .sh must be sourced by the caller
+  yaml_config_load "$1"
 }
 
 # Resolution order, most explicit first. An in-project pitcrew.config.sh always
@@ -123,7 +156,11 @@ config_finalize() { # $1 = path to the config file that was just sourced
   CONFIG_FILE=$1
   [ -n "${PITCREW_ROOT:-}" ] && ROOT="$PITCREW_ROOT"
   [ -d "$ROOT" ] || die "project root not found at $ROOT (set PITCREW_ROOT in $CONFIG_FILE)"
-  [ ${#PITCREW_APPS[@]} -gt 0 ] || die "$CONFIG_FILE defines no PITCREW_APPS — nothing to run"
+  if [ ${#PITCREW_APPS[@]} -eq 0 ]; then
+    config_is_yaml "$CONFIG_FILE" \
+      && die "$CONFIG_FILE defines no apps: — nothing to run" \
+      || die "$CONFIG_FILE defines no PITCREW_APPS — nothing to run"
+  fi
 
   [ -n "$PITCREW_PROJECT_NAME" ] || PITCREW_PROJECT_NAME=$(basename "$ROOT")
   SESSION=$(printf '%s' "$PITCREW_PROJECT_NAME" | tr -c 'A-Za-z0-9_-' '-' | tr 'A-Z' 'a-z')
@@ -150,29 +187,13 @@ config_finalize() { # $1 = path to the config file that was just sourced
     APP_ICON[$_a]=$ICON
   done
 
-  # RAM cap per component, pre-resolved to bytes. The dashboard divides by
-  # this once per component per frame; parsing "8G" there would mean a fork.
-  # The theme, colour depth and icon set are all DERIVED values — escape
-  # sequences and glyph tables built from settings. lib/01-core.sh builds them
-  # when it is sourced, which is before this project's config has been read,
-  # so anything the config set would otherwise have been ignored. Rebuild them
-  # here, now that everything is known.
-  [ -n "$PITCREW_ICONS_ENV" ] && PITCREW_ICONS=$PITCREW_ICONS_ENV
-  icons_load
-  theme_load
   # Same reason as the theme: a project may pin how it wants to be drawn, and
   # its config is read after lib/04-meters.sh resolved these from the
   # environment and the saved preference. Re-resolve now that it has had its say.
   render_resolve
 
-  # what each app is written in, guessed once from its start command
-  declare -gA APP_ICON=()
-  local _a
-  for _a in "${PITCREW_APPS[@]}"; do
-    app_icon_for "${PITCREW_BE_CMD[$_a]:-}${PITCREW_FE_CMD[$_a]:-}"
-    APP_ICON[$_a]=$ICON
-  done
-
+  # RAM cap per component, pre-resolved to bytes. The dashboard divides by
+  # this once per component per frame; parsing "8G" there would mean a fork.
   # Overrides first: comp_max reads them, and COMP_MAX_B is built from comp_max
   # so the meters, the preflight and systemd all see one number.
   limits_load
@@ -231,8 +252,11 @@ config_validate() {
   done
 
   for app in "${PITCREW_APPS[@]}"; do
-    app_has_role "$app" be || app_has_role "$app" fe || \
-      warn "config: app '$app' has no PITCREW_BE_CMD or PITCREW_FE_CMD — nothing will ever start for it"
+    if ! app_has_role "$app" be && ! app_has_role "$app" fe; then
+      config_is_yaml "$CONFIG_FILE" \
+        && warn "config: app '$app' has no be.cmd or fe.cmd — nothing will ever start for it" \
+        || warn "config: app '$app' has no PITCREW_BE_CMD or PITCREW_FE_CMD — nothing will ever start for it"
+    fi
   done
 
   local -A port_owner=()

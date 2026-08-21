@@ -165,11 +165,11 @@ A project is found in this order — first hit wins:
 1. `-C <dir>` — an explicit directory
 2. `-p <name>` — a registered project by name
 3. `$PITCREW_CONFIG`
-4. a `pitcrew.config.sh` walked up from `$PWD`
+4. a `pitcrew.yaml` (or `pitcrew.yml`, or `pitcrew.config.sh`) walked up from `$PWD`
 5. a registered project whose root contains `$PWD`
 6. whatever `pitcrew use` last selected
 
-An **in-project `pitcrew.config.sh` outranks the registry**. A repo that ships
+An **in-project config outranks the registry**. A repo that ships
 one is stating how it wants to be run, and that should not be silently
 overridden by whatever happens to be registered on your machine. `pitcrew init
 --in-project` writes one, for a team that all use pitcrew.
@@ -234,9 +234,11 @@ pitcrew watch                     same as bare `pitcrew` — live dashboard, no 
 pitcrew logs [<component>]        in-place log viewer
 pitcrew stale [--restart]         apps whose code changed since they started
 pitcrew profile save <name> <targets...> | list | rm <name>
-pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
+pitcrew shell [<name>]            run a configured quick shell (shells:), foreground
 pitcrew doctor                    check the local environment
-pitcrew init [<dir>]              generate a starter pitcrew.config.sh (default: $PWD)
+pitcrew init [<dir>] [--sh]       look at a project and write a pitcrew.yaml (--sh
+                                    for the older bash format; default dir: $PWD)
+pitcrew check [<file>]            load a config and say what is wrong with it
 pitcrew theme [<name>]            list themes, or switch and remember (--reset to forget)
 pitcrew urls | help
 
@@ -259,42 +261,107 @@ and the usual walk-up-from-`$PWD` search.
 
 ## Config
 
-Full schema with comments:
-[`examples/pitcrew.config.example.sh`](examples/pitcrew.config.example.sh).
-Run `pitcrew init` to generate a starter file instead of copying by hand.
+A config is one YAML file. Full schema with comments:
+[`examples/pitcrew.yaml`](examples/pitcrew.yaml). Run `pitcrew init` to
+generate one from what is actually in the repository instead of copying by
+hand, and `pitcrew check` to load a config and be told what is wrong with it
+without starting anything.
 
-For an app that follows the usual pattern, `pitcrew_app <name> --be-cmd ...
---be-port ... [--fe-cmd ...] [--fe-port ...] [--url-path ...] [--be-health
-...] [--watch-be ...] [--watch-fe ...]` sets everything for that app in one
-call instead of an entry in each of the arrays below — the two styles mix
-freely in the same config. Loading also runs a few sanity checks (typo'd app
-name in a per-app array, an app with no be/fe command at all, two components
-sharing a port, an unknown name in `PITCREW_PROTECTED_DEPS`) and prints a
-warning, not a hard failure, when something looks off.
+```yaml
+name: Storefront
+emoji: "🛒"
 
-The short version — everything except `PITCREW_APPS` and start commands is
-optional:
+apps:
+  storefront:
+    url_path: /api
+    be:
+      dir: storefront                       # relative to the project root
+      cmd: bundle exec rails s -p 4000      # `dir` becomes a cd in front of it
+      port: 4000
+      health: /health
+      watch: [storefront/app]               # for `pitcrew stale`
+    fe:
+      dir: storefront/frontend
+      cmd: npm run dev
+      port: 3000
+  worker:                                   # backend only — no `fe:` at all
+    be:
+      dir: worker
+      cmd: bundle exec sidekiq
 
-| Variable | Purpose |
+deps: [postgres, redis]
+protected_deps: [postgres]                  # never stopped by `stop --deps`
+
+max: {be: 4G, fe: 6G}
+wait: 180
+
+shells:
+  db: docker exec -it postgres psql -U postgres storefront_development
+
+doctor:                                     # your own `pitcrew doctor` checks
+  bundler present: command -v bundle
+```
+
+A role exists for an app **only if it has a `cmd:`** — that is the whole of
+the asymmetric-role model. A missing role shows as `n/a`, is never started, and
+is never counted as down.
+
+`dir:` is the one piece of sugar: it is relative to the project root and
+becomes a correctly-quoted `cd` in front of the command, and it is what `watch:`
+defaults to. Paths in `watch:` are likewise relative to the root, so a config
+does not have to be full of one laptop's absolute paths. `$ROOT` and `$HOME` do
+expand if you write them; every other `$VAR` is left alone and reaches the
+shell that runs the command.
+
+The keys, all optional except `apps:` and one `cmd:`:
+
+| Key | Purpose |
 |---|---|
-| `PITCREW_APPS` | ordered list of app names |
-| `PITCREW_BE_CMD[app]` / `PITCREW_FE_CMD[app]` | shell command to start that role; omit to skip the role for that app |
-| `PITCREW_BE_PORT[app]` / `PITCREW_FE_PORT[app]` | port used for health checks + URLs |
-| `PITCREW_BE_HEALTH_PATH[app]` | actuator-style `/health` path; omit to treat an open port as "up" |
-| `PITCREW_URL_PATH[app]` | cosmetic API path suffix for `pitcrew urls` |
-| `PITCREW_DEPS` / `PITCREW_PROTECTED_DEPS` | docker containers to start; ones never auto-stopped |
-| `PITCREW_DEPS_READY_CMD` | best-effort command run once after deps start |
-| `PITCREW_BE_ENV` / `PITCREW_FE_ENV` | env vars prepended to every start command for that role |
-| `PITCREW_BE_MAX` / `PITCREW_FE_MAX` / `PITCREW_WAIT_SECS` | RAM caps and boot timeout |
-| `PITCREW_PROJECT_NAME` / `PITCREW_EMOJI` | banner display |
-| `PITCREW_WATCH_DIR[app]` | source dirs to watch for `pitcrew stale` |
-| `PITCREW_SHELLS[name]` | named quick shells for `pitcrew shell <name>` |
-| `pitcrew_doctor_extra()` | optional function — your own `pitcrew doctor` checks |
-| `PITCREW_ROOT` | override the project root (defaults to the config file's directory) |
+| `apps.<name>.be` / `.fe` | a role: `cmd`, `port`, `dir`, `health`, `watch`, `max` |
+| `apps.<name>.url_path` | cosmetic API path suffix for `pitcrew urls` |
+| `deps` / `protected_deps` | docker containers to start; ones never auto-stopped |
+| `deps_ready` | best-effort command run once after deps start |
+| `env.be` / `env.fe` | env vars prepended to every start command for that role |
+| `max.be` / `max.fe` / `wait` | role RAM caps and boot timeout |
+| `name` / `emoji` | banner display |
+| `shells.<name>` | named quick shells for `pitcrew shell <name>` |
+| `doctor.<label>` | a command per line — exit 0 is a tick in `pitcrew doctor` |
+| `dashboard.*` | pin how this project is drawn (`theme`, `refresh`, `error_pattern`, …) |
+| `root` | project root, if it is not the config file's own directory |
+| `include` | pull in another config; must be the first key in the file |
 
-Env var overrides (higher precedence than the config file):
-`PITCREW_CONFIG`, `PITCREW_ROOT`, `PITCREW_FE_MAX`, `PITCREW_BE_MAX`,
-`PITCREW_WAIT`.
+Loading runs sanity checks and warns rather than failing: an unknown key
+(reported with its exact path, so a typo is visible instead of silent), an app
+with no command at all, two components sharing a port, a `protected_deps` entry
+that is not a dep.
+
+### The YAML subset
+
+The parser is ~200 lines of bash, because a config format that needs a package
+installed is a config format that fails on the box you actually have to work
+on. It handles block mappings, block and flow sequences of scalars, quoted
+scalars, `|` and `>` block scalars, comments and `include:`. It **rejects**,
+with a file and line number, everything it does not implement: tabs for
+indentation, anchors and aliases, flow mappings, tags, sequences of mappings.
+Refusing loudly is the point — a config format that half-parses a start command
+is worse than one that does not parse it at all.
+
+### The older bash format
+
+`pitcrew.config.sh` still loads, unchanged, and nothing about it is deprecated:
+a config that has to branch on the machine it is running on, or define a
+`pitcrew_doctor_extra()` that does something real, is a shell script and should
+stay one. Its schema is
+[`examples/pitcrew.config.example.sh`](examples/pitcrew.config.example.sh) and
+`pitcrew init --sh` still writes it.
+
+The two formats describe one model — YAML is a front end onto the same
+`PITCREW_*` variables, not a second implementation — so everything downstream
+behaves identically. If a directory holds both, the YAML is read and pitcrew
+says so on the way past rather than choosing silently.
+
+Env var overrides: `PITCREW_CONFIG`, `PITCREW_ROOT`, `PITCREW_FE_MAX`,
+`PITCREW_BE_MAX`, `PITCREW_WAIT`.
 
 ## Scripting it
 
@@ -404,7 +471,7 @@ A cap resolves through three layers, highest first:
 | | where | for |
 |---|---|---|
 | per component | `~/.config/pitcrew/<session>/limits` | this machine |
-| per app | `pitcrew_app api --be-max 2G` in the config | everyone on the project |
+| per app | `max: 2G` under that role in the config | everyone on the project |
 | per role | `PITCREW_BE_MAX` / `PITCREW_FE_MAX` | the default |
 
 ```bash
@@ -576,7 +643,7 @@ immediately and remembers it.
 
 Four settings decide the theme, most specific first: `PITCREW_THEME` in the
 environment (a one-off for this run), `PITCREW_THEME` in the project's
-`pitcrew.config.sh` (so a repo can look the same for everyone who opens it),
+`pitcrew.yaml` (so a repo can look the same for everyone who opens it),
 the saved preference from `pitcrew theme <name>` (how you like your terminal),
 and finally the built-in palette.
 
@@ -723,7 +790,7 @@ to get started:
   second opinion about what is in your repo.
 - **Edit config** opens the project's config in the app. It follows the
   indirection: a registry entry for a repo that ships its own
-  `pitcrew.config.sh` only sets `PITCREW_ROOT` and sources it, so the editor
+  a repo's own config only records the root and points at it, so the editor
   opens the file in the repo, not the stub that points at it.
 - **Watch** makes a project current; **Forget** drops it from the registry after
   a confirmation, leaving the checkout alone.

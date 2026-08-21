@@ -7,9 +7,9 @@
 #  available), with a live dashboard, per-service RAM/CPU meters, an error
 #  radar over the logs, and fzf menus. No terminal multiplexer required.
 #
-#  Config-driven: run it from inside a project that has a pitcrew.config.sh
-#  (walked up from $PWD, or point PITCREW_CONFIG at one). See
-#  examples/pitcrew.config.example.sh for the schema.
+#  Config-driven: run it from inside a project that has a pitcrew.yaml (walked
+#  up from $PWD, or point PITCREW_CONFIG at one). See examples/pitcrew.yaml for
+#  the schema; the older bash pitcrew.config.sh format still loads unchanged.
 #
 #  Linux is the primary target. macOS works the same way through portable
 #  (ps/lsof/vm_stat) equivalents of the Linux-only bits. On Windows, run
@@ -106,7 +106,11 @@ Usage:
   pitcrew profile save <name> <targets...> | list | rm <name>
   pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
   pitcrew doctor                    check the local environment
-  pitcrew init [<dir>]              generate a starter pitcrew.config.sh (default: $PWD)
+  pitcrew init [<dir>] [--sh]       look at a project and write a starter
+                                     pitcrew.yaml for it (--sh for the old
+                                     bash format; default dir: $PWD)
+  pitcrew check [<file>]            load a config and report what is wrong with
+                                     it, without starting anything
   pitcrew theme [<name>]            colour palette — bare lists them with swatches
   pitcrew render [<setting> <value>]
                                     how the graphs are drawn (graph · scale · gauge);
@@ -119,8 +123,9 @@ Flags (must come before the subcommand):
   -p, --name <name>         use a registered project by name
 
 Config discovery, in order: -C/--project · -p/--name · $PITCREW_CONFIG ·
-a pitcrew.config.sh walked up from $PWD · a registered project containing $PWD ·
-whatever `pitcrew use` last selected.
+a pitcrew.yaml (or pitcrew.yml, or the older pitcrew.config.sh) walked up from
+$PWD · a registered project containing $PWD · whatever `pitcrew use` last
+selected.
 Env overrides: PITCREW_CONFIG, PITCREW_ROOT, PITCREW_FE_MAX, PITCREW_BE_MAX, PITCREW_WAIT.
 EOF
 }
@@ -146,6 +151,7 @@ done
 case "${1:-}" in
   help|-h|--help) usage; exit 0 ;;
   init)     shift; cmd_init     "$@"; exit $? ;;
+  check)    shift; cmd_check    "$@"; exit $? ;;
   theme)    shift; cmd_theme    "$@"; exit $? ;;
   render)   shift; cmd_render   "$@"; exit $? ;;
   projects|ls) shift; cmd_projects "$@"; exit $? ;;
@@ -156,8 +162,9 @@ case "${1:-}" in
   edit)     shift; cmd_edit     "$@"; exit $? ;;
 esac
 
-# Config is sourced here, at the script's top level (not inside a function) —
-# see the note atop lib/02-config.sh for why that matters.
+# A .sh config is sourced here, at the script's top level (not inside a
+# function) — see the note atop lib/02-config.sh for why that matters. A YAML
+# one is data, so it has no such constraint and is simply read.
 PITCREW_CFG=$(find_config) || die "no project here, and none selected.
 
   pitcrew init <dir>     look at a project and generate a config for it
@@ -169,8 +176,12 @@ config_defaults
 # written in terms of $ROOT and expand as the file is read.
 ROOT=$(config_declared_root "$PITCREW_CFG")
 [ -n "$ROOT" ] || ROOT=$(cd "$(dirname "$PITCREW_CFG")" && pwd)
-# shellcheck source=/dev/null
-source "$PITCREW_CFG"
+if config_is_yaml "$PITCREW_CFG"; then
+  config_load "$PITCREW_CFG"
+else
+  # shellcheck source=/dev/null
+  source "$PITCREW_CFG"
+fi
 config_finalize "$PITCREW_CFG"
 config_validate
 cd "$ROOT" 2>/dev/null || die "project root not found at $ROOT"

@@ -237,6 +237,44 @@ print(' '.join(pgui.known_projects()))
   rm -rf "$home" "$repo"
 }
 
+test_the_config_editor_follows_the_include_indirection_too() {
+  gui_available || return 0
+  # The YAML twin of the test above: a registry entry for a repo that ships its
+  # own pitcrew.yaml records the root and includes it, so the GUI has to open
+  # the repo's file rather than the two-line stub.
+  local home repo; home=$(mktemp -d); repo=$(mktemp -d)
+  mkdir -p "$home/projects"
+  printf 'root: %s\ninclude: pitcrew.yaml\n' "$repo" > "$home/projects/ystub.yaml"
+  printf 'name: shipped\napps:\n  a:\n    be:\n      cmd: "true"\n' > "$repo/pitcrew.yaml"
+  printf 'root: %s\nname: own\n' "$repo" > "$home/projects/yown.yaml"
+
+  local out; out=$(PITCREW_HOME=$home _settings_drive "
+print(pgui.project_config_path('ystub'))
+print(pgui.project_config_path('yown'))
+print(pgui.declared_root(pgui.project_file('yown')))
+print(' '.join(pgui.known_projects()))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "$repo/pitcrew.yaml" "stub resolves into the repo"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "$home/projects/yown.yaml" "a self-contained entry is edited in place"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "$repo" "root: is read without loading the config"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "yown ystub" "the registry lists both"
+  rm -rf "$home" "$repo"
+}
+
+test_the_registry_lists_both_formats_side_by_side() {
+  gui_available || return 0
+  local home; home=$(mktemp -d); mkdir -p "$home/projects"
+  printf 'root: /tmp\n'      > "$home/projects/newer.yaml"
+  printf 'PITCREW_ROOT=/tmp\n' > "$home/projects/older.sh"
+  local out; out=$(PITCREW_HOME=$home _settings_drive "
+print(' '.join(pgui.known_projects()))
+print(pgui.project_file('older').name)
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "newer older" "one name per project, either format"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "older.sh" "and each resolves to its own file"
+  rm -rf "$home"
+}
+
 test_a_quoted_root_survives_being_read_back() {
   gui_available || return 0
   # init writes PITCREW_ROOT with printf %q, so a path with a space arrives quoted.

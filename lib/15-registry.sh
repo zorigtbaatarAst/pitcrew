@@ -7,10 +7,11 @@
 # local paths and ports does not belong in version control, and there was no
 # way to see what pitcrew knows about without going and looking for it.
 #
-# So pitcrew keeps its own: ~/.config/pitcrew/projects/<name>.sh, each holding
-# a PITCREW_ROOT pointing at the checkout. An in-project pitcrew.config.sh
-# still works and still wins — a repo that ships one is making a deliberate
-# statement about how it should be run.
+# So pitcrew keeps its own: ~/.config/pitcrew/projects/<name>.yaml (or .sh for
+# entries written before YAML support, and for hand-written bash ones), each
+# recording the root of the checkout it points at. An in-project config still
+# works and still wins — a repo that ships one is making a deliberate statement
+# about how it should be run.
 
 PITCREW_HOME="${PITCREW_HOME:-$HOME/.config/pitcrew}"
 PROJECTS_DIR="$PITCREW_HOME/projects"
@@ -23,15 +24,27 @@ project_slug() { # $1 → a name that is safe as a filename and a systemd unit
   printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | tr 'A-Z' 'a-z' | sed -E -e 's/-+/-/g' -e 's/^-//' -e 's/-$//'
 }
 
-project_file() { printf '%s/%s.sh' "$PROJECTS_DIR" "$1"; }
+# A registry entry is <name>.yaml (what `pitcrew init` writes) or <name>.sh
+# (what it used to write, and what a hand-written one may still be). The name
+# is the file's stem either way; only the loader differs.
+PITCREW_REGISTRY_EXTS=(yaml yml sh)
+
+project_file() { # $1 name → the file that exists, else the .yaml it would be
+  local e f
+  for e in "${PITCREW_REGISTRY_EXTS[@]}"; do
+    f="$PROJECTS_DIR/$1.$e"
+    [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+  done
+  printf '%s/%s.yaml' "$PROJECTS_DIR" "$1"
+}
 
 project_list() {
   [ -d "$PROJECTS_DIR" ] || return 0
   local f n
-  for f in "$PROJECTS_DIR"/*.sh; do
+  for f in "$PROJECTS_DIR"/*.yaml "$PROJECTS_DIR"/*.yml "$PROJECTS_DIR"/*.sh; do
     [ -f "$f" ] || continue
-    n=${f##*/}; printf '%s\n' "${n%.sh}"
-  done
+    n=${f##*/}; printf '%s\n' "${n%.*}"
+  done | sort -u
 }
 
 project_root_of() { # $1 name → the checkout it points at, without sourcing the file
@@ -85,7 +98,12 @@ project_info() { # $1 name
   f=$(project_file "$1") || return 1
   [ -f "$f" ] || return 1
   root=$(config_declared_root "$f")
-  apps=$( ROOT=$root; config_defaults 2>/dev/null; source "$f" 2>/dev/null
+  apps=$( ROOT=$root; config_defaults 2>/dev/null
+          # `source` stays at the subshell's top level on purpose: inside a
+          # function a bare `declare -A` in the sourced file would be scoped to
+          # that function and lost (see the note in lib/02-config.sh).
+          if config_is_yaml "$f"; then yaml_config_load "$f" 2>/dev/null
+          else source "$f" 2>/dev/null; fi
           printf '%s' "${PITCREW_APPS[*]:-}" )
   n=$(printf '%s' "$apps" | wc -w)
   live=$(project_running_count "$root")
@@ -139,7 +157,8 @@ project_ports() { # $1 name
   ( ROOT=$root
     config_defaults 2>/dev/null
     # shellcheck source=/dev/null
-    source "$f" 2>/dev/null
+    if config_is_yaml "$f"; then yaml_config_load "$f" 2>/dev/null
+    else source "$f" 2>/dev/null; fi
     local a
     for a in "${PITCREW_APPS[@]:-}"; do
       [ -n "${PITCREW_BE_PORT[$a]:-}" ] && printf '%s be-%s\n' "${PITCREW_BE_PORT[$a]}" "$a"
@@ -240,7 +259,8 @@ cmd_forget() {
   [ -n "${1:-}" ] || die "usage: pitcrew forget <name>"
   local f; f=$(project_file "$1")
   [ -f "$f" ] || die "no project '$1' — see: pitcrew projects"
-  rm -f "$f"
+  local e
+  for e in "${PITCREW_REGISTRY_EXTS[@]}"; do rm -f "$PROJECTS_DIR/$1.$e"; done
   [ "$(project_current || true)" = "$1" ] && rm -f "$CURRENT_FILE"
   ok "forgot ${BOLD}$1${RESET} ${C_MUTED}(the checkout itself is untouched)${RESET}"
 }
