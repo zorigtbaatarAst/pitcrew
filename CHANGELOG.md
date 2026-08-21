@@ -107,7 +107,47 @@ field is removed or changes meaning.
   the gap. The record is discarded outright if the pid or the collector changed.
   `diagnose` samples for one second and inherits the rest.
 
+### Changed
+- **The desktop app's layout was rebuilt around the window it is given.**
+  Overview and Components sat inside `AdwPreferencesPage`, which clamps content
+  to about 600px and cannot be widened — so on a 1000px window nearly half the
+  screen was empty and on a monitor most of it was, while the figures on every
+  component row were squeezed into a run-on subtitle. Both now use their own
+  clamp at 1240px, Overview is two columns above 880px (machine and findings
+  are read together) and folds to one below it, and component rows are aligned
+  columns instead of a sentence: `27.4 MiB / 8.0 GiB · cpu — · :19801 · up 8s`
+  became a table you scan rather than a line you read.
+- **The verdict is a tinted banner, not another card.** It is the page's answer
+  and the four groups under it are the evidence; rendering all five as
+  identical rounded rectangles gave everything the same weight. Findings carry
+  a severity rail down their left edge for the same reason.
+- **One colour ramp for meters and severity.** The meters were stock
+  `GtkLevelBar` orange whatever they measured, so a meter at 32% and a warning
+  badge were nearly the same hue meaning entirely different things. Now colour
+  always answers one question: how worried should I be. `STATE_STYLE` and
+  `VERDICT_STYLE` draw from the same ramp, so a component and the stack it
+  belongs to cannot disagree about what red is.
+- **The charts say something.** Lines are filled underneath (a 2px line at 4%
+  CPU on a dark ground is a scratch you have to hunt for), a percentage axis
+  stops at 100% instead of `nice_max` rounding it up to 120%, both plots label
+  the span they cover, CPU gets less height than memory because it is near zero
+  most of the time, and a plot with fewer than two samples says "collecting…"
+  rather than showing an empty grid with axis labels.
+- **`Largest consumers` shows a bar instead of writing "25% of what this
+  project is holding" on every row**, which was four copies of a sentence that
+  told you nothing. `THIS` in the machine meters is now `Stack`.
+- The per-row sparkline is gone. At 76×22px between six other columns it was
+  illegible; the space went to a bar showing how close the component is to the
+  RAM cap that will kill it, which is the more actionable of the two. Trend
+  still lives on Resources, where it has room.
+
 ### Fixed
+- **The status dot in the component list was showing the wrong thing.** It was
+  the colour of that component's line on the Resources graph — meaningless on
+  a tab with no graph — and it never changed when a service crashed. A green
+  dot beside a dead backend is worse than no dot. `be-analytics` appearing red
+  was a coincidence: it was the fifth component, and the fifth series colour is
+  red.
 - **The desktop app printed ANSI escapes instead of obeying them.** A dev
   server's log is not plain text — Spring Boot, Vite, gradle and npm all write
   SGR colour into it, and pitcrew captures stdout verbatim (as it should; the

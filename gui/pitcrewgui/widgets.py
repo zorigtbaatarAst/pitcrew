@@ -6,12 +6,14 @@ import cairo
 from gi.repository import Adw, Gtk, Pango
 
 from .model import (
+    RAMP,
     STATE_STYLE,
     UNKNOWN_STYLE,
     Series,
     fix_action,
     hover_index,
     human_bytes,
+    meter_level,
     nice_max,
     rgb,
 )
@@ -47,13 +49,15 @@ class Graph(Gtk.DrawingArea):
     takes: a DrawingArea and a draw func over a fixed-length history.
     """
 
-    def __init__(self, metric: str, floor: float, fmt):
+    def __init__(self, metric: str, floor: float, fmt, percentage: bool = False):
         super().__init__()
         self._metric = metric        # "cpu" or "rss" — the Series attribute to plot
-        self._floor = floor          # smallest sensible axis ceiling
+        self._floor = floor
+        self._percentage = percentage          # smallest sensible axis ceiling
         self._fmt = fmt
         self._series: list[Series] = []
         self._history = SETTINGS_BY_KEY["history"].default
+        self._window_label = ""
         self._forced_ceiling: float | None = None
         # Geometry from the last paint, so the pointer can be mapped back to a
         # sample without re-deriving the layout (which depends on the measured
@@ -93,6 +97,12 @@ class Graph(Gtk.DrawingArea):
         self._history = max(2, history)
         self.queue_draw()
 
+    def set_window(self, label: str) -> None:
+        """The time span the plot covers, e.g. "last 4 min"."""
+        if label != self._window_label:
+            self._window_label = label
+            self.queue_draw()
+
     def _draw(self, _area, cr, width, height) -> None:
         fg = self.get_color()        # follows the theme; grid is the same ink, faded
         cr.select_font_face("sans-serif")
@@ -103,6 +113,11 @@ class Graph(Gtk.DrawingArea):
         else:
             peak = max((max(getattr(s, self._metric), default=0.0) for s in self._series), default=0.0)
             ceiling = nice_max(peak, self._floor)
+        # A percentage axis stops at 100. nice_max rounds UP to a whole step, so
+        # a CPU chart with a floor of 100 came out labelled 120% / 90% / 60% —
+        # a quarter of the plot was headroom that cannot exist.
+        if self._percentage:
+            ceiling = min(ceiling, 100.0)
         labels = [self._fmt(ceiling * (4 - i) / 4) for i in range(5)]
 
         # The gutter is measured, not guessed: "858.3 MiB" is far wider than
@@ -113,6 +128,18 @@ class Graph(Gtk.DrawingArea):
         plot_w = width - pad_left - pad_right
         plot_h = height - pad_top - pad_bottom
         if plot_w <= 0 or plot_h <= 0:
+            return
+
+        # Two samples is the minimum that can be a line. Until then, say what is
+        # happening — an empty grid with axis labels looks like a chart that has
+        # given up, and CPU is a delta so the first frame NEVER has a value.
+        if not any(len(getattr(s, self._metric)) >= 2 for s in self._series):
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
+            message = ("collecting…" if self._series
+                       else "nothing running to plot")
+            extents = cr.text_extents(message)
+            cr.move_to(pad_left + (plot_w - extents.width) / 2, pad_top + plot_h / 2)
+            cr.show_text(message)
             return
 
         self._geom = {"pad_left": pad_left, "pad_top": pad_top,
@@ -130,24 +157,52 @@ class Graph(Gtk.DrawingArea):
             cr.show_text(label)
 
         for series in self._series:
-            points = getattr(series, self._metric)
-            if len(points) < 2:
-                continue
-            # The history is right-anchored: a series that just appeared draws
-            # from the right edge inward rather than stretching across the whole
-            # window and implying data it does not have.
-            step = plot_w / (self._history - 1)
-            start_x = pad_left + plot_w - step * (len(points) - 1)
-            cr.set_source_rgb(*series.rgb)
-            cr.set_line_width(2)
-            cr.set_line_join(cairo.LINE_JOIN_ROUND)
-            for index, value in enumerate(points):
-                x = start_x + step * index
-                y = pad_top + plot_h * (1 - min(value / ceiling, 1.0))
-                cr.line_to(x, y) if index else cr.move_to(x, y)
-            cr.stroke()
+            self._draw_series(cr, series, pad_left, pad_top, plot_w, plot_h, ceiling)
+        # How much time this is. Without it the plot is a shape with no scale:
+        # the same squiggle means something different over 30 seconds and over
+        # ten minutes, and nothing on screen said which.
+        if self._window_label:
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.40)
+            extents = cr.text_extents(self._window_label)
+            cr.move_to(pad_left + plot_w - extents.width, height - 5)
+            cr.show_text(self._window_label)
 
         self._draw_hover(cr, fg, pad_left, pad_top, plot_w, plot_h, ceiling)
+
+    def _draw_series(self, cr, series, pad_left, pad_top, plot_w, plot_h, ceiling) -> None:
+        points = getattr(series, self._metric)
+        if len(points) < 2:
+            return
+        # The history is right-anchored: a series that just appeared draws from
+        # the right edge inward rather than stretching across the whole window
+        # and implying data it does not have.
+        step = plot_w / (self._history - 1)
+        start_x = pad_left + plot_w - step * (len(points) - 1)
+            # Bound as defaults: a closure over the loop variables would be
+        # re-read on the next series, which ruff is right to object to.
+        def plot(index, value, _x0=start_x, _dx=step):
+            return (_x0 + _dx * index,
+                    pad_top + plot_h * (1 - min(value / ceiling, 1.0)))
+
+        # Filled, then stroked. A 2px line at 4% CPU on a dark ground is a
+        # scratch you have to hunt for; the area under it is what makes the
+        # shape readable at a glance, and what tells two overlapping series
+        # apart. Faint enough to stack several without turning to mud.
+        cr.set_source_rgba(*series.rgb, 0.13)
+        cr.move_to(*plot(0, points[0]))
+        for index, value in enumerate(points):
+            cr.line_to(*plot(index, value))
+        cr.line_to(start_x + step * (len(points) - 1), pad_top + plot_h)
+        cr.line_to(start_x, pad_top + plot_h)
+        cr.close_path()
+        cr.fill()
+
+        cr.set_source_rgb(*series.rgb)
+        cr.set_line_width(2)
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        for index, value in enumerate(points):
+            cr.line_to(*plot(index, value)) if index else cr.move_to(*plot(index, value))
+        cr.stroke()
 
     def _draw_hover(self, cr, fg, pad_left, pad_top, plot_w, plot_h, ceiling) -> None:
         """A crosshair and every series' value where the pointer is.
@@ -206,61 +261,6 @@ class Graph(Gtk.DrawingArea):
             cr.set_source_rgb(0.92, 0.92, 0.92)
             cr.move_to(box_x + 18, y)
             cr.show_text(text)
-
-class Sparkline(Gtk.DrawingArea):
-    """A component's recent memory, in the row you are already looking at.
-
-    The terminal dashboard has drawn one of these per row from the start; the
-    GUI showed a number and made you switch to Resources and find the line in a
-    legend to answer "is this climbing". The samples are already in memory —
-    they were only ever read by the graphs.
-    """
-
-    def __init__(self, width: int = 76, height: int = 22):
-        super().__init__()
-        self._series: Series | None = None
-        self._ceiling = 0.0
-        self.set_content_width(width)
-        self.set_content_height(height)
-        self.set_valign(Gtk.Align.CENTER)
-        self.set_draw_func(self._draw)
-
-    def set_source(self, series: Series | None, ceiling: float) -> None:
-        self._series = series
-        self._ceiling = ceiling or 0.0
-        self.queue_draw()
-
-    def _draw(self, _area, cr, width, height) -> None:
-        series = self._series
-        points = list(series.rss) if series else []
-        if len(points) < 2:
-            return
-        # Scaled to the CAP, not to the series' own range: the question in a
-        # component row is "how close am I to the limit", and a range-scaled
-        # sparkline makes an idle service look as busy as a leaking one.
-        ceiling = self._ceiling or max(points) or 1.0
-        # Fills the width, unlike the Resources graphs, which are right-anchored
-        # so several series share one time axis. A row sparkline is about shape,
-        # and anchoring it would leave a stub for the first four minutes.
-        step = width / max(1, len(points) - 1)
-        start_x = 0.0
-
-        cr.set_source_rgba(*series.rgb, 0.22)
-        cr.move_to(start_x, height)
-        for index, value in enumerate(points):
-            cr.line_to(start_x + step * index, height * (1 - min(value / ceiling, 1.0)))
-        cr.line_to(start_x + step * (len(points) - 1), height)
-        cr.close_path()
-        cr.fill()
-
-        cr.set_source_rgb(*series.rgb)
-        cr.set_line_width(1.5)
-        for index, value in enumerate(points):
-            x = start_x + step * index
-            y = height * (1 - min(value / ceiling, 1.0))
-            cr.line_to(x, y) if index else cr.move_to(x, y)
-        cr.stroke()
-
 
 def human_age(seconds: float | None) -> str:
     """Compact uptime: 45s, 12m, 2h14m, 3d4h."""
@@ -363,6 +363,54 @@ class ShareChart(Gtk.DrawingArea):
             cr.show_text(f"+{len(self._slices) - 8} more")
 
 
+class Bar(Gtk.DrawingArea):
+    """A flat rounded progress bar drawn to the shared ramp.
+
+    Not a GtkLevelBar: that one is themed orange whatever it is measuring, and
+    its three offset classes are styled by the platform rather than by us — so
+    a meter at 32% and a warning badge came out nearly the same colour while
+    meaning entirely different things.
+    """
+
+    HEIGHT = 8
+
+    def __init__(self, expand: bool = False) -> None:
+        # Opt in to expanding. As a meter it should fill its column; as a cell
+        # in a row it must not, or it pushes the figure it belongs to across
+        # the window and the two stop reading as one thing.
+        super().__init__(hexpand=expand, valign=Gtk.Align.CENTER,
+                         content_height=self.HEIGHT)
+        self._fraction = 0.0
+        self._color = RAMP["calm"]
+        self.set_draw_func(self._draw)
+
+    def set(self, fraction: float, color: str) -> None:
+        self._fraction = max(0.0, min(1.0, float(fraction)))
+        self._color = color
+        self.queue_draw()
+
+    def _draw(self, _area, cr, width, height) -> None:
+        radius = height / 2
+        self._rounded(cr, 0, 0, width, height, radius)
+        cr.set_source_rgba(*rgb(RAMP["calm"]), 0.16)
+        cr.fill()
+        filled = width * self._fraction
+        if filled < 1:
+            return
+        # Never narrower than its own cap radius, or 1% renders as a sliver
+        # with the wrong shape.
+        self._rounded(cr, 0, 0, max(filled, height), height, radius)
+        cr.set_source_rgb(*rgb(self._color))
+        cr.fill()
+
+    @staticmethod
+    def _rounded(cr, x, y, w, h, r) -> None:
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -1.5708, 1.5708)
+        cr.arc(x + r, y + h - r, r, 1.5708, 4.7124)
+        cr.close_path()
+
+
 class Meter(Gtk.Box):
     """One labelled resource bar: what it is, how full, and the real figures.
 
@@ -378,14 +426,7 @@ class Meter(Gtk.Box):
         name.add_css_class("dim-label")
         self.append(name)
 
-        self._bar = Gtk.LevelBar(hexpand=True, valign=Gtk.Align.CENTER)
-        self._bar.set_min_value(0)
-        self._bar.set_max_value(100)
-        # The named offsets are what make a LevelBar change colour at a
-        # threshold instead of being a blue rectangle all the way to 100%.
-        self._bar.add_offset_value(Gtk.LEVEL_BAR_OFFSET_LOW, 70)
-        self._bar.add_offset_value(Gtk.LEVEL_BAR_OFFSET_HIGH, 88)
-        self._bar.add_offset_value(Gtk.LEVEL_BAR_OFFSET_FULL, 100)
+        self._bar = Bar(expand=True)
         self.append(self._bar)
 
         self._value = Gtk.Label(xalign=1, width_chars=18)
@@ -394,7 +435,7 @@ class Meter(Gtk.Box):
         self.append(self._value)
 
     def set(self, percent: float, text: str) -> None:
-        self._bar.set_value(max(0.0, min(100.0, float(percent))))
+        self._bar.set(percent / 100.0, RAMP[meter_level(percent)])
         self._value.set_text(text)
 
 
@@ -417,11 +458,15 @@ class FindingRow(Adw.ActionRow):
         super().__init__(title=plain_text(finding.get("title", "")),
                          subtitle=plain_text(finding.get("detail", "")),
                          use_markup=False)
-        icon_name, css = self.ICONS.get(finding.get("severity", "info"),
-                                        self.ICONS["info"])
+        severity = finding.get("severity", "info")
+        icon_name, css = self.ICONS.get(severity, self.ICONS["info"])
         icon = Gtk.Image(icon_name=icon_name, valign=Gtk.Align.CENTER)
         icon.add_css_class(css)
         self.add_prefix(icon)
+        # A rail down the left edge, so a column of these is scannable by
+        # severity without reading a single word of it.
+        self.add_css_class("finding")
+        self.add_css_class(f"finding-{severity}")
 
         # A finding that suggests a command is one click from that command —
         # printing it for someone to retype in another window would be a strange
@@ -536,23 +581,42 @@ class ComponentRow(Adw.ActionRow):
         self._on_action = on_action
         self._on_show_logs = on_show_logs
 
-        self._dot = Dot(color)
+        # STATE, not the series colour. It used to be the latter — the colour
+        # this component's line has on the Resources graph — which meant a dot
+        # in a status list was showing something that has no meaning on this
+        # tab, and never changed when the service crashed. A green dot beside a
+        # dead backend is worse than no dot.
+        self._dot = Dot(STATE_STYLE["down"][1])
+        self._series_color = color
         self.add_prefix(self._dot)
 
-        self._spark = Sparkline()
-        self._spark.set_visible(False)
-        self.add_suffix(self._spark)
+        # Aligned columns, not a subtitle. `27.4 MiB / 8.0 GiB · cpu — · :19801
+        # · up 8s` at one weight is a sentence you have to read; the same
+        # figures in fixed columns are a table you scan, and the outlier in a
+        # stack of twelve is visible without reading any of it.
+        # The badge first, so it packs immediately after the title. State was
+        # appearing twice at opposite ends of the row — a dot on the left and
+        # the word on the right, with six columns of figures between them.
+        self._badge = Gtk.Label(valign=Gtk.Align.CENTER, xalign=0, width_chars=8)
+        self._badge.add_css_class("caption")
+        self._badge_class = ""
+        self.add_suffix(self._badge)
+
+        self._mem = self._column(16)
+        self._cap = Bar()
+        self._cap.set_size_request(58, -1)
+        self._cpu = self._column(5)
+        self._port = self._column(7)
+        self._age = self._column(6)
+        self._note = self._column(10)          # exit code, restarts — the exceptions
+        for widget in (self._mem, self._cap, self._cpu, self._port, self._age, self._note):
+            self.add_suffix(widget)
 
         # A gradle backend sits in `starting` for a minute. Something has to
         # move, or you cannot tell waiting from stuck.
         self._spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
         self._spinner.set_visible(False)
         self.add_suffix(self._spinner)
-
-        self._badge = Gtk.Label(valign=Gtk.Align.CENTER)
-        self._badge.add_css_class("caption")
-        self._badge_class = ""
-        self.add_suffix(self._badge)
 
         box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         # The port has always been printed and never been usable. pitcrew knows
@@ -581,6 +645,14 @@ class ComponentRow(Adw.ActionRow):
         self._stop = self._button(box, "media-playback-stop-symbolic", "stop", "Stop")
         self.add_suffix(box)
 
+    @staticmethod
+    def _column(chars: int) -> Gtk.Label:
+        label = Gtk.Label(xalign=1, width_chars=chars, valign=Gtk.Align.CENTER)
+        label.add_css_class("caption")
+        label.add_css_class("numeric")
+        label.add_css_class("dim-label")
+        return label
+
     def _button(self, box: Gtk.Box, icon: str, verb: str, tooltip: str) -> Gtk.Button:
         button = Gtk.Button(icon_name=icon, tooltip_text=tooltip)
         button.add_css_class("flat")
@@ -593,19 +665,22 @@ class ComponentRow(Adw.ActionRow):
             Gtk.UriLauncher.new(self._url).launch(None, None, None, None)
 
     def set_color(self, color: str) -> None:
-        self._dot.set_color(color)
+        """The colour of this component's line on the Resources graph.
 
-    def update(self, comp: dict, series=None, now: float = 0) -> None:
+        Not the dot — that shows state. Kept because the sparkline is drawn in
+        the series colour and a rebuild can reassign it.
+        """
+        self._series_color = color
+
+    def update(self, comp: dict, now: float = 0) -> None:
         state = comp.get("state", "down")
         running = state in ("up", "starting", "external")
-
-        self._spark.set_source(series, comp.get("limit") or 0)
-        self._spark.set_visible(bool(series) and state == "up")
 
         starting = state == "starting"
         self._spinner.set_visible(starting)
         (self._spinner.start if starting else self._spinner.stop)()
-        css, _ = STATE_STYLE.get(state, UNKNOWN_STYLE)
+        css, dot = STATE_STYLE.get(state, UNKNOWN_STYLE)
+        self._dot.set_color(dot)
         if css != self._badge_class:
             if self._badge_class:
                 self._badge.remove_css_class(self._badge_class)
@@ -613,41 +688,48 @@ class ComponentRow(Adw.ActionRow):
             self._badge_class = css
         self._badge.set_text(state)
 
-        # RSS alone does not tell you whether a service is near the cap that will
-        # kill it, which is the number you actually want when the laptop starts
-        # swapping. Show both, and only once there is a reading to compare.
+        # RSS alone does not tell you whether a service is near the cap that
+        # will kill it, which is the number you actually want when the laptop
+        # starts swapping. The bar is that ratio; the figures are the evidence.
         used, limit = comp.get("rss"), comp.get("limit")
+        self._mem.set_text(f"{human_bytes(used)} / {human_bytes(limit)}"
+                           if used and limit else human_bytes(used))
         if used and limit:
-            bits = [f"{human_bytes(used)} / {human_bytes(limit)}"]
+            percent = used * 100 / limit
+            self._cap.set(used / limit, RAMP[meter_level(percent)])
+            self._cap.set_visible(True)
+            self._cap.set_tooltip_text(f"{percent:.0f}% of this component's RAM cap")
         else:
-            bits = [human_bytes(used)]
+            self._cap.set_visible(False)
+
         cpu = comp.get("cpu")
-        bits.append("cpu —" if cpu is None else f"{cpu}% cpu")
-        if comp.get("port"):
-            bits.append(f":{comp['port']}")
-        if comp.get("health"):
-            bits.append("health ✓" if state == "up" else "health")
-        if comp.get("errors"):
-            bits.append(f"{comp['errors']} errors")
+        self._cpu.set_text("—" if cpu is None else f"{cpu}%")
+        self._port.set_text(f":{comp['port']}" if comp.get("port") else "")
+        age = human_age(now - comp["since"]) if comp.get("since") and now else ""
+        self._age.set_text(age)
+
+        # One column for the exceptions, because they are mutually exclusive in
+        # practice and a permanent column for "exit code" would be empty on
+        # every healthy row.
+        if state == "crashed" and comp.get("exit") is not None:
+            self._note.set_text(f"exit {comp['exit']}")
+        elif comp.get("restarts"):
+            self._note.set_text(f"{comp['restarts']}× restart")
+        else:
+            self._note.set_text("")
+
         # "2 errors" that you cannot click is a dead end: the lines exist, in a
         # view one tab away, already highlighted.
         self._errors.set_visible(bool(comp.get("errors")) and self._on_show_logs is not None)
-        age = human_age(now - comp["since"]) if comp.get("since") and now else ""
-        if age:
-            # `up` says nothing about whether it has been up three hours or
-            # twenty seconds, which is the whole question when something flaps.
-            bits.append(f"{'starting' if starting else 'up'} {age}")
-        if comp.get("restarts"):
-            bits.append(f"restarted {comp['restarts']}×")
-        if state == "crashed" and comp.get("exit") is not None:
-            bits.append(f"exit {comp['exit']}")
+        if comp.get("errors"):
+            self._errors.set_tooltip_text(f"{comp['errors']} error lines — show them")
 
         self._url = comp.get("url") or ""
         # Only offer to open something that is actually answering.
         self._open.set_visible(bool(self._url) and state in ("up", "external"))
         if self._url:
             self._open.set_tooltip_text(f"Open {self._url}")
-        self.set_subtitle("  ·  ".join(bits))
+        self.set_subtitle("")
 
         self._start.set_visible(not running)
         self._stop.set_visible(running)

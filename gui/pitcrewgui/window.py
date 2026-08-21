@@ -15,6 +15,7 @@ from .dialogs import (
 )
 from .logview import LogView
 from .model import (
+    RAMP,
     SERIES_COLORS,
     STATE_STYLE,
     UNKNOWN_STYLE,
@@ -37,7 +38,17 @@ from .profiles import profile_names
 from .registry import current_project, declared_root, known_projects, project_file
 from .runner import Runner, Stream
 from .settings import SETTINGS_BY_KEY, Settings
-from .widgets import ComponentRow, Dot, FindingRow, Graph, Meter, ShareChart, human_age
+from .style import install as install_css
+from .widgets import (
+    Bar,
+    ComponentRow,
+    Dot,
+    FindingRow,
+    Graph,
+    Meter,
+    ShareChart,
+    human_age,
+)
 
 
 class Window(Adw.ApplicationWindow):
@@ -49,6 +60,7 @@ class Window(Adw.ApplicationWindow):
         self._runner = Runner(pitcrew)
         self._init_state()
 
+        install_css()
         self.set_title("pitcrew")
         # Remembered across runs: reopening at 900x680 on every launch, on the
         # tab you were not using, is a small insult repeated daily.
@@ -97,6 +109,14 @@ class Window(Adw.ApplicationWindow):
         self._toasts = Adw.ToastOverlay()
         self._toasts.set_child(view)
         self.set_content(self._toasts)
+
+        # Two columns above ~880px, stacked below it. Without this the Overview
+        # is unusable in a half-screen window: two 440px columns of meters and
+        # findings both truncate rather than one of them wrapping.
+        breakpoint_ = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 880px"))
+        breakpoint_.add_setter(self._columns, "orientation", Gtk.Orientation.VERTICAL)
+        self.add_breakpoint(breakpoint_)
 
         self._install_shortcuts()
         if settings["tab"] in ("overview", "components", "resources", "logs", "projects"):
@@ -321,6 +341,35 @@ class Window(Adw.ApplicationWindow):
                               tooltip_text="Main menu")
 
     # ── overview ────────────────────────────────────────────────────────────
+    def _build_verdict_banner(self) -> None:
+        """The verdict is a BANNER, not a card.
+
+        It is the answer; the four things under it are the evidence. Rendering
+        both as identical rounded rectangles gave everything the same weight,
+        so nothing was read first — which for the one line that says whether
+        you can go back to work is the whole job undone.
+        """
+        self._verdict_dot = Dot(VERDICT_STYLE["ok"][0], size=16)
+        self._verdict_title = Gtk.Label(xalign=0, wrap=True, hexpand=True)
+        self._verdict_title.add_css_class("title-2")
+        self._verdict_sub = Gtk.Label(xalign=0, wrap=True, label="waiting for the first sample…")
+        self._verdict_sub.add_css_class("dim-label")
+
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True)
+        text.append(self._verdict_title)
+        text.append(self._verdict_sub)
+
+        dot_box = Gtk.Box(valign=Gtk.Align.START, margin_top=6)
+        dot_box.append(self._verdict_dot)
+
+        self._verdict_banner = Gtk.Box(spacing=14)
+        self._verdict_banner.add_css_class("verdict")
+        self._verdict_banner.add_css_class("verdict-ok")
+        self._verdict_class = "verdict-ok"
+        self._verdict_banner.append(dot_box)
+        self._verdict_banner.append(text)
+
+
     def _build_overview(self) -> Gtk.Widget:
         """Health, then resources, then what to do about it — in that order.
 
@@ -328,53 +377,57 @@ class Window(Adw.ApplicationWindow):
         lib/19-diag.sh produced. None of it is worked out here: the desktop app
         and the terminal dashboard show the same verdict because there is only
         one thing computing it.
+
+        Laid out by hand rather than in an AdwPreferencesPage. That widget
+        clamps its content to about 600px whatever the window is doing, which
+        on a 1000px window left nearly half the screen empty and on a monitor
+        left most of it — a monitoring tool that cannot use the space it was
+        given reads as a phone settings screen. Here the clamp is wide enough
+        for two columns, and a breakpoint folds them back for a narrow window.
         """
-        page = Adw.PreferencesPage()
+        self._build_verdict_banner()
 
-        # The verdict, as the first thing on the page and the largest thing on
-        # it. A status page rather than a row: this is a headline, not an item.
-        self._verdict_dot = Dot(VERDICT_STYLE["ok"][0], size=14)
-        self._verdict_title = Gtk.Label(xalign=0, wrap=True, hexpand=True)
-        self._verdict_title.add_css_class("title-3")
-        self._verdict_sub = Gtk.Label(xalign=0, wrap=True, label="waiting for the first sample…")
-        self._verdict_sub.add_css_class("dim-label")
-
-        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
-        text.append(self._verdict_title)
-        text.append(self._verdict_sub)
-        head = Gtk.Box(spacing=12, margin_top=6, margin_bottom=6)
-        head.append(self._verdict_dot)
-        head.append(text)
-        self._verdict_group = Adw.PreferencesGroup()
-        self._verdict_group.add(head)
-        page.add(self._verdict_group)
-
-        # Resources: four one-line meters, because the question is "how much
-        # room is left" and that is a proportion with two numbers beside it.
-        self._meters_group = Adw.PreferencesGroup(title="Machine")
-        self._meter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+        # Machine and findings side by side: "how much room is left" and "what
+        # is wrong" are read together, and stacking them meant scrolling
+        # between two halves of one thought.
+        self._meters_group = Adw.PreferencesGroup(title="Machine", hexpand=True)
+        self._meter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
                                   margin_top=6, margin_bottom=6)
         self._meters: dict[str, Meter] = {}
         self._meters_group.add(self._meter_box)
-        page.add(self._meters_group)
 
-        # Findings. Hidden entirely when there are none — an empty "Problems"
-        # group with a cheerful placeholder in it is a box that trains you to
-        # ignore the box.
         self._findings_group = Adw.PreferencesGroup(
-            title="Needs attention", visible=False)
+            title="Needs attention", hexpand=True)
         # The stream only carries the cheap checks — anything that has to fork
         # (a jcmd, a docker inspect) is skipped there so the dashboard's frame
         # loop stays free of it. Asking for the rest is therefore an explicit
-        # act, and this is the button that performs it.
-        self._deep_button = Gtk.Button(label="Full diagnostics", valign=Gtk.Align.CENTER)
-        self._deep_button.add_css_class("flat")
+        # act, and this is the button that performs it. A framed button, not
+        # bare text: at the right of a group header, text reads as a title.
+        self._deep_button = Gtk.Button(valign=Gtk.Align.CENTER)
+        self._deep_button.set_child(Adw.ButtonContent(
+            icon_name="system-search-symbolic", label="Full diagnostics"))
         self._deep_button.set_tooltip_text(
             "Also run the checks that are too slow to run every frame")
         self._deep_button.connect("clicked", lambda _b: self._run_deep())
         self._findings_group.set_header_suffix(self._deep_button)
         self._finding_rows: list[Adw.ActionRow] = []
-        page.add(self._findings_group)
+        # Shown even when empty, unlike the groups below: "nothing needs your
+        # attention" is the answer someone came here for, and a section that
+        # vanishes when things are fine makes you wonder if it is broken.
+        self._findings_ok = Adw.ActionRow(
+            title="Nothing needs your attention", use_markup=False)
+        self._findings_ok.add_prefix(Gtk.Image(icon_name="object-select-symbolic",
+                                               valign=Gtk.Align.CENTER))
+        self._findings_ok.add_css_class("dim-label")
+
+        # NOT homogeneous. Four meters and a list of findings are not the same
+        # size and never will be, and splitting the width evenly left half the
+        # Machine column empty while the findings wrapped to two lines each.
+        self._meters_group.set_size_request(360, -1)
+        self._meters_group.set_hexpand(False)
+        self._columns = Gtk.Box(spacing=24)
+        self._columns.append(self._meters_group)
+        self._columns.append(self._findings_group)
 
         # Recovery: the review step. Every candidate is named, with what it is
         # holding and the evidence for calling it idle, and only then is there
@@ -395,21 +448,32 @@ class Window(Adw.ApplicationWindow):
         self._recover_group.set_header_suffix(self._recover_button)
         self._recover_rows: list[Adw.ActionRow] = []
         self._recoverable: list[str] = []
-        page.add(self._recover_group)
-        page.add(self._protected_group)
 
         # And the plain ranked answer to "what is eating my RAM".
         self._consumers_group = Adw.PreferencesGroup(title="Largest consumers", visible=False)
         self._consumer_rows: list[Adw.ActionRow] = []
-        page.add(self._consumers_group)
 
-        return page
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22,
+                       margin_top=20, margin_bottom=24, margin_start=18, margin_end=18)
+        body.append(self._verdict_banner)
+        body.append(self._columns)
+        body.append(self._recover_group)
+        body.append(self._protected_group)
+        body.append(self._consumers_group)
+
+        clamp = Adw.Clamp(maximum_size=1240, tightening_threshold=900, child=body)
+        return Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=clamp)
 
     def _render_overview(self, state: dict) -> None:
         components = state.get("components", [])
         level, colour, headline = verdict_of(state)
         self._verdict_dot.set_color(colour)
         self._verdict_title.set_text(headline or "—")
+        wanted = f"verdict-{level}"
+        if wanted != self._verdict_class:
+            self._verdict_banner.remove_css_class(self._verdict_class)
+            self._verdict_banner.add_css_class(wanted)
+            self._verdict_class = wanted
 
         health = state.get("health") or {}
         counts = health.get("counts") or {}
@@ -444,11 +508,17 @@ class Window(Adw.ApplicationWindow):
         for row in self._finding_rows:
             self._findings_group.remove(row)
         self._finding_rows.clear()
+        if not findings:
+            # Kept visible with a positive answer, unlike the groups below. A
+            # section that disappears when things are fine makes you check
+            # whether it is working.
+            self._findings_group.add(self._findings_ok)
+            self._finding_rows.append(self._findings_ok)
+            return
         for finding in findings:
             row = FindingRow(finding, self._show_logs_for, self._run_fix)
             self._findings_group.add(row)
             self._finding_rows.append(row)
-        self._findings_group.set_visible(bool(findings))
 
     def _render_recoverable(self, recoverable: dict, components: list[dict]) -> None:
         names = recoverable.get("components") or []
@@ -562,10 +632,20 @@ class Window(Adw.ApplicationWindow):
         for row in self._consumer_rows:
             self._consumers_group.remove(row)
         self._consumer_rows.clear()
+        # A share as a BAR, not as "25% of what this project is holding" written
+        # out on every row. Four rows all saying 25% is four copies of a
+        # sentence that told you nothing; four bars of equal length say the same
+        # thing instantly, and an outlier is visible without reading.
+        biggest = rows[0][1] if rows else 1.0
         for name, value, share in rows:
-            row = Adw.ActionRow(title=plain(name), use_markup=False,
-                                subtitle=f"{share:.0f}% of what this project is holding")
-            label = Gtk.Label(label=human_bytes(value), valign=Gtk.Align.CENTER)
+            row = Adw.ActionRow(title=plain(name), use_markup=False)
+            bar = Bar()
+            bar.set_size_request(140, -1)
+            bar.set(value / biggest if biggest else 0, RAMP["calm"])
+            bar.set_tooltip_text(f"{share:.0f}% of what this project is holding")
+            row.add_suffix(bar)
+            label = Gtk.Label(label=human_bytes(value), valign=Gtk.Align.CENTER,
+                              xalign=1, width_chars=10)
             label.add_css_class("numeric")
             row.add_suffix(label)
             row.set_activatable(True)
@@ -582,7 +662,13 @@ class Window(Adw.ApplicationWindow):
                                             margin_start=12, margin_end=12)
         self._comp_filter.connect("search-changed", lambda _e: self._filter_changed())
 
-        self._comp_page = Adw.PreferencesPage()
+        # A Box, not an AdwPreferencesPage: that widget carries its own clamp
+        # at about 600px which cannot be widened, and it was what squeezed
+        # every component's figures into a run-on subtitle while half the
+        # window sat empty. The groups inside are unchanged.
+        self._comp_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18,
+                                  margin_top=6, margin_bottom=24,
+                                  margin_start=12, margin_end=12)
         # A filter that hides everything must say so. Without this, turning off
         # "show stopped" on a stack that is entirely down looks identical to the
         # app being broken.
@@ -592,12 +678,23 @@ class Window(Adw.ApplicationWindow):
         self._empty_group = Adw.PreferencesGroup(visible=False)
         self._empty_group.add(self._empty_label)
         self._dep_group = Adw.PreferencesGroup(title="Dependencies")
-        self._comp_page.add(self._empty_group)
-        self._comp_page.add(self._dep_group)
+        self._comp_page.append(self._empty_group)
+        self._comp_page.append(self._dep_group)
 
+        # AdwPreferencesPage clamps to ~600px whatever the window is doing,
+        # which on a wide screen leaves most of it empty and squeezes the
+        # figures on every row into a run-on subtitle. Its own clamp, set wide
+        # enough for the columns below to line up.
+        clamp = Adw.Clamp(maximum_size=1240, tightening_threshold=900,
+                          child=self._comp_page)
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                      child=clamp, vexpand=True)
+        # The filter stays put while the list scrolls under it — a search box
+        # you have to scroll back up to reach is one you stop using.
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.append(self._comp_filter)
-        box.append(self._comp_page)
+        box.append(Adw.Clamp(maximum_size=1240, tightening_threshold=900,
+                             child=self._comp_filter))
+        box.append(scroller)
         return box
 
     def _filter_changed(self) -> None:
@@ -606,8 +703,12 @@ class Window(Adw.ApplicationWindow):
             self._render_components(self._last_components, self._colors)
 
     def _build_resources(self) -> Gtk.Widget:
-        self._cpu_graph = Graph("cpu", floor=100, fmt=lambda v: f"{v:.0f}%")
-        self._rss_graph = Graph("rss", floor=512 * 1024 ** 2, fmt=human_bytes)
+        self._cpu_graph = Graph("cpu", floor=100, fmt=lambda v: f"{v:.0f}%", percentage=True)
+        # A 512 MiB floor squashed a small stack into the bottom tenth of the
+        # plot — four node processes at 110 MiB total drew a flat line on the
+        # axis. The floor is there to stop the scale jumping about, and 128 MiB
+        # does that without pretending the machine is busier than it is.
+        self._rss_graph = Graph("rss", floor=128 * 1024 ** 2, fmt=human_bytes)
         self._legend = Gtk.FlowBox(
             selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4,
             row_spacing=4, column_spacing=16)
@@ -632,6 +733,11 @@ class Window(Adw.ApplicationWindow):
                 box.append(head)
             else:
                 box.append(label)
+            # CPU gets less room than memory on purpose: it is near zero most
+            # of the time and spikes briefly, while memory is the line anyone
+            # actually watches. Equal halves gave the less useful chart the
+            # same 230px as the more useful one.
+            graph.set_content_height(130 if title == "CPU" else 210)
             frame = Gtk.Frame()
             frame.set_child(graph)
             box.append(frame)
@@ -920,7 +1026,7 @@ class Window(Adw.ApplicationWindow):
         self._groups.clear()
         self._rows.clear()
         self._layout_key = None
-        for row, _dot in list(self._dep_rows.values()):
+        for row, _dot, _badge in list(self._dep_rows.values()):
             self._dep_group.remove(row)
         self._dep_rows.clear()
 
@@ -1035,7 +1141,7 @@ class Window(Adw.ApplicationWindow):
         auto = self._settings["collapse"] == "auto"
         for (_sort, heading), comps in ordered:
             for comp in comps:
-                self._rows[comp["name"]].update(comp, self._series.get(comp["name"]), now)
+                self._rows[comp["name"]].update(comp, now)
             if heading not in self._pinned:
                 self._collapsed[heading] = auto and group_is_idle(comps)
             self._apply_collapse(heading)
@@ -1070,10 +1176,10 @@ class Window(Adw.ApplicationWindow):
                 group.add(row)
                 self._rows[comp["name"]] = row
                 self._group_rows.setdefault(heading, []).append(row)
-            self._comp_page.add(group)
+            self._comp_page.append(group)
             self._groups.append(group)
             self._group_widgets[heading] = group
-        self._comp_page.add(self._dep_group)
+        self._comp_page.append(self._dep_group)
 
     def _show_empty_state(self, shown: int, total: int, needle: str = "") -> None:
         if shown:
@@ -1159,6 +1265,10 @@ class Window(Adw.ApplicationWindow):
                 row = Adw.ActionRow(title=dep["name"], use_markup=False)
                 dot = Dot(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1])
                 row.add_prefix(dot)
+                badge = Gtk.Label(valign=Gtk.Align.CENTER, xalign=0, width_chars=8)
+                badge.add_css_class("caption")
+                badge.add_css_class("dim-label")
+                row.add_suffix(badge)
                 box = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
                 box.append(self._icon_button(
                     "media-playback-start-symbolic", "Start dependencies",
@@ -1168,10 +1278,10 @@ class Window(Adw.ApplicationWindow):
                     lambda n=dep["name"]: self._restart_dep(n)))
                 row.add_suffix(box)
                 self._dep_group.add(row)
-                self._dep_rows[dep["name"]] = (row, dot)
-            row, dot = self._dep_rows[dep["name"]]
+                self._dep_rows[dep["name"]] = (row, dot, badge)
+            row, dot, badge = self._dep_rows[dep["name"]]
             dot.set_color(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1])
-            row.set_subtitle(dep["state"])
+            badge.set_text(dep["state"])
         self._dep_group.set_visible(bool(self._dep_rows))
 
     def _restart_dep(self, name: str) -> None:
@@ -1203,6 +1313,9 @@ class Window(Adw.ApplicationWindow):
         plotted = [s for s in listed if s.name not in self._hidden]
         self._cpu_graph.set_series(plotted, history)
         self._rss_graph.set_series(plotted, history)
+        window = human_age(history * self._settings["interval"]) or ""
+        for graph in (self._cpu_graph, self._rss_graph):
+            graph.set_window(f"last {window}" if window else "")
         self._rebuild_legend(listed)
 
         by_name = {c["name"]: c for c in components}

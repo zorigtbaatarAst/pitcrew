@@ -78,6 +78,19 @@ attribute, and most are pinned by a test.
    the state object; do not re-derive it in Python. `model.py` is pure
    presentation (no GTK, no OS calls) and is where testable logic goes.
 
+   **Do not put a view inside `AdwPreferencesPage` if it has columns or
+   figures.** That widget carries its own ~600px clamp which cannot be widened,
+   and it is what left half of every window empty. Use a Box in an `Adw.Clamp`
+   with `Adw.Breakpoint` for the narrow case; `AdwPreferencesGroup` works fine
+   standalone. `style.py` holds the small amount of CSS Adwaita has no opinion
+   about — everything else should be an Adwaita style class so the app follows
+   the user's theme and accent.
+
+   Colour means **one** thing: `model.RAMP` plus `meter_level()` for resources,
+   and `STATE_STYLE` / `VERDICT_STYLE` draw from the same ramp. Do not
+   introduce a second palette; the last one (stock LevelBar orange) made a
+   32%-full meter and a warning badge the same hue.
+
    Log text arrives with **ANSI escapes in it** — pitcrew captures stdout
    verbatim. `ansi.py` turns SGR into span tags and drops everything else; it
    is pure (no GTK) and tested. Do not "simplify" it into a strip, and do not
@@ -127,6 +140,7 @@ lib/19-diag.sh     diagnostics: the check registry, the core checks, `diagnose`
 lib/20-plugins.sh  finding and attributing plugins (they are SOURCED by bin/)
 examples/plugins/  worked plugins; jvm.sh is the reference one
 gui/pitcrewgui/    GTK4 + libadwaita desktop app, consumes `json --watch`
+                   model.py pure logic · ansi.py log colour · style.py the CSS
 themes/            colour palettes
 test/              a ~70-line assert harness and 21 test files
 ```

@@ -497,7 +497,7 @@ print(' '.join(r[0] for r in pgui.machine_meters(full, 250)))
 print(' '.join(r[0] for r in pgui.machine_meters({'cpuPercent': 5}, 0)))
 print(int(pgui.machine_meters(full, 250)[0][1]))
 ")
-  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "RAM CPU SWAP THIS" "every gauge it can measure"
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "RAM CPU SWAP Stack" "every gauge it can measure"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "CPU" "and only those"
   assert_eq "$(printf '%s' "$out" | sed -n 3p)" "50" "percentages are of the machine"
 }
@@ -690,10 +690,10 @@ from gi.repository import Adw
 Adw.init()
 w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
 w._render_deps([{'name': 'pg', 'state': 'down'}])
-row, dot = w._dep_rows['pg']
-print(row.get_subtitle())
+row, dot, badge = w._dep_rows['pg']
+print(badge.get_text())
 w._render_deps([{'name': 'pg', 'state': 'up'}])
-print(w._dep_rows['pg'][0].get_subtitle(), len(w._dep_rows))
+print(w._dep_rows['pg'][2].get_text(), len(w._dep_rows))
 ")
   assert_eq "$(printf '%s' "$out" | sed -n 1p)" "down" "state is shown"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "up 1" "and updated in place, not duplicated"

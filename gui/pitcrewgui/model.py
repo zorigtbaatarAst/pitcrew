@@ -15,14 +15,16 @@ SERIES_COLORS = (
 )
 
 # state -> (libadwaita css class for the badge, dot colour)
+# Same ramp again: "up" is the green the verdict uses, "crashed" is its red.
+# A component and the stack it belongs to should not disagree about what red is.
 STATE_STYLE = {
-    "up":       ("success",   "#33d17a"),
-    "starting": ("warning",   "#f6d32d"),
-    "crashed":  ("error",     "#e01b24"),
+    "up":       ("success",   "#3fb950"),
+    "starting": ("warning",   "#d29922"),
+    "crashed":  ("error",     "#f85149"),
     "external": ("accent",    "#3584e4"),
-    "down":     ("dim-label", "#77767b"),
+    "down":     ("dim-label", "#57606a"),
 }
-UNKNOWN_STYLE = ("dim-label", "#77767b")
+UNKNOWN_STYLE = ("dim-label", "#57606a")
 
 def rgb(hex_color: str) -> tuple[float, float, float]:
     return tuple(int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
@@ -92,13 +94,42 @@ def empty_message(total: int) -> str:
     return (f"Nothing is running.\n{total} stopped component{plural} "
             f"hidden by “Show stopped components”.")
 
+# ONE colour ramp, for resource meters and for finding severity alike.
+#
+# These were two systems: stock GtkLevelBar orange for the meters, red/amber/
+# green for severity. So orange-at-32%-RAM and amber-warning were nearly the
+# same hue meaning entirely different things, and colour stopped carrying
+# information. With one ramp, colour always answers the same question: how
+# worried should I be?
+RAMP = {
+    "calm": "#6e7681",     # nothing to say — deliberately grey, not green
+    "ok":   "#3fb950",
+    "warn": "#d29922",
+    "crit": "#f85149",
+}
+
+# Where a meter stops being calm. Matched to lib/19-diag.sh's own thresholds so
+# the bar turns amber on the frame the finding appears, not before or after.
+METER_WARN_PCT = 70
+METER_CRIT_PCT = 88
+
+
+def meter_level(percent: float) -> str:
+    """calm / warn / crit for a 0-100 resource reading."""
+    if percent >= METER_CRIT_PCT:
+        return "crit"
+    if percent >= METER_WARN_PCT:
+        return "warn"
+    return "calm"
+
+
 # The verdict lib/19-diag.sh reached, as something to paint with. Same three
 # levels, same meaning, and the dot colours match the terminal dashboard's so
 # the two do not disagree about what amber means.
 VERDICT_STYLE = {
-    "ok":   ("#33d17a", "success"),
-    "warn": ("#f6d32d", "warning"),
-    "crit": ("#e01b24", "error"),
+    "ok":   (RAMP["ok"],   "success"),
+    "warn": (RAMP["warn"], "warning"),
+    "crit": (RAMP["crit"], "error"),
 }
 
 def verdict_of(state: dict) -> tuple[str, str, str]:
@@ -203,8 +234,9 @@ def machine_meters(machine: dict, project_rss: float) -> list[tuple[str, float, 
         rows.append(("SWAP", swap_used * 100 / swap_total,
                      f"{human_bytes(swap_used)} / {human_bytes(swap_total)}"))
     if total:
-        rows.append(("THIS", project_rss * 100 / total,
-                     f"{human_bytes(project_rss)} of this machine"))
+        # Named, not "THIS". A four-letter shout in a column of RAM/CPU/SWAP
+        # reads as another system metric rather than as "your stack's share".
+        rows.append(("Stack", project_rss * 100 / total, human_bytes(project_rss)))
     return rows
 
 
