@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from .dialogs import ConfigDialog, DetailDialog, InitDialog, LimitsDialog
+from .dialogs import (
+    ConfigDialog,
+    DetailDialog,
+    DoctorDialog,
+    InitDialog,
+    LimitsDialog,
+    ProfilesDialog,
+    ToolsDialog,
+)
 from .logview import LogView
 from .model import (
     SERIES_COLORS,
@@ -101,7 +109,7 @@ class Window(Adw.ApplicationWindow):
         self._stream: Stream | None = None
         self._series: dict[str, Series] = {}
         self._rows: dict[str, ComponentRow] = {}
-        self._dep_rows: dict[str, Adw.ActionRow] = {}
+        self._dep_rows: dict[str, tuple] = {}
         self._groups: list[Adw.PreferencesGroup] = []
         self._group_widgets: dict[str, Adw.PreferencesGroup] = {}
         self._group_toggles: dict[str, Gtk.Button] = {}
@@ -123,6 +131,9 @@ class Window(Adw.ApplicationWindow):
         self._live_findings: list[dict] = []
         self._last_components: list[dict] = []
         self._last_log_dir: str | None = None
+        self._last_profile_dir: str | None = None
+        self._shells: list[str] = []
+        self._detail: object | None = None
         self._machine_total = 0
         self._last_at = 0
 
@@ -272,6 +283,8 @@ class Window(Adw.ApplicationWindow):
 
         self._profiles_menu = Gio.Menu()
         menu.append_submenu("Profiles", self._profiles_menu)
+        self._profiles_menu_end = Gio.Menu()
+        self._profiles_menu_end.append("Manage profiles…", "win.profiles")
 
         for name, handler in (("up", lambda: self._run_action("start", "all")),
                               ("stopall", lambda: self._run_action("stop", "all"))):
@@ -285,8 +298,16 @@ class Window(Adw.ApplicationWindow):
         self.add_action(profile_action)
 
         menu.append("RAM caps…", "win.limits")
+        menu.append("Doctor…", "win.doctor")
+        menu.append("Ports, plugins & shells…", "win.tools")
         menu.append("Preferences", "win.preferences")
         menu.append("Keyboard shortcuts", "win.shortcuts")
+        for name, handler in (("doctor", self._show_doctor),
+                              ("tools", self._show_tools),
+                              ("profiles", self._show_profiles)):
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", lambda *_a, h=handler: h())
+            self.add_action(act)
         limits = Gio.SimpleAction.new("limits", None)
         limits.connect("activate", lambda *_: self._show_limits())
         self.add_action(limits)
@@ -424,7 +445,7 @@ class Window(Adw.ApplicationWindow):
             self._findings_group.remove(row)
         self._finding_rows.clear()
         for finding in findings:
-            row = FindingRow(finding, self._show_logs_for)
+            row = FindingRow(finding, self._show_logs_for, self._run_fix)
             self._findings_group.add(row)
             self._finding_rows.append(row)
         self._findings_group.set_visible(bool(findings))
@@ -455,6 +476,29 @@ class Window(Adw.ApplicationWindow):
         self._recover_button.set_label(
             f"Stop these {len(names)} · frees {human_bytes(recoverable.get('bytes') or 0)}")
         self._recover_group.set_visible(True)
+
+    def _run_fix(self, verb: str, args: list[str], destructive: bool) -> None:
+        """Run a finding's suggested command — as argv, never through a shell.
+
+        `fix_action` has already refused anything outside a small set of verbs,
+        so what arrives here is a pitcrew subcommand over component names.
+        Destructive ones still ask: a button that stops services because a
+        diagnostic suggested it is not something to do on one click.
+        """
+        if not destructive:
+            self._run_action(verb, *args)
+            return
+        target = " ".join(args) if args else "everything"
+        dialog = Adw.AlertDialog(
+            heading=f"{verb.capitalize()}?",
+            body=f"pitcrew {verb} {target}")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", verb.capitalize())
+        dialog.set_response_appearance("go", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.connect("response", lambda _d, r: (
+            self._run_action(verb, *args) if r == "go" else None))
+        dialog.present(self)
 
     def _render_protected(self, recoverable: dict, components: list[dict]) -> None:
         names = recoverable.get("protected") or []
@@ -724,27 +768,59 @@ class Window(Adw.ApplicationWindow):
         self._profile_names = names
         self._profiles_menu.remove_all()
         if not names:
-            # An empty submenu looks broken. Say why it is empty instead.
+            # An empty submenu looks broken. Say why it is empty instead — and
+            # still offer the way to make one.
             item = Gio.MenuItem.new("No saved profiles", None)
             item.set_action_and_target_value("win.noop", None)
             self._profiles_menu.append_item(item)
+            self._profiles_menu.append_section(None, self._profiles_menu_end)
             return
         for name in names:
             item = Gio.MenuItem.new(f"Start @{name}", None)
             item.set_action_and_target_value("win.profile", GLib.Variant.new_string(name))
             self._profiles_menu.append_item(item)
+        self._profiles_menu.append_section(None, self._profiles_menu_end)
 
     def _show_detail(self, name: str) -> None:
         comp = next((c for c in self._last_components if c["name"] == name), None)
         if comp is None or not self._project:
             return
-        DetailDialog(self._runner, self._project, comp, self._last_log_dir,
-                     self._last_at, self._show_logs_for).present(self)
+        # Kept, so every later frame reaches it: watching a heap climb is
+        # exactly what someone opens this for, and a dialog frozen at the
+        # instant you clicked is a screenshot, not a monitor.
+        dialog = DetailDialog(self._runner, self._project, comp, self._last_log_dir,
+                              self._last_at, self._show_logs_for)
+        self._detail = dialog
+        dialog.connect("closed", lambda _d: setattr(self, "_detail", None))
+        dialog.present(self)
 
     def _show_logs_for(self, name: str, errors_only: bool = False) -> None:
         """Hand off from a component row (or a crash notification) to its log."""
         self._stack.set_visible_child_name("logs")
         self._logs.show_component(name, errors_only)
+
+    def _show_doctor(self) -> None:
+        if not self._project:
+            self._toast("no project selected")
+            return
+        DoctorDialog(self._runner, self._project).present(self)
+
+    def _show_tools(self) -> None:
+        if not self._project:
+            self._toast("no project selected")
+            return
+        ToolsDialog(self._runner, self._project, self._shells, self._toast).present(self)
+
+    def _show_profiles(self) -> None:
+        if not self._project:
+            self._toast("no project selected")
+            return
+        running = [c["name"] for c in self._last_components
+                   if c.get("state") in ("up", "starting", "external")]
+        ProfilesDialog(self._runner, self._project, running,
+                       profile_names(self._last_profile_dir),
+                       lambda: profile_names(self._last_profile_dir),
+                       self._toast).present(self)
 
     def _show_limits(self) -> None:
         if not self._project:
@@ -844,7 +920,7 @@ class Window(Adw.ApplicationWindow):
         self._groups.clear()
         self._rows.clear()
         self._layout_key = None
-        for row in list(self._dep_rows.values()):
+        for row, _dot in list(self._dep_rows.values()):
             self._dep_group.remove(row)
         self._dep_rows.clear()
 
@@ -910,6 +986,8 @@ class Window(Adw.ApplicationWindow):
             series.push(comp.get("cpu"), comp.get("rss"))
 
         self._logs.update_sources(state.get("logDir"), components, state.get("errorPattern"))
+        self._last_profile_dir = state.get("profileDir")
+        self._shells = sorted(state.get("shells") or [])
         self._refresh_profiles(state.get("profileDir"))
         self._crashes.check(components)
         self._render_components(components, colors)
@@ -917,6 +995,10 @@ class Window(Adw.ApplicationWindow):
         self._render_graphs(components, history)
 
         self._render_overview(state)
+        if self._detail is not None:
+            live = next((c for c in components if c["name"] == self._detail.comp_name), None)
+            if live is not None:
+                self._detail.update(live)
         summary = state.get("summary", {})
         self._update_running_pill(state, components, summary)
         self._update_machine_summary(components, state.get("machine") or {})
@@ -1067,15 +1149,46 @@ class Window(Adw.ApplicationWindow):
         return "  ·  ".join(parts)
 
     def _render_deps(self, deps: list[dict]) -> None:
+        # Dependencies were the one thing on this page you could look at and not
+        # touch — `pitcrew start deps` existed and had no button. A dead
+        # postgres is the commonest reason a stack looks broken, so the fix
+        # belongs next to the symptom.
         for dep in deps:
             row = self._dep_rows.get(dep["name"])
             if row is None:
                 row = Adw.ActionRow(title=dep["name"], use_markup=False)
-                row.add_prefix(Dot(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1]))
+                dot = Dot(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1])
+                row.add_prefix(dot)
+                box = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
+                box.append(self._icon_button(
+                    "media-playback-start-symbolic", "Start dependencies",
+                    lambda: self._run_action("start", "deps")))
+                box.append(self._icon_button(
+                    "view-refresh-symbolic", f"Restart {dep['name']}",
+                    lambda n=dep["name"]: self._restart_dep(n)))
+                row.add_suffix(box)
                 self._dep_group.add(row)
-                self._dep_rows[dep["name"]] = row
+                self._dep_rows[dep["name"]] = (row, dot)
+            row, dot = self._dep_rows[dep["name"]]
+            dot.set_color(STATE_STYLE.get(dep["state"], UNKNOWN_STYLE)[1])
             row.set_subtitle(dep["state"])
         self._dep_group.set_visible(bool(self._dep_rows))
+
+    def _restart_dep(self, name: str) -> None:
+        # `pitcrew stop --deps` refuses PITCREW_PROTECTED_DEPS, which is the
+        # whole point of that list — so this cannot tear down your database by
+        # accident, and says so when it declines.
+        dialog = Adw.AlertDialog(
+            heading=f"Restart {name}?",
+            body="Stops non-protected dependencies and starts them again.\n"
+                 "Anything in protected_deps is left alone.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", "Restart")
+        dialog.set_response_appearance("go", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.connect("response", lambda _d, r: (
+            self._run_action("stop", "--deps") if r == "go" else None))
+        dialog.present(self)
 
     def _render_graphs(self, components: list[dict], history: int) -> None:
         if self._settings["plot"] == "all":

@@ -189,6 +189,28 @@ pitcrew_app only --be-cmd "true" --be-port 19999'
   cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
 }
 
+test_a_repo_shipping_a_yaml_config_is_registered_as_a_working_pointer() {
+  # The stub used to be written with `root:` before `include:`, which the loader
+  # refuses (include has to be the first key) — so every YAML pointer entry
+  # pitcrew wrote was unloadable. Checking the file's CONTENT missed it
+  # entirely; only loading it finds this class of bug.
+  mk "$ROOTFIX/pitcrew.yaml" 'name: shipped
+apps:
+  only:
+    be:
+      cmd: "true"
+      port: 19998'
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  local gen; gen=$(project_file fixrepo)
+  assert_match "$gen" '\.yaml$' "a yaml repo gets a yaml entry"
+  _load_generated_from "$gen"
+  assert_eq "$PITCREW_PROJECT_NAME" "shipped" "and it resolves into the repo's own config"
+  assert_eq "${PITCREW_BE_PORT[only]}" 19998 "with its values"
+  assert_eq "$ROOT" "$ROOTFIX" "and the right root"
+  rm -f "$ROOTFIX/pitcrew.yaml"
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+}
+
 test_edit_opens_the_file_that_actually_holds_the_config() {
   # A registry entry for a repo that ships its own config only records the root
   # and points at it. Opening the stub would put you in a two-line file, let you

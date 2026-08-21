@@ -382,6 +382,88 @@ print(w._deep_button.get_visible())
   assert_eq "$out" "False" "the button is for asking, not for decoration"
 }
 
+# ── everything the GUI can now reach ────────────────────────────────────────
+
+test_a_suggested_command_is_only_run_when_it_is_one_we_understand() {
+  gui_available || return 0
+  # A finding's `fix` is a string and a plugin can put anything in it, so it is
+  # never handed to a shell — it is split, matched against a small list of
+  # verbs, and run as argv or not at all.
+  local out; out=$(_settings_drive "
+for fix in ['pitcrew logs be-api', 'pitcrew restart be-api', 'pitcrew stale --restart',
+            'pitcrew stop be-a be-b']:
+    print(pgui.fix_action(fix)[0], pgui.fix_action(fix)[3])
+for fix in ['rm -rf /', 'pitcrew limit be-api 2G', 'pitcrew stop ../../etc',
+            'pitcrew stop --deps', 'pitcrew', 'pitcrew diagnose', '']:
+    print(pgui.fix_action(fix))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "logs False"    "opening a log is not destructive"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "restart True"  "restarting is"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "stale True"    "so is restarting the stale ones"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "stop True"     "several components at once"
+  local refused; refused=$(printf '%s' "$out" | sed -n '5,11p' | tr '\n' ' ')
+  assert_eq "$refused" "None None None None None None None" "everything else is text, not a button"
+}
+
+test_the_process_tree_comes_from_the_stream() {
+  gui_available || return 0
+  # The GUI must never run its own ps — the tree arrives in the state object.
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+t = pgui.ProcessTree()
+print(len(t._rows))
+t.set_processes([{'pid': 1, 'cmd': 'java', 'rss': 900, 'cpu': 12},
+                 {'pid': 2, 'cmd': 'bash', 'rss': 100, 'cpu': None}])
+print(len(t._rows))
+t.set_processes([])
+print(len(t._rows))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "0" "nothing before a frame arrives"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "2" "a row per process"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "0" "and it empties when the service stops"
+}
+
+test_the_detail_dialog_keeps_up_with_later_frames() {
+  gui_available || return 0
+  # Watching a heap climb is what someone opens this for. A dialog frozen at
+  # the instant you clicked is a screenshot, not a monitor.
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+runner = pgui.Runner('/bin/true')
+comp = {'name': 'be-api', 'state': 'starting', 'rss': 100, 'limit': 1000,
+        'processes': [{'pid': 1, 'cmd': 'java', 'rss': 100, 'cpu': 0}]}
+d = pgui.DetailDialog(runner, 'p', comp, '/tmp', 10, lambda *a: None)
+print(len(d._procs._rows), d._status.get_subtitle())
+d.update({**comp, 'state': 'up',
+          'processes': [{'pid': 1, 'cmd': 'java', 'rss': 900, 'cpu': 5},
+                        {'pid': 2, 'cmd': 'sh', 'rss': 10, 'cpu': 0}]})
+print(len(d._procs._rows), d._status.get_subtitle())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1 starting" "opened on the frame that was current"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "2 up" "and follows the stream after that"
+}
+
+test_dependencies_can_be_acted_on_not_just_looked_at() {
+  gui_available || return 0
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._render_deps([{'name': 'pg', 'state': 'down'}])
+row, dot = w._dep_rows['pg']
+print(row.get_subtitle())
+w._render_deps([{'name': 'pg', 'state': 'up'}])
+print(w._dep_rows['pg'][0].get_subtitle(), len(w._dep_rows))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "down" "state is shown"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "up 1" "and updated in place, not duplicated"
+}
+
 # ── project registry and config editing ─────────────────────────────────────
 
 test_the_config_editor_follows_the_source_indirection() {

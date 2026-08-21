@@ -147,6 +147,41 @@ def merge_findings(live: list[dict], deep: list[dict]) -> list[dict]:
     return sorted(live + extra, key=lambda f: rank.get(f.get("severity"), 3))
 
 
+# Verbs a finding's suggested command is allowed to invoke from the GUI.
+#
+# A finding's `fix` is a string, and a plugin can put anything in it. So it is
+# never handed to a shell: it is split, checked against this list, and run as
+# argv through the pitcrew binary or not at all. Anything else is shown as
+# selectable text for the person to run themselves — which is the right answer
+# for `pitcrew limit`, and the only safe one for whatever a plugin invents.
+RUNNABLE_FIXES = {
+    "logs":    ("Logs", False),
+    "start":   ("Start", False),
+    "restart": ("Restart", True),
+    "stop":    ("Stop", True),
+    "stale":   ("Restart stale", True),
+}
+
+def fix_action(fix: str) -> tuple[str, list[str], str, bool] | None:
+    """(verb, args, button label, needs confirming) for a runnable fix, else None."""
+    parts = (fix or "").split()
+    if len(parts) < 2 or parts[0] != "pitcrew":
+        return None
+    verb, args = parts[1], parts[2:]
+    known = RUNNABLE_FIXES.get(verb)
+    if known is None:
+        return None
+    # Nothing that looks like an option or a path gets through: every verb here
+    # takes component names, and `stale` takes exactly --restart.
+    if verb == "stale":
+        if args != ["--restart"]:
+            return None
+    elif not args or any(a.startswith("-") or "/" in a for a in args):
+        return None
+    label, destructive = known
+    return verb, args, label, destructive
+
+
 def machine_meters(machine: dict, project_rss: float) -> list[tuple[str, float, str]]:
     """(label, percent, figures) for the machine gauges.
 

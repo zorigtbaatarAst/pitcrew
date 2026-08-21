@@ -37,9 +37,9 @@ print(" ".join(sorted(d["health"]["counts"])))
 print(" ".join(sorted(d["health"]["recoverable"])))')
 
   assert_eq "$(printf '%s' "$keys" | sed -n 1p)" \
-    "at collector components deps errorPattern health logDir machine profileDir project root schema summary" "top level"
+    "at collector components deps errorPattern health logDir machine profileDir project root schema shells summary" "top level"
   assert_eq "$(printf '%s' "$keys" | sed -n 2p)" \
-    "app cpu errors exit health idle limit limitSource name pid port protected restarts role rss since state url" "per component"
+    "app cpu errors exit health idle limit limitSource name pid port processes protected restarts role rss since state url" "per component"
   assert_eq "$(printf '%s' "$keys" | sed -n 3p)" \
     "crashed down external starting up" "summary counts every state"
   assert_eq "$(printf '%s' "$keys" | sed -n 4p)" \

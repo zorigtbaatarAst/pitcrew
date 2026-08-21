@@ -9,6 +9,13 @@
 
 PITCREW_JSON_SCHEMA=1
 
+# Processes per component in the state object. Capped because a JVM tree can be
+# dozens of pids and this ships on every frame: the desktop app wants to answer
+# "what inside this service is holding the memory", and the biggest handful is
+# that answer. Sorted by RSS, so the cap drops the ones nobody was going to
+# read. 0 turns the field into an empty list.
+PITCREW_JSON_PROCS="${PITCREW_JSON_PROCS:-12}"
+
 _json_str() { # $1 → a JSON string literal, with the two characters that matter escaped
   local v=${1//\\/\\\\}
   printf '"%s"' "${v//\"/\\\"}"
@@ -21,6 +28,29 @@ _json_num() { # a number, or null when we genuinely do not know
 _json_cpu() { # SNAP_CPU is meaningless without a previous sample — say null, not 0
   [ "${SNAP_CPU_OK:-0}" = 1 ] || { printf 'null'; return; }
   _json_num "${1:-}"
+}
+
+# The component's process tree, biggest first. The terminal dashboard has shown
+# this behind Enter since the beginning; putting it in the stream is what lets
+# the desktop app show the same thing without running its own `ps` — which is
+# the one thing the GUI must never do (see AGENTS.md).
+_json_processes() { # $1 comp
+  printf ',"processes":['
+  [ "${PITCREW_JSON_PROCS:-0}" -gt 0 ] || { printf ']'; return 0; }
+  local p n=0 first=1
+  _tree_sorted "$1"
+  for p in "${TREE_SORTED[@]}"; do
+    [ -n "$p" ] || continue
+    [ "$n" -ge "$PITCREW_JSON_PROCS" ] && break
+    n=$((n + 1))
+    [ $first = 1 ] || printf ','
+    first=0
+    printf '{"pid":%s,"cmd":%s,"rss":%s,"cpu":%s}' \
+      "$(_json_num "$p")" "$(_json_str "${SNAP_PROC_CMD[$p]:-?}")" \
+      "$(_json_num "${SNAP_PROC_RSS[$p]:-}")" "$(_json_cpu "${SNAP_PROC_CPU[$p]:-}")"
+  done
+  printf ']'
+  return 0
 }
 
 cmd_json() {
@@ -43,6 +73,17 @@ cmd_json() {
   printf '"logDir":%s,' "$(_json_str "$LOG_DIR")"
   printf '"profileDir":%s,' "$(_json_str "$PROFILE_DIR")"
   printf '"errorPattern":%s,' "$(_json_str "$PITCREW_ERROR_PATTERN")"
+  # The names only. A GUI cannot host an interactive psql, but it can tell you
+  # this project has one and hand you the exact command — which beats the shells
+  # being a feature you only discover by reading the config.
+  printf '"shells":['
+  local _sh _sfirst=1
+  for _sh in "${!PITCREW_SHELLS[@]}"; do
+    [ $_sfirst = 1 ] || printf ','
+    _sfirst=0
+    printf '%s' "$(_json_str "$_sh")"
+  done
+  printf '],'
   # The machine itself. A reader plotting RAM against a per-component cap has no
   # idea whether 18G of caps is generous or suicidal without knowing what the
   # box actually has — and pitcrew already measures this for its own gauges.
@@ -77,7 +118,7 @@ cmd_json() {
                   down) down=$((down+1));; esac
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s,"protected":%s}' \
+    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s,"protected":%s' \
       "$(_json_str "$c")" "$(_json_str "$app")" "$(_json_str "$role")" "$(_json_str "$st")" \
       "$(_json_num "$port")" "$(_json_num "${SNAP_PID[$c]:-}")" \
       "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_cpu "${SNAP_CPU[$c]:-}")" \
@@ -87,6 +128,8 @@ cmd_json() {
       "$(_json_num "${SNAP_SINCE[$c]:-}")" "$(_json_num "${RESTART_N[$c]:-0}")" \
       "$(_json_num "${SNAP_IDLE[$c]:-}")" \
       "$([ -n "${PITCREW_PROTECTED[$c]:-}" ] && printf true || printf false)"
+    _json_processes "$c"
+    printf '}'
   done
   printf '],"deps":['
   first=1

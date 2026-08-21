@@ -352,6 +352,26 @@ diag_check_idle() {
     "pitcrew stop ${DIAG_IDLE_COMPS[*]}" ""
 }
 
+# Source that changed after the process started. This is the one check that
+# cannot be cheap — it walks the watch directories with `find` — so it is
+# registered slow and never runs from the frame loop. Being a check rather than
+# only a command means it reaches `diagnose`, the JSON and the desktop app
+# without any of them knowing what staleness is.
+diag_check_stale() {
+  local c n=0 names=""
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    n=$((n + 1))
+    names+="${names:+ }$c"
+  done < <(stale_comps 2>/dev/null)
+  [ "$n" -gt 0 ] || return 0
+  local noun="components have changed since they started"
+  [ "$n" -eq 1 ] && noun="component has changed since it started"
+  diag_add warn stale "$n $noun" \
+    "$names — what is running is not what is on disk" \
+    "pitcrew stale --restart" "${names%% *}"
+}
+
 diag_register diag_check_crashed
 diag_register diag_check_stuck
 diag_register diag_check_external
@@ -360,6 +380,7 @@ diag_register diag_check_caps
 diag_register diag_check_deps
 diag_register diag_check_errors
 diag_register diag_check_idle
+diag_register diag_check_stale slow
 
 # ── running them ────────────────────────────────────────────────────────────
 

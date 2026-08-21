@@ -11,6 +11,27 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **The desktop app can now reach everything the CLI can**, apart from what a
+  window genuinely cannot host. New: a live **process tree** in a component's
+  detail dialog (a `gradle bootRun` is a wrapper that forks a daemon that forks
+  the app, so the PID shown above it is almost never the one holding the
+  memory), **start/restart for dependencies** from the row that shows they are
+  down, a rendered **Doctor**, **profile save and delete** (the set you want is
+  the set already running — naming it is the only step), and one **Tools**
+  dialog for ports across every project, loaded plugins, and the configured
+  shells. `pitcrew theme`/`render`, the fzf menu, and actually running a shell
+  stay terminal-only, and the app says so rather than pretending.
+- **Findings became buttons.** Where pitcrew is willing to run a suggested
+  command it offers it as an action — including **Restart stale**. The `fix`
+  string is never handed to a shell: it is split, checked against a small list
+  of verbs over component names, and run as argv or shown as selectable text.
+  A plugin can put anything in that field, which is exactly why.
+- **Staleness is a diagnostic check** (slow tier), so "what is running is not
+  what is on disk" reaches `diagnose`, the JSON and the desktop app instead of
+  only `pitcrew stale`.
+- **`components[].processes`** and **`shells`** in the state object — what the
+  GUI needed in order to show a process tree without running its own `ps`.
+  Capped at `PITCREW_JSON_PROCS` (12) and sorted by memory.
 - **Plugins.** A plugin is a shell file in `~/.config/pitcrew/plugins/` that
   calls `diag_register`. No manifest, no lifecycle, no API version. `pitcrew
   plugins` lists what loaded and attributes every check to the file that
@@ -87,6 +108,16 @@ field is removed or changes meaning.
   `diagnose` samples for one second and inherits the rest.
 
 ### Fixed
+- **Every YAML registry pointer pitcrew wrote was unloadable.** `pitcrew init`
+  on a repo shipping its own `pitcrew.yaml` emitted `root:` before `include:`,
+  and the loader requires `include` to be the first key — so the entry it had
+  just written failed on the next command. The existing test checked the file's
+  *content* and never loaded it; it now loads it, which is the only way this
+  class of bug shows up.
+- **The process tree was invisible below 110 columns.** It was drawn only in
+  the wide layout, so under `PITCREW_NARROW_AT` pressing Enter toggled a tree
+  that was never painted — a key that silently did nothing on the terminal
+  width most people use.
 - **`pitcrew edit` opened the wrong file.** For a repo that ships its own
   config, the registry entry is a two-line pointer at it — so `edit` let you
   change a file the tool does not read. It now follows the indirection (through

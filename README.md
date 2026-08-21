@@ -426,12 +426,13 @@ renamed or dropped field fails there rather than in your dashboard.
 
 | | |
 |---|---|
-| top level | `schema` `project` `root` `collector` `at` `logDir` `errorPattern` `machine` `components` `deps` `health` `summary` |
-| component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` `url` `health` `since` `restarts` `idle` `protected` |
+| top level | `schema` `project` `root` `collector` `at` `logDir` `errorPattern` `shells` `machine` `components` `deps` `health` `summary` |
+| component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` `url` `health` `since` `restarts` `idle` `protected` `processes` |
 | machine | `memTotal` `memUsed` `cpuPercent` `swapTotal` `swapUsed` |
 | dep | `name` `state` |
 | health | `verdict` `headline` `deep` `counts` `findings` `recoverable` |
 | finding | `severity` `id` `title` `detail` `fix` `scope` |
+| process | `pid` `cmd` `rss` `cpu` (per component, biggest first, capped at `PITCREW_JSON_PROCS`) |
 | summary | `up` `starting` `crashed` `external` `down` |
 
 `schema` is **1**. Adding a field is backwards compatible and does not bump it;
@@ -605,6 +606,7 @@ implementation, three surfaces.
 | `dep-down` | a declared container that is not running |
 | `log-errors` | a service that is up and quietly logging exceptions |
 | `recoverable` | quiet, long-running services, and what stopping them returns |
+| `stale` | running code that no longer matches what is on disk (slow tier) |
 | `jvm-heap` / `jvm-cap` | from the bundled example plugin — see below |
 
 ### How "idle" is measured, and why it survives a restart
@@ -878,6 +880,37 @@ which is why it and the terminal dashboard cannot disagree.
 make install-gui     # symlink, plus whatever this OS uses to list apps
 pitcrew-gui          # or launch "pitcrew" from the app grid / Launchpad
 ```
+
+### What is reachable from the app
+
+Everything the CLI does, apart from the things a window genuinely cannot host:
+
+| | |
+|---|---|
+| Start / stop / restart | per component, per app group, whole stack, or a profile |
+| Dependencies | start and restart from the row that shows they are down |
+| Process tree | in a component's detail dialog, live, biggest first |
+| Diagnostics | the Overview verdict, plus **Full diagnostics** for the slow checks |
+| Recovery | idle candidates with a stop button, and what is 🔒 protected |
+| Stale code | a finding with a **Restart stale** button |
+| Doctor | rendered as rows, not pasted terminal output |
+| RAM caps | per component, machine-local |
+| Profiles | start, **save what is running**, delete |
+| Projects | add, switch, edit config, forget |
+| Ports · plugins · shells | one **Tools** dialog |
+| Logs | live tail, filter, errors-only |
+
+Terminal-only by nature: `pitcrew theme` and `pitcrew render` (they style the
+terminal dashboard; the app follows your desktop theme), the fzf `menu`, and
+actually *running* a `shell` — a GTK window cannot host an interactive `psql`,
+so Tools hands you the exact command to paste instead of pretending.
+
+A finding's suggested command becomes a **button** where pitcrew is willing to
+run it. The `fix` string is never handed to a shell: it is split, checked
+against a small list of verbs (`logs`, `start`, `stop`, `restart`,
+`stale --restart`) over component names, and run as argv or shown as plain
+selectable text. A plugin can put anything in that field, so anything else —
+`pitcrew limit`, a path, an option — stays text.
 
 | | |
 |---|---|

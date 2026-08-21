@@ -9,7 +9,7 @@ from gi.repository import Adw, GLib, Gtk
 from .model import human_bytes, plain
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error, yaml_config_error
-from .widgets import OutputView, human_age
+from .widgets import OutputView, ProcessTree, human_age
 
 
 class InitDialog(Adw.Dialog):
@@ -299,8 +299,10 @@ class DetailDialog(Adw.Dialog):
         super().__init__(title=comp["name"], content_width=560)
         name = comp["name"]
 
+        self.comp_name = name
         facts = Adw.PreferencesGroup(title="State")
-        facts.add(self._row("Status", comp.get("state", "?")))
+        self._status = self._row("Status", comp.get("state", "?"))
+        facts.add(self._status)
         if comp.get("since") and now:
             facts.add(self._row("Started", f"{human_age(now - comp['since'])} ago"))
         if comp.get("restarts"):
@@ -309,9 +311,11 @@ class DetailDialog(Adw.Dialog):
             facts.add(self._row("PID", str(comp["pid"])))
         if comp.get("exit") is not None:
             facts.add(self._row("Last exit", str(comp["exit"])))
-        facts.add(self._row("Memory",
-                            f"{human_bytes(comp.get('rss'))} of {human_bytes(comp.get('limit'))} "
-                            f"({comp.get('limitSource', 'role')})"))
+        self._memory = self._row("Memory",
+                                 f"{human_bytes(comp.get('rss'))} of "
+                                 f"{human_bytes(comp.get('limit'))} "
+                                 f"({comp.get('limitSource', 'role')})")
+        facts.add(self._memory)
         if comp.get("url"):
             facts.add(self._link("URL", comp["url"]))
         if comp.get("health"):
@@ -325,23 +329,38 @@ class DetailDialog(Adw.Dialog):
         logs.connect("activated", lambda _r: (on_show_logs(name, False), self.close()))
         actions.add(logs)
 
-        self._cmd = OutputView(height=120)
-        self._cmd.show_text("reading the start command…")
-        runner.run(["-p", project, "ps"], self._show_ps)
+        # The process tree. A `gradle bootRun` is a wrapper that forks a daemon
+        # that forks the application, so "which of these is actually my
+        # service" is the question, and the PID above answers it wrongly.
+        self._procs = ProcessTree()
+        procs_group = Adw.PreferencesGroup(
+            title="Processes", description="Everything in this component's tree, biggest first")
+        procs_group.add(self._procs)
+        self._procs.set_processes(comp.get("processes") or [])
 
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                        margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
         body.append(facts)
+        body.append(procs_group)
         body.append(actions)
-        body.append(self._cmd)
 
         view = Adw.ToolbarView()
         view.add_top_bar(Adw.HeaderBar())
         view.set_content(Gtk.ScrolledWindow(child=body, propagate_natural_height=True))
         self.set_child(view)
 
-    def _show_ps(self, ok: bool, output: str) -> None:
-        self._cmd.show_text(output or ("nothing running" if ok else "could not read process list"))
+    def update(self, comp: dict) -> None:
+        """A later frame for the same component.
+
+        The dialog is not a snapshot of the moment you opened it — watching a
+        heap climb is exactly what someone opens this for. The window pushes
+        every frame in while it is open.
+        """
+        self._procs.set_processes(comp.get("processes") or [])
+        self._memory.set_subtitle(
+            f"{human_bytes(comp.get('rss'))} of {human_bytes(comp.get('limit'))} "
+            f"({comp.get('limitSource', 'role')})")
+        self._status.set_subtitle(comp.get("state", "?"))
 
     @staticmethod
     def _row(title: str, value: str) -> Adw.ActionRow:
@@ -355,3 +374,256 @@ class DetailDialog(Adw.Dialog):
         row.add_suffix(Gtk.Image.new_from_icon_name("web-browser-symbolic"))
         row.connect("activated", lambda _r: Gtk.UriLauncher.new(url).launch(None, None, None, None))
         return row
+
+
+class DoctorDialog(Adw.Dialog):
+    """`pitcrew doctor`, rendered rather than printed.
+
+    doctor answers a different question from diagnose — "can this machine run
+    pitcrew at all" rather than "is this stack healthy" — and it was the one
+    command with no way into the desktop app. It has a --json mode already, so
+    this shows the same facts as rows instead of pasting terminal output into a
+    text box.
+    """
+
+    def __init__(self, runner: Runner, project: str):
+        super().__init__(title="Doctor", content_width=520, content_height=560)
+        self._page = Adw.PreferencesPage()
+        self._group = Adw.PreferencesGroup(title="Checking…")
+        self._page.add(self._group)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(self._page)
+        self.set_child(view)
+        runner.run_json(["-p", project, "doctor", "--json"], self._show)
+
+    def _show(self, state: dict | None, problem: str) -> None:
+        self._page.remove(self._group)
+        if state is None:
+            self._group = Adw.PreferencesGroup(title="Could not run doctor")
+            self._group.add(Adw.ActionRow(title=plain(problem), use_markup=False))
+            self._page.add(self._group)
+            return
+
+        env = Adw.PreferencesGroup(title="Environment")
+        env.add(self._fact("pitcrew", state.get("version", "?")))
+        env.add(self._fact("OS", state.get("os", "?")))
+        env.add(self._fact("bash", state.get("bash", "?")))
+        env.add(self._fact("Collector", state.get("collector", "?"),
+                           "how the meters are read: /proc, or ps"))
+        self._page.add(env)
+
+        caps = Adw.PreferencesGroup(title="RAM caps")
+        # An unenforceable cap is worth saying out loud: the meters look
+        # identical either way, so nothing else on screen distinguishes them.
+        caps.add(self._verdict(
+            "Enforced by the kernel", state.get("capsEnforced"),
+            "measured against, but not applied — there is no cgroup equivalent here"))
+        caps.add(self._verdict("The caps fit this machine", state.get("capsFit"),
+                               state.get("capsWarning") or ""))
+        self._page.add(caps)
+
+        tools = Adw.PreferencesGroup(
+            title="Optional tools", description="Each of these degrades with a message, not an error")
+        for name, present in (state.get("tools") or {}).items():
+            tools.add(self._verdict(name, present, "not installed"))
+        self._page.add(tools)
+
+        clashes = state.get("portClashes") or 0
+        ports = Adw.PreferencesGroup(title="Ports")
+        ports.add(self._verdict(
+            "No ports claimed by another project", not clashes,
+            f"{clashes} port(s) also claimed elsewhere — each project would report the "
+            "other's services as its own"))
+        self._page.add(ports)
+
+        deps = state.get("deps") or []
+        if deps:
+            group = Adw.PreferencesGroup(title="Dependencies")
+            for dep in deps:
+                group.add(self._verdict(dep.get("name", "?"), dep.get("running"), "not running"))
+            self._page.add(group)
+        self._group = env
+
+    @staticmethod
+    def _fact(title: str, value, subtitle: str = "") -> Adw.ActionRow:
+        row = Adw.ActionRow(title=title, subtitle=plain(subtitle), use_markup=False)
+        label = Gtk.Label(label=plain(str(value)), valign=Gtk.Align.CENTER)
+        label.add_css_class("dim-label")
+        row.add_suffix(label)
+        return row
+
+    @staticmethod
+    def _verdict(title: str, ok, why: str) -> Adw.ActionRow:
+        row = Adw.ActionRow(title=plain(title), use_markup=False,
+                            subtitle=plain("" if ok else why))
+        icon = Gtk.Image(icon_name="object-select-symbolic" if ok else "dialog-warning-symbolic",
+                         valign=Gtk.Align.CENTER)
+        icon.add_css_class("success" if ok else "warning")
+        row.add_suffix(icon)
+        return row
+
+
+class ToolsDialog(Adw.Dialog):
+    """The three things that had no way into the GUI at all.
+
+    Ports across every project, the plugins that are extending diagnostics, and
+    the shells the project configured. None of them is worth a tab; all of them
+    were unreachable without dropping to a terminal, which for a desktop app is
+    the same as not existing.
+    """
+
+    def __init__(self, runner: Runner, project: str, shells: list[str], on_toast):
+        super().__init__(title="Tools", content_width=560, content_height=560)
+        self._runner = runner
+        self._on_toast = on_toast
+
+        page = Adw.PreferencesPage()
+
+        self._ports = Adw.PreferencesGroup(
+            title="Ports",
+            description="Every port every registered project claims — and any claimed twice")
+        self._ports_view = OutputView(height=180)
+        self._ports_view.show_text("reading…")
+        self._ports.add(self._ports_view)
+        page.add(self._ports)
+
+        self._plugins = Adw.PreferencesGroup(
+            title="Plugins",
+            description="Diagnostic checks loaded from ~/.config/pitcrew/plugins")
+        self._plugins_view = OutputView(height=140)
+        self._plugins_view.show_text("reading…")
+        self._plugins.add(self._plugins_view)
+        page.add(self._plugins)
+
+        # A GTK app cannot host an interactive psql, and pretending otherwise
+        # would be worse than not offering it. Handing over the exact command
+        # is the honest version.
+        if shells:
+            group = Adw.PreferencesGroup(
+                title="Shells",
+                description="Configured in this project. Copy one and run it in a terminal.")
+            for name in shells:
+                row = Adw.ActionRow(title=plain(name), use_markup=False,
+                                    subtitle=f"pitcrew -p {project} shell {name}",
+                                    subtitle_selectable=True)
+                button = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER,
+                                    tooltip_text="Copy the command")
+                button.add_css_class("flat")
+                button.connect("clicked", lambda _b, n=name: self._copy(
+                    f"pitcrew -p {project} shell {n}"))
+                row.add_suffix(button)
+                group.add(row)
+            page.add(group)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(page)
+        self.set_child(view)
+
+        runner.run(["ports"], lambda ok, out: self._ports_view.show_text(
+            out or ("no projects registered" if ok else "could not read the port map")))
+        runner.run(["-p", project, "plugins"], lambda ok, out: self._plugins_view.show_text(
+            out or ("no plugins" if ok else "could not list plugins")))
+
+    def _copy(self, text: str) -> None:
+        self.get_clipboard().set(text)
+        self._on_toast("copied")
+
+
+class ProfilesDialog(Adw.Dialog):
+    """Saved sets of targets: start one, save what is running, delete one.
+
+    The GUI could already START a profile from the menu and had no way to make
+    or remove one, which meant profiles were a terminal feature that the desktop
+    app happened to be able to trigger. Saving is the half that matters — the
+    set you want is the set you have running right now, and naming it is the
+    only step a person has to do.
+    """
+
+    def __init__(self, runner: Runner, project: str, running: list[str],
+                 profiles: list[str], on_changed, on_toast):
+        super().__init__(title="Profiles", content_width=520, content_height=460)
+        self._runner = runner
+        self._project = project
+        self._running = running
+        self._on_changed = on_changed
+        self._on_toast = on_toast
+
+        self._page = Adw.PreferencesPage()
+
+        save = Adw.PreferencesGroup(
+            title="Save what is running",
+            description=(f"{len(running)} component(s): " + ", ".join(running))
+            if running else "Nothing is running to save")
+        self._name = Adw.EntryRow(title="Profile name")
+        self._name.set_sensitive(bool(running))
+        button = Gtk.Button(label="Save", valign=Gtk.Align.CENTER, sensitive=bool(running))
+        button.add_css_class("suggested-action")
+        button.connect("clicked", lambda _b: self._save())
+        self._name.add_suffix(button)
+        save.add(self._name)
+        self._page.add(save)
+
+        self._existing = Adw.PreferencesGroup(title="Saved")
+        self._rows: list[Adw.ActionRow] = []
+        self._fill(profiles)
+        self._page.add(self._existing)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(self._page)
+        self.set_child(view)
+
+    def _fill(self, profiles: list[str]) -> None:
+        for row in self._rows:
+            self._existing.remove(row)
+        self._rows.clear()
+        if not profiles:
+            row = Adw.ActionRow(title="No profiles yet", use_markup=False,
+                                subtitle="Start the components you want, then save them above")
+            self._existing.add(row)
+            self._rows.append(row)
+            return
+        for name in profiles:
+            row = Adw.ActionRow(title=plain(f"@{name}"), use_markup=False)
+            box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+            start = Gtk.Button(icon_name="media-playback-start-symbolic",
+                               tooltip_text=f"Start @{name}")
+            start.add_css_class("flat")
+            start.connect("clicked", lambda _b, n=name: self._start(n))
+            box.append(start)
+            delete = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Delete")
+            delete.add_css_class("flat")
+            delete.connect("clicked", lambda _b, n=name: self._delete(n))
+            box.append(delete)
+            row.add_suffix(box)
+            self._existing.add(row)
+            self._rows.append(row)
+
+    def _save(self) -> None:
+        name = self._name.get_text().strip()
+        if not name or not self._running:
+            return
+        self._runner.run(
+            ["-p", self._project, "profile", "save", name, *self._running],
+            lambda ok, out: self._done(ok, out, f"saved @{name}"))
+
+    def _start(self, name: str) -> None:
+        self._runner.run(["-p", self._project, "start", f"@{name}"],
+                         lambda ok, out: self._done(ok, out, f"starting @{name}", refresh=False))
+
+    def _delete(self, name: str) -> None:
+        self._runner.run(["-p", self._project, "profile", "rm", name],
+                         lambda ok, out: self._done(ok, out, f"deleted @{name}"))
+
+    def _done(self, ok: bool, output: str, message: str, refresh: bool = True) -> None:
+        if not ok:
+            self._on_toast((output or "").strip().splitlines()[-1:][0] if output else "failed")
+            return
+        self._on_toast(message)
+        self._name.set_text("")
+        if refresh:
+            self._fill(self._on_changed())
+

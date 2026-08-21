@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import cairo
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gtk, Pango
 
 from .model import (
     STATE_STYLE,
     UNKNOWN_STYLE,
     Series,
+    fix_action,
     hover_index,
     human_bytes,
     nice_max,
@@ -412,7 +413,7 @@ class FindingRow(Adw.ActionRow):
         "info": ("dialog-information-symbolic", "accent"),
     }
 
-    def __init__(self, finding: dict, on_logs=None) -> None:
+    def __init__(self, finding: dict, on_logs=None, on_run=None) -> None:
         super().__init__(title=plain_text(finding.get("title", "")),
                          subtitle=plain_text(finding.get("detail", "")),
                          use_markup=False)
@@ -422,20 +423,107 @@ class FindingRow(Adw.ActionRow):
         icon.add_css_class(css)
         self.add_prefix(icon)
 
-        # A finding that names a component and suggests looking at its log is
-        # one click away from that log — printing the command for someone to
-        # retype in another window would be a strange thing for a GUI to do.
-        scope, fix = finding.get("scope") or "", finding.get("fix") or ""
-        if scope and fix.startswith("pitcrew logs") and on_logs is not None:
-            button = Gtk.Button(label="Logs", valign=Gtk.Align.CENTER)
-            button.add_css_class("flat")
-            button.connect("clicked", lambda _b: on_logs(scope, False))
-            self.add_suffix(button)
+        # A finding that suggests a command is one click from that command —
+        # printing it for someone to retype in another window would be a strange
+        # thing for a GUI to do. But only for verbs the GUI is willing to run as
+        # argv (see fix_action); anything else stays selectable text, because a
+        # `fix` string can come from a plugin and is not a shell script.
+        fix = finding.get("fix") or ""
+        action = fix_action(fix)
+        if action and action[0] == "logs" and on_logs is not None:
+            self._button("Logs", lambda: on_logs(action[1][0], False), False)
+        elif action and on_run is not None:
+            verb, args, label, destructive = action
+            self._button(label, lambda: on_run(verb, args, destructive), destructive)
         elif fix:
             hint = Gtk.Label(label=fix, valign=Gtk.Align.CENTER, selectable=True)
             hint.add_css_class("caption")
             hint.add_css_class("dim-label")
             self.add_suffix(hint)
+
+    def _button(self, label: str, action, destructive: bool) -> None:
+        button = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+        button.add_css_class("flat")
+        if destructive:
+            button.add_css_class("destructive-action")
+        button.connect("clicked", lambda _b: action())
+        self.add_suffix(button)
+
+
+class ProcessTree(Gtk.Box):
+    """A component's process tree: pid, command, memory, cpu — biggest first.
+
+    The terminal dashboard has had this behind Enter since the beginning and the
+    desktop app had nothing, which mattered most for exactly the case it exists
+    for: a `gradle bootRun` is a wrapper that forks a daemon that forks the
+    application, so the pid pitcrew launched is almost never the one holding the
+    memory.
+
+    The rows come from the state stream (`components[].processes`). Nothing here
+    runs `ps` — that is the GUI's side of the bargain with the CLI.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._rows: dict[int, Gtk.Widget] = {}
+        self._empty = Gtk.Label(label="Not running", xalign=0, margin_top=6,
+                                margin_bottom=6, margin_start=12)
+        self._empty.add_css_class("dim-label")
+        self._empty.add_css_class("caption")
+        self.append(self._empty)
+
+    def set_processes(self, procs: list[dict]) -> None:
+        for row in self._rows.values():
+            self.remove(row)
+        self._rows.clear()
+        self._empty.set_visible(not procs)
+        if not procs:
+            return
+        total = sum(p.get("rss") or 0 for p in procs) or 1
+        for index, proc in enumerate(procs):
+            self.append(self._row(proc, index == len(procs) - 1, total))
+
+    def _row(self, proc: dict, last: bool, total: float) -> Gtk.Widget:
+        box = Gtk.Box(spacing=8, margin_top=3, margin_bottom=3,
+                      margin_start=12, margin_end=6)
+
+        branch = Gtk.Label(label="└" if last else "├", xalign=0)
+        branch.add_css_class("dim-label")
+        box.append(branch)
+
+        pid = Gtk.Label(label=str(proc.get("pid") or "?"), xalign=1, width_chars=7)
+        pid.add_css_class("caption")
+        pid.add_css_class("numeric")
+        pid.add_css_class("dim-label")
+        box.append(pid)
+
+        name = Gtk.Label(label=proc.get("cmd") or "?", xalign=0, hexpand=True,
+                         ellipsize=Pango.EllipsizeMode.MIDDLE)
+        name.add_css_class("caption")
+        box.append(name)
+
+        # A share bar, not a second copy of the figure: the question this view
+        # answers is which ONE of these is the service, and a proportion answers
+        # it faster than four numbers you have to compare.
+        share = Gtk.ProgressBar(fraction=(proc.get("rss") or 0) / total,
+                                valign=Gtk.Align.CENTER, hexpand=False)
+        share.set_size_request(60, -1)
+        box.append(share)
+
+        rss = Gtk.Label(label=human_bytes(proc.get("rss")), xalign=1, width_chars=10)
+        rss.add_css_class("caption")
+        rss.add_css_class("numeric")
+        box.append(rss)
+
+        cpu = proc.get("cpu")
+        cpu_label = Gtk.Label(label="—" if cpu is None else f"{cpu}%", xalign=1, width_chars=5)
+        cpu_label.add_css_class("caption")
+        cpu_label.add_css_class("numeric")
+        cpu_label.add_css_class("dim-label")
+        box.append(cpu_label)
+
+        self._rows[proc.get("pid") or id(proc)] = box
+        return box
 
 
 class ComponentRow(Adw.ActionRow):

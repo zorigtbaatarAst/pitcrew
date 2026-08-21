@@ -73,10 +73,16 @@ attribute, and most are pinned by a test.
 8. **The GUI is a renderer, not a second monitor.** Everything it shows arrives
    through `pitcrew json --watch`. It must never read `/proc`, run `ps`, or
    decide for itself whether the stack is healthy — the verdict travels in the
-   stream's `health` object for exactly that reason. If the GUI needs something
-   it does not have, extend the state object; do not re-derive it in Python.
-   `model.py` is pure presentation (no GTK, no OS calls) and is where testable
-   logic goes.
+   stream's `health` object and the process tree in `components[].processes`
+   for exactly that reason. If the GUI needs something it does not have, extend
+   the state object; do not re-derive it in Python. `model.py` is pure
+   presentation (no GTK, no OS calls) and is where testable logic goes.
+
+   For one-shot answers the GUI may shell out through `Runner.run_json`
+   (`doctor --json`, `diagnose --json`) — that is rendering the CLI's answer,
+   not computing its own. A finding's `fix` string is checked by
+   `model.fix_action` against a whitelist of verbs and run as **argv**, never
+   through a shell: plugins write that field.
 
 ## Layout
 
@@ -305,3 +311,7 @@ bash-3.2 guard against real `/bin/bash` on macOS.
   it — findings are the only channel a plugin has today.
 - `diag_check_errors` fires on any log line matching `PITCREW_ERROR_PATTERN`,
   which for a chatty framework is noisy. There is no per-component pattern.
+- `components[].processes` ships on every frame, capped at 12 per component.
+  For a large stack that is real bandwidth spent on a view most frames nobody
+  has open. If it ever matters, the fix is a request channel on the stream, not
+  a `ps` in the GUI.

@@ -163,8 +163,12 @@ cmd_init() { # [--in-project] [--force] [--sh] [--name <name>] [<dir>]
         printf '#\n# This project ships its own %s, so this entry just points at it.\n' "${existing##*/}"
         printf '# Edit the config in the repository, not here. `pitcrew init --detect`\n'
         printf '# replaces this with a freshly detected config instead.\n\n'
-        printf 'root: %s\n' "$dir"
+        # `include:` FIRST, because the loader requires it to be the first key —
+        # see lib/18-yaml.sh. `root:` is read textually before the file is
+        # loaded at all, so it does not need to lead; writing it first produced
+        # a stub that every command then refused to load.
         printf 'include: %s\n' "${existing##*/}"
+        printf 'root: %s\n' "$dir"
       } > "$ltarget"
     else
       {
