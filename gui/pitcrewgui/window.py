@@ -18,6 +18,7 @@ from .model import (
     group_of,
     human_bytes,
     machine_meters,
+    merge_findings,
     plain,
     share_slices,
     top_consumers,
@@ -116,6 +117,10 @@ class Window(Adw.ApplicationWindow):
         # report. An empty list looks identical to a broken app, and a stream
         # interval of 10s means someone stares at it for ten seconds.
         self._have_frame = False
+        # Findings from the last explicit full run. Cleared on project switch —
+        # they describe a project we are no longer looking at.
+        self._deep_findings: list[dict] = []
+        self._live_findings: list[dict] = []
         self._last_components: list[dict] = []
         self._last_log_dir: str | None = None
         self._machine_total = 0
@@ -337,6 +342,16 @@ class Window(Adw.ApplicationWindow):
         # ignore the box.
         self._findings_group = Adw.PreferencesGroup(
             title="Needs attention", visible=False)
+        # The stream only carries the cheap checks — anything that has to fork
+        # (a jcmd, a docker inspect) is skipped there so the dashboard's frame
+        # loop stays free of it. Asking for the rest is therefore an explicit
+        # act, and this is the button that performs it.
+        self._deep_button = Gtk.Button(label="Full diagnostics", valign=Gtk.Align.CENTER)
+        self._deep_button.add_css_class("flat")
+        self._deep_button.set_tooltip_text(
+            "Also run the checks that are too slow to run every frame")
+        self._deep_button.connect("clicked", lambda _b: self._run_deep())
+        self._findings_group.set_header_suffix(self._deep_button)
         self._finding_rows: list[Adw.ActionRow] = []
         page.add(self._findings_group)
 
@@ -346,6 +361,13 @@ class Window(Adw.ApplicationWindow):
         self._recover_group = Adw.PreferencesGroup(
             title="Recoverable",
             description="Idle, and what stopping them gives back", visible=False)
+        # Protected components get their own group rather than a greyed-out row
+        # in the list above: they are not candidates you cannot pick, they are
+        # deliberately not candidates, and the two read very differently.
+        self._protected_group = Adw.PreferencesGroup(
+            title="Protected",
+            description="Idle too — the config says never propose these", visible=False)
+        self._protected_rows: list[Adw.ActionRow] = []
         self._recover_button = Gtk.Button(valign=Gtk.Align.CENTER)
         self._recover_button.add_css_class("destructive-action")
         self._recover_button.connect("clicked", lambda _b: self._stop_recoverable())
@@ -353,6 +375,7 @@ class Window(Adw.ApplicationWindow):
         self._recover_rows: list[Adw.ActionRow] = []
         self._recoverable: list[str] = []
         page.add(self._recover_group)
+        page.add(self._protected_group)
 
         # And the plain ranked answer to "what is eating my RAM".
         self._consumers_group = Adw.PreferencesGroup(title="Largest consumers", visible=False)
@@ -385,8 +408,15 @@ class Window(Adw.ApplicationWindow):
                 self._meter_box.append(meter)
             meter.set(percent, figures)
 
-        self._render_findings(findings_of(state))
+        health_now = state.get("health") or {}
+        # A full run's extra findings are kept until the next one is asked for:
+        # they came from checks the stream does not run, so dropping them on the
+        # next frame would make the button look like it did nothing.
+        self._deep_button.set_visible(not health_now.get("deep"))
+        self._live_findings = findings_of(state)
+        self._render_findings(merge_findings(self._live_findings, self._deep_findings))
         self._render_recoverable(health.get("recoverable") or {}, components)
+        self._render_protected(health.get("recoverable") or {}, components)
         self._render_consumers(components)
 
     def _render_findings(self, findings: list[dict]) -> None:
@@ -425,6 +455,45 @@ class Window(Adw.ApplicationWindow):
         self._recover_button.set_label(
             f"Stop these {len(names)} · frees {human_bytes(recoverable.get('bytes') or 0)}")
         self._recover_group.set_visible(True)
+
+    def _render_protected(self, recoverable: dict, components: list[dict]) -> None:
+        names = recoverable.get("protected") or []
+        for row in self._protected_rows:
+            self._protected_group.remove(row)
+        self._protected_rows.clear()
+        by_name = {c["name"]: c for c in components}
+        for name in names:
+            comp = by_name.get(name, {})
+            row = Adw.ActionRow(title=plain(name), use_markup=False,
+                                subtitle=f"{human_bytes(comp.get('rss'))}   ·   "
+                                         "protected in this project's config")
+            row.add_prefix(Gtk.Image(icon_name="changes-prevent-symbolic",
+                                     valign=Gtk.Align.CENTER))
+            self._protected_group.add(row)
+            self._protected_rows.append(row)
+        self._protected_group.set_visible(bool(names))
+
+    def _run_deep(self) -> None:
+        if not self._project:
+            return
+        self._deep_button.set_sensitive(False)
+        self._deep_button.set_label("Running…")
+        self._runner.run_json(["-p", self._project, "diagnose", "--json"], self._deep_done)
+
+    def _deep_done(self, state: dict | None, problem: str) -> None:
+        self._deep_button.set_sensitive(True)
+        self._deep_button.set_label("Full diagnostics")
+        if state is None:
+            self._toast(f"full diagnostics failed: {problem}")
+            return
+        self._deep_findings = (state.get("health") or {}).get("findings") or []
+        extra = len(merge_findings(self._live_findings, self._deep_findings)) \
+            - len(self._live_findings)
+        # Re-render now rather than waiting for the next frame: a button whose
+        # effect appears up to `interval` seconds later reads as broken.
+        self._render_findings(merge_findings(self._live_findings, self._deep_findings))
+        self._toast(f"full diagnostics found {extra} more"
+                    if extra else "full diagnostics found nothing the stream missed")
 
     def _stop_recoverable(self) -> None:
         """Apply, after the review. The dialog names every component again:
@@ -789,6 +858,8 @@ class Window(Adw.ApplicationWindow):
         self._series.clear()
         self._clear_lists()
         self._have_frame = False
+        self._deep_findings = []
+        self._live_findings = []
         self._verdict_title.set_text("…")
         self._verdict_sub.set_text("waiting for the first sample")
         self._verdict_dot.set_color(STATE_STYLE["down"][1])

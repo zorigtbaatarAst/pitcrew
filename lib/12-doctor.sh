@@ -53,6 +53,15 @@ cmd_doctor() {
     done
     echo
   fi
+  # A finding you do not recognise is the first thing you want attributed, and
+  # a plugin that silently failed to load is the second.
+  local _np=0 _pc
+  for _pc in "${DIAG_CHECKS[@]}"; do
+    [ "${PLUGIN_OF[$_pc]:-core}" = core ] || _np=$((_np + 1))
+  done
+  if [ "$_np" -gt 0 ]; then
+    ok "plugins $_np check(s) registered from ${PITCREW_PLUGIN_DIR} ${GREY}(pitcrew plugins)${RESET}"
+  fi
   if declare -F pitcrew_doctor_extra >/dev/null; then
     say "${BOLD}project checks${RESET}"
     pitcrew_doctor_extra

@@ -37,6 +37,12 @@ apps:
       # port is enough.
       health: /health
       max: 2G           # this component's RAM cap, overriding max.be below
+      # `pitcrew diagnose` will never PROPOSE stopping this to free memory,
+      # however idle it looks. Not a lock — `pitcrew stop` still stops it —
+      # just a statement that it is load-bearing and suggesting otherwise
+      # would waste your time. Protected components are still listed, so a
+      # missing candidate is never a mystery.
+      protected: true
       # Source directories for `pitcrew stale [--restart]`, which flags
       # components whose code changed since they started. Relative to the root;
       # defaults to `dir` when that is set.

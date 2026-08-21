@@ -16,6 +16,14 @@ test_shorthand_populates_the_same_arrays_as_raw_assignment() {
   assert_eq "${PITCREW_WATCH_DIR[be-both]}"   "src/be" "watch dir is keyed by component"
 }
 
+test_the_bash_format_can_mark_a_role_protected_too() {
+  # One model, two front ends: anything the YAML can say, a .sh config can say.
+  ( config_defaults
+    pitcrew_app thing --be-cmd "true" --be-protected --fe-cmd "true"
+    assert_eq "${PITCREW_PROTECTED[be-thing]:-}" "1" "backend protected"
+    assert_empty "${PITCREW_PROTECTED[fe-thing]:-}" "frontend not" )
+}
+
 test_a_role_exists_only_when_it_has_a_command() {
   assert_ok   app_has_role both   be
   assert_ok   app_has_role both   fe

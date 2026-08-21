@@ -265,11 +265,36 @@ cmd_forget() {
   ok "forgot ${BOLD}$1${RESET} ${C_MUTED}(the checkout itself is untouched)${RESET}"
 }
 
+# The file that actually holds a project's config. A registry entry for a repo
+# that ships its own only records the root and points at it — `source` in the
+# bash format, `include:` in YAML — so opening the stub would put you in a
+# two-line file, let you edit it, and change nothing the tool reads. The
+# desktop app has always followed this indirection; the CLI did not.
+project_content_file() { # $1 name → the file worth editing
+  local f root inc
+  f=$(project_file "$1")
+  [ -f "$f" ] || return 1
+  root=$(config_declared_root "$f")
+  [ -n "$root" ] && [ -d "$root" ] || { printf '%s' "$f"; return 0; }
+  if config_is_yaml "$f"; then
+    inc=$(sed -n 's/^include:[[:space:]]*//p' "$f" | head -1)
+    inc=${inc%%[[:space:]]#*}; inc=${inc%"${inc##*[![:space:]]}"}
+    inc=${inc#\"}; inc=${inc%\"}; inc=${inc#\'}; inc=${inc%\'}
+    if [ -n "$inc" ]; then
+      case "$inc" in /*) ;; *) inc="$root/$inc" ;; esac
+      [ -f "$inc" ] && { printf '%s' "$inc"; return 0; }
+    fi
+  elif grep -qE '^[[:space:]]*(\.|source)[[:space:]]+.*pitcrew\.config\.sh' "$f" 2>/dev/null \
+       && [ -f "$root/pitcrew.config.sh" ]; then
+    printf '%s' "$root/pitcrew.config.sh"; return 0
+  fi
+  printf '%s' "$f"
+}
+
 cmd_edit() {
   local n=${1:-}
   [ -n "$n" ] || n=$(project_current || true)
   [ -n "$n" ] || die "no current project — pitcrew use <name>, or pitcrew edit <name>"
-  local f; f=$(project_file "$n")
-  [ -f "$f" ] || die "no project '$n' — see: pitcrew projects"
+  local f; f=$(project_content_file "$n") || die "no project '$n' — see: pitcrew projects"
   "${EDITOR:-vi}" "$f"
 }

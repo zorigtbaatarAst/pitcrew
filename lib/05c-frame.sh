@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# lib/05b-frame.sh — one frame, in three pieces, and the overflow rules.
+# lib/05c-frame.sh — one frame, in three pieces, and the overflow rules.
 #
 # NOTE ON THE NAME: every file in this group is `05<letter>-`, never `05-`.
 # `lib/*.sh` is sourced in glob order, and a UTF-8 collation IGNORES punctuation
-# when comparing — so "05-dashboard.sh" sorts AFTER "05a-cells.sh" on a normal
+# when comparing — so a bare "05-dashboard.sh" would sort AFTER "05b-cells.sh" on a normal
 # desktop and before it under LC_ALL=C. This group has top-level code that reads
 # variables the previous file sets, so that difference is the difference between
 # working and `PITCREW_REFRESH: unbound variable`. Letters sort the same either
@@ -13,7 +13,7 @@
 # there in comments: the viewport and the working set, the cell/layout
 # arithmetic, the frame builder, and the interactive loop. Bash does not care
 # what order functions are defined in, and lib/*.sh is sourced in name order,
-# so 05 → 05a → 05b → 05c all load before 06.
+# so 05a → 05b → 05c → 05d all load before 06.
 
 # ── one frame, in three pieces ──────────────────────────────────────────────
 # Split so the performance test can drive the REAL renderer instead of a
@@ -45,6 +45,36 @@ collect_frame() {
 # a command substitution, i.e. a fork, on every repaint.
 FRAME_TAG="${PITCREW_COLLECTOR}·${PITCREW_REFRESH}s"
 [ "${PITCREW_RESTART:-0}" = 1 ] && FRAME_TAG+="·supervised"
+
+# The expanded process tree for one or more components. Appends to the caller's
+# $frame and spends its $avail — both are build_frame's locals, which is why
+# this is a helper rather than a function with a return value: the frame is
+# built by appending to a string, and a `$(helper)` here would be a fork per
+# process per repaint.
+#
+# The data is already in the snapshot, so drawing it costs nothing extra.
+_tree_rows() { # $@ = components; draws the tree of each that is expanded
+  local tc p k tot branch
+  for tc in "$@"; do
+    [ -n "${EXPANDED[$tc]:-}" ] || continue
+    _tree_sorted "$tc"
+    k=0; tot=${#TREE_SORTED[@]}
+    for p in "${TREE_SORTED[@]}"; do
+      [ $avail -le 0 ] && break
+      k=$((k + 1))
+      branch="├"; [ $k -eq $tot ] && branch="└"
+      human "${SNAP_PROC_RSS[$p]:-0}"
+      printf -v line '   %b│%b   %b%s%b %b%-6s%b %b%-18s%b %b%6s%b%b%s%b %b%3s%b%b%%%b' \
+        "$C_FAINT" "$RESET" "$C_FAINT" "$branch" "$RESET" \
+        "$C_MUTED" "$p" "$RESET" "$C_SUBTLE" "${SNAP_PROC_CMD[$p]:-?}" "$RESET" \
+        "$C_TEXT" "${HUMAN%[GM]}" "$RESET" "$C_MUTED" "${HUMAN: -1}" "$RESET" \
+        "$C_TEXT" "${SNAP_PROC_CPU[$p]:-0}" "$RESET" "$C_MUTED" "$RESET"
+      frame+="$line"$'\e[K\n'
+      ln=$((ln + 1)); avail=$((avail - 1))
+    done
+  done
+  return 0
+}
 
 build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
   local W H bw sw frame line ts c app i rule_len r ln avail
@@ -310,6 +340,12 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
           [ $rsel = 1 ] && { _band_row "$nrow" $(( PREFIX_W + CELL_FIXED_W + bw )) "$W"; nrow=$R; }
           frame+="$nrow"$'\e[K\n'; ln=$((ln + 1)); avail=$((avail - 1))
           ROW_COMP[$ln]="$app"
+          # The tree belongs under the component it describes, which in this
+          # layout means inside this loop rather than after it. It used to sit
+          # only after the WIDE branch, so below PITCREW_NARROW_AT columns
+          # Enter toggled a tree that was never drawn — a key that silently
+          # does nothing on the terminal width most people actually use.
+          _tree_rows "$rc"
         done
         continue
       fi
@@ -323,26 +359,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       ln=$((ln + 1)); avail=$((avail - 1))
       ROW_COMP[$ln]="$app"
 
-      # expanded process tree — the data is already in the snapshot, so this
-      # costs nothing extra to render
-      for c in "be-$app" "fe-$app"; do
-        [ -n "${EXPANDED[$c]:-}" ] || continue
-        _tree_sorted "$c"
-        local p k=0 tot=${#TREE_SORTED[@]}
-        for p in "${TREE_SORTED[@]}"; do
-          [ $avail -le 0 ] && break
-          k=$((k + 1))
-          local branch="├"; [ $k -eq $tot ] && branch="└"
-          human "${SNAP_PROC_RSS[$p]:-0}"
-          printf -v line '   %b│%b   %b%s%b %b%-6s%b %b%-18s%b %b%6s%b%b%s%b %b%3s%b%b%%%b' \
-            "$C_FAINT" "$RESET" "$C_FAINT" "$branch" "$RESET" \
-            "$C_MUTED" "$p" "$RESET" "$C_SUBTLE" "${SNAP_PROC_CMD[$p]:-?}" "$RESET" \
-            "$C_TEXT" "${HUMAN%[GM]}" "$RESET" "$C_MUTED" "${HUMAN: -1}" "$RESET" \
-            "$C_TEXT" "${SNAP_PROC_CPU[$p]:-0}" "$RESET" "$C_MUTED" "$RESET"
-          frame+="$line"$'\e[K\n'
-          ln=$((ln + 1)); avail=$((avail - 1))
-        done
-      done
+      _tree_rows "be-$app" "fe-$app"
     done
     SCROLL_ABOVE=$ROW_OFF
     SCROLL_BELOW=$(( ${#VIEW_APPS[@]} - ROW_OFF - drawn ))

@@ -106,9 +106,11 @@ lib/15-registry.sh ~/.config/pitcrew/projects/, the project registry
 lib/16-output.sh   `status --json`, `json --watch`, `wait`, `ps`, `urls`
 lib/17-limits.sh   per-component RAM caps (machine-local overrides)
 lib/19-diag.sh     diagnostics: the check registry, the core checks, `diagnose`
+lib/20-plugins.sh  finding and attributing plugins (they are SOURCED by bin/)
+examples/plugins/  worked plugins; jvm.sh is the reference one
 gui/pitcrewgui/    GTK4 + libadwaita desktop app, consumes `json --watch`
 themes/            colour palettes
-test/              a ~70-line assert harness and 20 test files
+test/              a ~70-line assert harness and 21 test files
 ```
 
 ## Diagnostics vs doctor
@@ -195,17 +197,43 @@ desktop app's Overview. A check added anywhere appears in all four without
 touching any of them. The built-in checks use the same call a plugin would;
 there is no privileged path.
 
+Two tiers:
+
+```bash
+diag_register my_check          # cheap: runs on every dashboard frame
+diag_register my_check slow     # may fork: only on `pitcrew diagnose`
+```
+
+`diag_run` runs the cheap tier, `diag_run --full` runs everything, and the JSON
+reports which it was as `health.deep`. The tier is what makes constraint 4
+structural instead of a rule a plugin author has to have read — anything that
+shells out MUST be `slow`.
+
+Plugins are shell files in `~/.config/pitcrew/plugins/`, **sourced by
+bin/pitcrew at its top level** (constraint 2 again — a plugin holding a
+`declare -A` is an obvious thing to write). They are deliberately never loaded
+from inside a checkout; `lib/20-plugins.sh` explains why at length, and that
+refusal should not be softened.
+
 Rules if you work here:
 
-- **`diag_run` is called once per dashboard frame**, so checks obey the frame
-  loop's no-fork rule: array reads and arithmetic only. `human`, `dur_human`,
-  `pct_color` and `bar` set a global instead of printing precisely so they can
-  be used from here.
-- **Never claim more than was measured.** `SNAP_IDLE` is "seconds observed
-  quiet by *this* pitcrew process" — minutes in a dashboard, seconds in a
-  one-shot `diagnose` — so findings print the evidence (`quiet 41m · up 3h20m`)
-  rather than rounding it into an assertion. A recovery candidate must be both
-  quiet and old, and even then pitcrew proposes and the person decides.
+- **`diag_run` is called once per dashboard frame**, so cheap checks obey the
+  frame loop's no-fork rule: array reads and arithmetic only. `human`,
+  `dur_human`, `pct_color` and `bar` set a global instead of printing precisely
+  so they can be used from here.
+- **Never claim more than was measured.** Findings print the evidence
+  (`quiet 41m · up 3h20m`) rather than rounding it into an assertion. A recovery
+  candidate must be both quiet and old, `protected` components are excluded but
+  still *listed*, and even then pitcrew proposes and the person decides.
+- **Idleness is persisted, and the mechanism is the interesting part.**
+  `$LOG_DIR/.idle` holds `comp=collector pid cpu_counter last_work_at
+  last_seen_at`. On the next run the CPU counter is compared against the current
+  one over the elapsed wall clock: if it has not moved past the idle threshold,
+  the service *provably* did no work while nobody was watching, so the old
+  timestamp is carried forward. Otherwise the clock restarts. A changed pid or
+  collector discards the record. Do not "simplify" this into trusting the
+  timestamp — that turns a measurement into a guess, and the guess puts busy
+  services on a list of things it is safe to stop.
 - **Do not grow this into a plugin loader** until something outside this
   repository needs to register a check. A registry of functions over a shared
   snapshot is the smallest honest version of the boundary; anything more is
@@ -270,12 +298,10 @@ bash-3.2 guard against real `/bin/bash` on macOS.
 
 ## Known warts
 
-- Several `lib/` files have a stale filename in their own header comment
-  (`05a-cells.sh` is really `05b-cells.sh`, `05-targets.sh` is `06-targets.sh`,
-  `09-profiles.sh` is `10-profiles.sh`). Comment drift only.
-- Both `README.md` and `pitcrew help` call `PITCREW_BE_MAX` / `PITCREW_FE_MAX`
-  / `PITCREW_WAIT` "env overrides", which reads backwards. `config_defaults`
-  seeds them from the environment, then the config file is read and its value
-  wins. Both config formats behave identically; the wording is the problem.
-- `pitcrew edit` opens the registry entry, not the repo's own config it points
-  at. The GUI follows that indirection; the CLI does not.
+- `human()` renders 0 bytes as `0M`, so a machine with no swap in use reads
+  `SWP 0M / 7.9G`. Harmless, but it is not what anyone would write by hand.
+- The desktop app's process view is still a flat expandable tree. The JVM
+  plugin can see a heap/metaspace/native breakdown but has nowhere to render
+  it — findings are the only channel a plugin has today.
+- `diag_check_errors` fires on any log line matching `PITCREW_ERROR_PATTERN`,
+  which for a chatty framework is noisy. There is no per-component pattern.

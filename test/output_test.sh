@@ -39,7 +39,7 @@ print(" ".join(sorted(d["health"]["recoverable"])))')
   assert_eq "$(printf '%s' "$keys" | sed -n 1p)" \
     "at collector components deps errorPattern health logDir machine profileDir project root schema summary" "top level"
   assert_eq "$(printf '%s' "$keys" | sed -n 2p)" \
-    "app cpu errors exit health idle limit limitSource name pid port restarts role rss since state url" "per component"
+    "app cpu errors exit health idle limit limitSource name pid port protected restarts role rss since state url" "per component"
   assert_eq "$(printf '%s' "$keys" | sed -n 3p)" \
     "crashed down external starting up" "summary counts every state"
   assert_eq "$(printf '%s' "$keys" | sed -n 4p)" \
@@ -49,9 +49,10 @@ print(" ".join(sorted(d["health"]["recoverable"])))')
   # The verdict travels with the facts. A GUI that had to work out "is anything
   # wrong" from the component list would be reimplementing lib/19-diag.sh.
   assert_eq "$(printf '%s' "$keys" | sed -n 7p)" \
-    "counts findings headline recoverable verdict" "health object"
+    "counts deep findings headline recoverable verdict" "health object"
   assert_eq "$(printf '%s' "$keys" | sed -n 8p)" "crit info warn" "finding counts by severity"
-  assert_eq "$(printf '%s' "$keys" | sed -n 9p)" "bytes components" "what stopping the idle ones returns"
+  assert_eq "$(printf '%s' "$keys" | sed -n 9p)" "bytes components protected" \
+    "what stopping the idle ones returns, and what will never be proposed"
 }
 
 test_json_reports_the_real_component_model() {

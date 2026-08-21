@@ -132,6 +132,21 @@ def findings_of(state: dict) -> list[dict]:
                   key=lambda f: rank.get(f.get("severity"), 3))
 
 
+def merge_findings(live: list[dict], deep: list[dict]) -> list[dict]:
+    """Stream findings plus the ones only a full run can produce.
+
+    The stream carries the cheap checks; `pitcrew diagnose` also runs the slow
+    ones (anything that has to fork — see lib/19-diag.sh). Merged rather than
+    replaced, and de-duplicated on (id, scope), so asking for a full run adds
+    what it found without the list flickering between two versions of the same
+    finding every time a frame arrives.
+    """
+    seen = {(f.get("id"), f.get("scope")) for f in live}
+    extra = [f for f in deep if (f.get("id"), f.get("scope")) not in seen]
+    rank = {"crit": 0, "warn": 1, "info": 2}
+    return sorted(live + extra, key=lambda f: rank.get(f.get("severity"), 3))
+
+
 def machine_meters(machine: dict, project_rss: float) -> list[tuple[str, float, str]]:
     """(label, percent, figures) for the machine gauges.
 

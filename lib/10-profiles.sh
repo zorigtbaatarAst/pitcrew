@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/09-profiles.sh — named, saved sets of targets (e.g. "sales backoffice")
+# lib/10-profiles.sh — named, saved sets of targets (e.g. "sales backoffice")
 # stored per-project under ~/.config/pitcrew/<project>/profiles.
 
 cmd_profile() {

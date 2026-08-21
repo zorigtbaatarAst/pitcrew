@@ -121,6 +121,11 @@ config_defaults() {
   declare -gA PITCREW_BE_MAX_APP=() PITCREW_FE_MAX_APP=()   # per-app caps, if the config sets any
   declare -gA PITCREW_BE_PORT=() PITCREW_FE_PORT=()
   declare -gA PITCREW_BE_HEALTH_PATH=() PITCREW_URL_PATH=() PITCREW_WATCH_DIR=() PITCREW_SHELLS=()
+  # Components pitcrew will never PROPOSE stopping (lib/19-diag.sh). Not a lock:
+  # `pitcrew stop` still stops them, because a tool that refuses to do what you
+  # explicitly asked is worse than one that never suggested it. Keyed by
+  # component, so a project can protect a backend and not its frontend.
+  declare -gA PITCREW_PROTECTED=()
   PITCREW_DEPS=(); PITCREW_PROTECTED_DEPS=(); PITCREW_DEPS_READY_CMD=""
   PITCREW_BE_ENV=""; PITCREW_FE_ENV=""
   PITCREW_BE_MAX="${PITCREW_BE_MAX:-8G}"; PITCREW_FE_MAX="${PITCREW_FE_MAX:-10G}"
@@ -130,7 +135,7 @@ config_defaults() {
 
 pitcrew_app() { # pitcrew_app <name> [--be-cmd CMD] [--fe-cmd CMD] [--be-port N] [--fe-port N]
                  #             [--url-path P] [--be-health PATH] [--watch-be DIRS] [--watch-fe DIRS]
-                 #             [--be-max SIZE] [--fe-max SIZE]
+                 #             [--be-max SIZE] [--fe-max SIZE] [--be-protected] [--fe-protected]
                  # One call per app instead of hand-editing 6+ parallel associative arrays.
                  # Purely a shorthand for the arrays below — mix and match with direct
                  # array assignment freely, e.g. for apps with no clean per-app pattern.
@@ -147,6 +152,8 @@ pitcrew_app() { # pitcrew_app <name> [--be-cmd CMD] [--fe-cmd CMD] [--be-port N]
       --watch-fe)  [ $# -ge 2 ] || die "pitcrew_app $app: --watch-fe needs a value";  PITCREW_WATCH_DIR[fe-$app]=$2; shift 2 ;;
       --be-max)    [ $# -ge 2 ] || die "pitcrew_app $app: --be-max needs a value";    PITCREW_BE_MAX_APP[$app]=$2; shift 2 ;;
       --fe-max)    [ $# -ge 2 ] || die "pitcrew_app $app: --fe-max needs a value";    PITCREW_FE_MAX_APP[$app]=$2; shift 2 ;;
+      --be-protected) PITCREW_PROTECTED[be-$app]=1; shift ;;
+      --fe-protected) PITCREW_PROTECTED[fe-$app]=1; shift ;;
       *) die "pitcrew_app $app: unknown option '$1'" ;;
     esac
   done

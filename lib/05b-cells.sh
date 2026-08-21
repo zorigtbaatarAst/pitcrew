@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/05a-cells.sh — one service cell, and the breakpoints that size it.
+# lib/05b-cells.sh — one service cell, and the breakpoints that size it.
 #
 # The width constants and the two builders that read them live together on
 # purpose: cell_header and comp_cell must never disagree about how wide a
@@ -8,7 +8,7 @@
 #
 # NOTE ON THE NAME: every file in this group is `05<letter>-`, never `05-`.
 # `lib/*.sh` is sourced in glob order, and a UTF-8 collation IGNORES punctuation
-# when comparing — so "05-dashboard.sh" sorts AFTER "05a-cells.sh" on a normal
+# when comparing — so a bare "05-dashboard.sh" would sort AFTER "05b-cells.sh" on a normal
 # desktop and before it under LC_ALL=C. This group has top-level code that reads
 # variables the previous file sets, so that difference is the difference between
 # working and `PITCREW_REFRESH: unbound variable`. Letters sort the same either
@@ -18,7 +18,7 @@
 # there in comments: the viewport and the working set, the cell/layout
 # arithmetic, the frame builder, and the interactive loop. Bash does not care
 # what order functions are defined in, and lib/*.sh is sourced in name order,
-# so 05 → 05a → 05b → 05c all load before 06.
+# so 05a → 05b → 05c → 05d all load before 06.
 
 # not an average.
 centre() { # $1 total width, $2 visible width of $3, $3 rendered text → R

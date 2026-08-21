@@ -64,6 +64,17 @@ declare -A PITCREW_BE_HEALTH_PATH=([storefront]="/health")
 # Cosmetic suffix shown after the backend URL in `pitcrew urls` / doctor.
 declare -A PITCREW_URL_PATH=([storefront]="/api")
 
+# ── protected components (optional) ────────────────────────────────────────
+# `pitcrew diagnose` will never PROPOSE stopping these to free memory, however
+# idle they look. Not a lock — `pitcrew stop` still stops them — just a
+# statement that they are load-bearing. They are still listed as protected, so
+# a candidate missing from the list is never a mystery.
+#
+#   pitcrew_app storefront --be-cmd "..." --be-protected
+#
+# or by hand, keyed by component:
+PITCREW_PROTECTED[be-storefront]=1
+
 # ── docker dependencies ─────────────────────────────────────────────────────
 PITCREW_DEPS=(postgres redis)
 # Containers pitcrew will never stop, even with `pitcrew stop --deps` — use

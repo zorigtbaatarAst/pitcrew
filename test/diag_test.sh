@@ -231,6 +231,65 @@ test_idleness_is_never_claimed_without_a_cpu_baseline() {
   assert_empty "${DIAG_IDLE_COMPS[*]}" "no baseline, no claim"
 }
 
+test_a_protected_component_is_never_proposed_but_is_still_named() {
+  # Omitting it silently would read as a bug in the tool: the biggest idle
+  # service is missing from the list and nothing says why.
+  _fake_snapshot
+  SYS_MEM_USED_KB=$(( 15 * 1024 * 1024 ))
+  PITCREW_IDLE_MIN=600
+  local c
+  for c in be-both fe-both; do
+    SNAP_STATE[$c]=up; SNAP_RSS[$c]=$(( 1024 ** 3 ))
+    SNAP_IDLE[$c]=900; SNAP_SINCE[$c]=$(( SNAP_NOW_S - 3600 ))
+  done
+  PITCREW_PROTECTED=([be-both]=1)
+  diag_run
+  PITCREW_PROTECTED=()
+
+  assert_eq "${DIAG_IDLE_COMPS[*]}" "fe-both" "the protected one is not a candidate"
+  assert_eq "${DIAG_PROTECTED[*]}"  "be-both" "but it is reported"
+  assert_eq "$DIAG_IDLE_BYTES" "$(( 1024 ** 3 ))" "and its bytes are not counted as recoverable"
+  local i fix=""
+  for i in "${!DIAG_ID[@]}"; do [ "${DIAG_ID[i]}" = recoverable ] && fix=${DIAG_FIX[i]}; done
+  assert_not_match "$fix" 'be-both' "and it can never reach the suggested command"
+}
+
+# ── the two tiers ───────────────────────────────────────────────────────────
+
+test_a_slow_check_is_skipped_by_the_frame_loop() {
+  # This is what keeps "no forks in the frame loop" structural rather than a
+  # rule a plugin author has to have read.
+  _fake_snapshot
+  local saved=("${DIAG_CHECKS[@]}")
+  fastc() { diag_add info fast "fast" ""; }
+  slowc() { diag_add info slow "slow" ""; }
+  DIAG_CHECKS=(); DIAG_CHECK_SLOW=()
+  diag_register fastc
+  diag_register slowc slow
+
+  diag_run
+  assert_eq "$(_ids)" "fast " "the per-frame run skips it"
+  assert_eq "$DIAG_DEEP" "0" "and says the run was shallow"
+
+  diag_run --full
+  assert_eq "$(_ids)" "fast slow " "the explicit run includes it"
+  assert_eq "$DIAG_DEEP" "1" "and says so"
+
+  DIAG_CHECKS=("${saved[@]}")
+  unset "DIAG_CHECK_SLOW[fastc]" "DIAG_CHECK_SLOW[slowc]"
+}
+
+test_the_json_says_which_tier_it_came_from() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  _fake_snapshot
+  diag_run
+  local shallow; shallow=$(diag_json_health | python3 -c 'import json,sys; print(json.load(sys.stdin)["deep"])')
+  diag_run --full
+  local deep; deep=$(diag_json_health | python3 -c 'import json,sys; print(json.load(sys.stdin)["deep"])')
+  assert_eq "$shallow" "False" "a consumer can tell it has only seen the cheap checks"
+  assert_eq "$deep" "True" "and when it has seen everything"
+}
+
 # ── the wire format ─────────────────────────────────────────────────────────
 
 test_findings_survive_intact_into_the_json() {
@@ -306,6 +365,15 @@ test_the_panel_says_so_when_there_is_nothing_to_say() {
   unset -f read_key
   assert_match "$out" 'nothing needs your attention' "an empty panel is not a blank one"
   assert_not_match "$out" 'recoverable' "and no review section with nothing in it"
+}
+
+test_the_watch_stream_validates_its_interval() {
+  # The same contract `json --watch` has: a bad interval is refused up front,
+  # not turned into a busy loop nobody notices until the fan comes on.
+  assert_fails diag_watch --interval 0
+  assert_fails diag_watch --interval abc
+  assert_fails diag_watch --interval
+  assert_fails diag_watch --nonsense
 }
 
 run_tests

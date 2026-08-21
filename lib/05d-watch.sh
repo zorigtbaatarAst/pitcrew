@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# lib/05c-watch.sh — the live loop: paint, read a key, act, repaint.
+# lib/05d-watch.sh — the live loop: paint, read a key, act, repaint.
 #
 # NOTE ON THE NAME: every file in this group is `05<letter>-`, never `05-`.
 # `lib/*.sh` is sourced in glob order, and a UTF-8 collation IGNORES punctuation
-# when comparing — so "05-dashboard.sh" sorts AFTER "05a-cells.sh" on a normal
+# when comparing — so a bare "05-dashboard.sh" would sort AFTER "05b-cells.sh" on a normal
 # desktop and before it under LC_ALL=C. This group has top-level code that reads
 # variables the previous file sets, so that difference is the difference between
 # working and `PITCREW_REFRESH: unbound variable`. Letters sort the same either
@@ -13,7 +13,7 @@
 # there in comments: the viewport and the working set, the cell/layout
 # arithmetic, the frame builder, and the interactive loop. Bash does not care
 # what order functions are defined in, and lib/*.sh is sourced in name order,
-# so 05 → 05a → 05b → 05c all load before 06.
+# so 05a → 05b → 05c → 05d all load before 06.
 
 cmd_watch() {
   local W H bw sw frame line ts pick sc c app i n rule_len r
@@ -242,6 +242,18 @@ diag_view() {
         printf -v line '    %b%-22s%b %b%7s%b   %b%s%b' \
           "$C_TEXT" "$c" "$RESET" "$C_ACCENT" "$HUMAN" "$RESET" \
           "$C_MUTED" "${DIAG_IDLE_WHY[$c]:-}" "$RESET"
+        frame+="$line"$'\e[K\n'; shown=$((shown + 1))
+      done
+    fi
+
+    if [ ${#DIAG_PROTECTED[@]} -gt 0 ] && [ $shown -lt $((rows - 2)) ]; then
+      frame+=$'\e[K\n'"  ${BOLD}protected${RESET} ${C_MUTED}— idle too, and never proposed${RESET}"$'\e[K\n'
+      shown=$((shown + 2))
+      for c in "${DIAG_PROTECTED[@]}"; do
+        [ $shown -ge $((rows - 1)) ] && break
+        human "${SNAP_RSS[$c]:-0}"
+        printf -v line '    %b🔒%b %b%-19s%b %b%7s%b' \
+          "$C_WARN" "$RESET" "$C_TEXT" "$c" "$RESET" "$C_MUTED" "$HUMAN" "$RESET"
         frame+="$line"$'\e[K\n'; shown=$((shown + 1))
       done
     fi

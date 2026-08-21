@@ -497,6 +497,93 @@ _dep_poll() {
   return 0
 }
 
+# ── idleness that survives the process that measured it ─────────────────────
+#
+# "How long has this been idle" is the question behind "what can I safely
+# stop", and until now it could only be answered for as long as one pitcrew
+# process happened to be watching. A dashboard closed and reopened forgot
+# everything; a one-shot `diagnose` could only ever report a couple of seconds.
+#
+# The naive fix — write down "last did work at T" and trust it later — is a lie
+# waiting to happen: between the two runs nobody was looking, and a service
+# that was hammered for ten minutes in that gap would still read as idle.
+#
+# So don't infer, MEASURE. /proc (and `ps -o time`) expose a monotonic
+# cumulative CPU counter per process. Persist that counter alongside the
+# timestamp, and on the next run compare: if the counter has not moved beyond
+# the idle threshold over the elapsed wall time, the service provably did no
+# meaningful work during the gap, whether or not anyone was watching. Only then
+# is the old timestamp carried forward.
+#
+# The counter belongs to a PID and its units belong to a collector, so a record
+# is discarded outright when either changed — a restarted service starts its
+# idle clock from zero, which is correct.
+PITCREW_IDLE_SAVE_INTERVAL="${PITCREW_IDLE_SAVE_INTERVAL:-15}"
+_IDLE_RESTORED=0
+
+_idle_ticks_per_sec() { # → IDLE_TPS, the unit of the counter this collector produces
+  if [ "$PITCREW_COLLECTOR" = proc ]; then IDLE_TPS=$PITCREW_CLK_TCK; else IDLE_TPS=100; fi
+}
+
+_idle_restore() {
+  [ "$_IDLE_RESTORED" = 0 ] || return 0
+  _IDLE_RESTORED=1
+  local f="$LOG_DIR/.idle"
+  [ -r "$f" ] || return 0
+  _idle_ticks_per_sec
+  local key val coll pid counter work seen now gap delta ticks pct
+  while IFS='=' read -r key val; do
+    case "$key" in ''|\#*) continue ;; esac
+    [ -n "${SNAP_PID[$key]:-}" ] || continue
+    # shellcheck disable=SC2086  # a five-field record we wrote ourselves
+    set -- $val
+    [ $# -eq 5 ] || continue
+    coll=$1; pid=$2; counter=$3; work=$4; seen=$5
+    [ "$coll" = "$PITCREW_COLLECTOR" ] || continue        # different units
+    [ "$pid" = "${SNAP_PID[$key]}" ] || continue          # a different process now
+    case "$counter$work$seen" in *[!0-9]*) continue ;; esac
+    now=$SNAP_NOW_S
+    gap=$(( now - seen ))
+    [ "$gap" -ge 0 ] || continue                          # the clock moved; trust nothing
+    delta=$(( ${_JIFF_TREE_PREV[$key]:-0} - counter ))
+    [ "$delta" -ge 0 ] || continue                        # counter went backwards: restarted
+    ticks=$(( gap * IDLE_TPS ))
+    if [ "$ticks" -gt 0 ]; then
+      pct=$(( delta * 100 / ticks ))
+      [ "$pct" -le "$PITCREW_IDLE_CPU" ] || continue      # it DID work while we were away
+    fi
+    SNAP_IDLE_SINCE[$key]=$work
+  done < "$f"
+  return 0
+}
+
+# Forced: called at the end of a short-lived command, which would otherwise
+# exit before its throttled periodic save ever came due and leave the next run
+# with nothing to restore.
+idle_save_now() {
+  [ -d "$LOG_DIR" ] || return 0
+  SNAP_IDLE_SAVED_AT=$SNAP_NOW_S
+  local c out=""
+  for c in "${PITCREW_COMPS[@]}"; do
+    [ -n "${SNAP_PID[$c]:-}" ] || continue
+    [ -n "${SNAP_IDLE_SINCE[$c]:-}" ] || continue
+    out+="$c=$PITCREW_COLLECTOR ${SNAP_PID[$c]} ${_JIFF_TREE_PREV[$c]:-0} ${SNAP_IDLE_SINCE[$c]} $SNAP_NOW_S"$'\n'
+  done
+  # A redirect, not a fork. Truncating to nothing when nothing is running is
+  # correct: there is no idleness to remember.
+  # Only ever overwrite with something. An empty write happens on the first
+  # snapshot of every run — before any component has an idle clock — and would
+  # destroy the history this whole mechanism exists to keep.
+  [ -n "$out" ] || return 0
+  printf '%s' "$out" > "$LOG_DIR/.idle" 2>/dev/null
+  return 0
+}
+
+_idle_save() {
+  [ $(( SNAP_NOW_S - ${SNAP_IDLE_SAVED_AT:-0} )) -ge "$PITCREW_IDLE_SAVE_INTERVAL" ] || return 0
+  idle_save_now
+}
+
 # Swap on its own slow interval — see sys_swap in lib/00-platform.sh for why it
 # is not sampled per frame.
 _swap_poll() {
@@ -542,13 +629,17 @@ _snapshot_states() {
     if [ "$st" != up ] && [ "$st" != starting ]; then
       unset "SNAP_IDLE_SINCE[$c]"
       SNAP_IDLE[$c]=""
-    elif [ "${SNAP_CPU_OK:-0}" != 1 ]; then
-      SNAP_IDLE[$c]=""
-    else
-      if [ "${SNAP_CPU[$c]:-0}" -gt "$PITCREW_IDLE_CPU" ] || [ -z "${SNAP_IDLE_SINCE[$c]:-}" ]; then
-        SNAP_IDLE_SINCE[$c]=$SNAP_NOW_S
-      fi
+    elif [ -n "${SNAP_IDLE_SINCE[$c]:-}" ]; then
+      # Already counting — either from an earlier sample in this process, or
+      # restored from a previous one and proved still valid by _idle_restore.
+      [ "${SNAP_CPU_OK:-0}" = 1 ] && [ "${SNAP_CPU[$c]:-0}" -gt "$PITCREW_IDLE_CPU" ] \
+        && SNAP_IDLE_SINCE[$c]=$SNAP_NOW_S
       SNAP_IDLE[$c]=$(( SNAP_NOW_S - SNAP_IDLE_SINCE[$c] ))
+    elif [ "${SNAP_CPU_OK:-0}" = 1 ]; then
+      SNAP_IDLE_SINCE[$c]=$SNAP_NOW_S                     # start the clock now
+      SNAP_IDLE[$c]=0
+    else
+      SNAP_IDLE[$c]=""                                    # nothing to go on at all
     fi
 
     # "crashed" on its own tells you nothing actionable. The wrapper in
@@ -567,9 +658,14 @@ snapshot() {
     proc) _snapshot_proc ;;
     *)    _snapshot_ps ;;
   esac
+  # Before the states are derived, so a restored idle clock is in place when
+  # they are — and after the collector, which is what filled the counters the
+  # restore has to compare against.
+  _idle_restore
   _health_poll
   _dep_poll
   _swap_poll
   _snapshot_states
+  _idle_save
   SNAP_READY=1
 }

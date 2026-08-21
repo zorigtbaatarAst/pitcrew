@@ -77,7 +77,7 @@ cmd_json() {
                   down) down=$((down+1));; esac
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s}' \
+    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s,"protected":%s}' \
       "$(_json_str "$c")" "$(_json_str "$app")" "$(_json_str "$role")" "$(_json_str "$st")" \
       "$(_json_num "$port")" "$(_json_num "${SNAP_PID[$c]:-}")" \
       "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_cpu "${SNAP_CPU[$c]:-}")" \
@@ -85,7 +85,8 @@ cmd_json() {
       "$(_json_num "${COMP_MAX_B[$c]:-}")" "$(_json_str "$(comp_max_source "$c")")" \
       "$(_json_str "$url")" "$(_json_str "$health")" \
       "$(_json_num "${SNAP_SINCE[$c]:-}")" "$(_json_num "${RESTART_N[$c]:-0}")" \
-      "$(_json_num "${SNAP_IDLE[$c]:-}")"
+      "$(_json_num "${SNAP_IDLE[$c]:-}")" \
+      "$([ -n "${PITCREW_PROTECTED[$c]:-}" ] && printf true || printf false)"
   done
   printf '],"deps":['
   first=1

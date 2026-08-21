@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/05-targets.sh — turn CLI words ("all", "backends", "sales", "@profile",
+# lib/06-targets.sh — turn CLI words ("all", "backends", "sales", "@profile",
 # "be-sales") into a concrete, deduped list of components to act on.
 
 expand_profiles() {

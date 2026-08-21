@@ -404,4 +404,21 @@ test_the_key_hints_are_on_the_last_row() {
 }
 
 trap 'err_close; for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; rm -rf "$LOG_DIR"' EXIT
+test_the_process_tree_renders_in_both_layouts() {
+  # It used to be drawn only after the WIDE branch, so under
+  # PITCREW_NARROW_AT columns Enter toggled a tree that was never painted —
+  # a key that silently did nothing on the terminal width most people use.
+  EXPANDED[be-both]=1
+  local w body
+  for w in 160 90; do
+    _render_at "$w" 30
+    body=$(plain "$FRAME")
+    assert_match "$body" '[├└] [0-9]+ ' "the tree is drawn at ${w} columns"
+  done
+  unset "EXPANDED[be-both]"
+  _render_at 160 30
+  body=$(plain "$FRAME")
+  assert_not_match "$body" '[├└] [0-9]+ ' "and folds away again"
+}
+
 run_tests

@@ -32,6 +32,7 @@ jobs:
             ./bin/pitcrew -C "$fix" status --json
             ./bin/pitcrew check "$fix"
             ./bin/pitcrew -C "$fix" diagnose --json
+            ./bin/pitcrew -C "$fix" plugins
           done
           ./bin/pitcrew check examples/pitcrew.yaml
 
@@ -65,6 +66,7 @@ jobs:
             ./bin/pitcrew -C "$fix" status --json
             ./bin/pitcrew check "$fix"
             ./bin/pitcrew -C "$fix" diagnose --json
+            ./bin/pitcrew -C "$fix" plugins
           done
           ./bin/pitcrew check examples/pitcrew.yaml
 

@@ -189,6 +189,31 @@ pitcrew_app only --be-cmd "true" --be-port 19999'
   cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
 }
 
+test_edit_opens_the_file_that_actually_holds_the_config() {
+  # A registry entry for a repo that ships its own config only records the root
+  # and points at it. Opening the stub would put you in a two-line file, let you
+  # edit it, and change nothing the tool reads. The GUI has always followed this
+  # indirection; the CLI opened the stub.
+  mk "$ROOTFIX/pitcrew.config.sh" 'PITCREW_APPS=(only)
+pitcrew_app only --be-cmd "true"'
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  assert_eq "$(project_content_file fixrepo)" "$ROOTFIX/pitcrew.config.sh" "bash: through the source"
+  rm -f "$ROOTFIX/pitcrew.config.sh"
+
+  mk "$ROOTFIX/pitcrew.yaml" 'name: shipped
+apps:
+  only:
+    be:
+      cmd: "true"'
+  cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  assert_eq "$(project_content_file fixrepo)" "$ROOTFIX/pitcrew.yaml" "yaml: through the include"
+  rm -f "$ROOTFIX/pitcrew.yaml"
+
+  # A self-contained entry is edited where it lives, not chased anywhere.
+  cmd_init --force --detect --name fixrepo "$ROOTFIX" >/dev/null 2>&1
+  assert_eq "$(project_content_file fixrepo)" "$(project_file fixrepo)" "detected: itself"
+}
+
 test_switching_project_re_execs_into_the_same_view() {
   # It cannot be done by re-sourcing: a config's bare `declare -A` would be
   # scoped to the function that sourced it and silently discarded, leaving the

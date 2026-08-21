@@ -307,7 +307,8 @@ state = {
                 'detail': 'exited 1', 'fix': 'pitcrew logs be-worker', 'scope': 'be-worker'},
                {'severity': 'warn', 'id': 'memory', 'title': 'memory pressure',
                 'detail': 'lots in use', 'fix': 'pitcrew diagnose', 'scope': ''}],
-             'recoverable': {'components': ['be-api'], 'bytes': 2 * 1024**3}},
+             'deep': False,
+             'recoverable': {'components': ['be-api'], 'protected': [], 'bytes': 2 * 1024**3}},
   'summary': {'up': 1, 'starting': 0, 'crashed': 1, 'external': 0, 'down': 0}}
 w._on_state(state)
 print(w._verdict_title.get_text())
@@ -316,6 +317,69 @@ print('overview' in [w._stack.get_visible_child_name() or '', 'overview'])
 ")
   assert_eq "$(printf '%s' "$out" | sed -n 1p)" "be-worker crashed" "the headline is the verdict"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "2 1 1" "findings, recovery candidates, consumers"
+}
+
+test_a_full_run_adds_to_the_stream_rather_than_replacing_it() {
+  gui_available || return 0
+  # The stream carries the cheap checks; `pitcrew diagnose` also runs the slow
+  # ones. Merged and de-duplicated on (id, scope), so the list does not flicker
+  # between two versions of the same finding on every frame.
+  local out; out=$(_settings_drive "
+live = [{'severity': 'crit', 'id': 'crashed', 'scope': 'be-a', 'title': 'c'}]
+deep = [{'severity': 'crit', 'id': 'crashed', 'scope': 'be-a', 'title': 'c'},
+        {'severity': 'warn', 'id': 'jvm-cap', 'scope': 'be-a', 'title': 'j'}]
+rows = pgui.merge_findings(live, deep)
+print(''.join(f['title'] for f in rows))
+print(''.join(f['title'] for f in pgui.merge_findings(live, [])))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "cj" "the duplicate is not listed twice"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "c"  "and nothing is invented when there is no deep run"
+}
+
+test_the_overview_shows_what_it_will_never_propose() {
+  gui_available || return 0
+  # A candidate list that silently omits your biggest idle service reads as a
+  # bug. The lock has to be visible.
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+state = {
+  'at': 1000, 'machine': {'memTotal': 100, 'memUsed': 90, 'cpuPercent': 1},
+  'components': [
+    {'name': 'be-api', 'app': 'api', 'role': 'be', 'state': 'up', 'rss': 10,
+     'cpu': 0, 'errors': 0, 'since': 1, 'idle': 900, 'protected': True},
+    {'name': 'be-etl', 'app': 'etl', 'role': 'be', 'state': 'up', 'rss': 20,
+     'cpu': 0, 'errors': 0, 'since': 1, 'idle': 900, 'protected': False}],
+  'deps': [],
+  'health': {'verdict': 'warn', 'headline': 'memory pressure', 'deep': False,
+             'counts': {'crit': 0, 'warn': 1, 'info': 0}, 'findings': [],
+             'recoverable': {'components': ['be-etl'], 'protected': ['be-api'], 'bytes': 20}},
+  'summary': {'up': 2}}
+w._on_state(state)
+print(len(w._recover_rows), len(w._protected_rows))
+print(' '.join(w._recoverable))
+print(w._deep_button.get_visible())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1 1" "one candidate, one lock"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "be-etl" "the protected one can never reach the stop call"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "True" "and a shallow frame offers the full run"
+}
+
+test_a_deep_frame_does_not_offer_to_run_deeper() {
+  gui_available || return 0
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._on_state({'at': 1, 'machine': {}, 'components': [], 'deps': [], 'summary': {},
+             'health': {'verdict': 'ok', 'headline': 'fine', 'deep': True,
+                        'counts': {}, 'findings': [], 'recoverable': {}}})
+print(w._deep_button.get_visible())
+")
+  assert_eq "$out" "False" "the button is for asking, not for decoration"
 }
 
 # ── project registry and config editing ─────────────────────────────────────

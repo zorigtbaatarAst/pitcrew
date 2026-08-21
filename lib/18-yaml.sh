@@ -259,6 +259,18 @@ _yaml_expand() { # $1 → YV
   YV=$out$s
 }
 
+# YAML has a generous idea of what "true" is; pitcrew has a narrow one, and
+# says so rather than treating an unrecognised word as false. A config that
+# meant to protect something and quietly did not is the failure that matters.
+_yaml_bool() { # $1 key path, $2 value → YV (1 or "")
+  case "$1" in *) : ;; esac
+  case "$2" in
+    true|True|TRUE|yes|Yes|YES|on|On|ON|1)     YV=1 ;;
+    false|False|FALSE|no|No|NO|off|Off|OFF|0|'') YV="" ;;
+    *) warn "config: ${YAML_FILE##*/}: $1: '$2' is not a yes/no value — treating it as no"; YV="" ;;
+  esac
+}
+
 _yaml_path() { # $1 → YV: absolute as-is, relative resolved against $ROOT
   case "$1" in
     /*|'') YV=$1 ;;
@@ -287,6 +299,10 @@ _yaml_role_key() { # $1 app, $2 role(be|fe), $3 key, $4 value
     be.health) PITCREW_BE_HEALTH_PATH[$app]=$v ;;
     be.max)    PITCREW_BE_MAX_APP[$app]=$v ;;
     fe.max)    PITCREW_FE_MAX_APP[$app]=$v ;;
+    be.protected|fe.protected)
+      _yaml_bool "apps.$app.$role.protected" "$v"
+      if [ -n "$YV" ]; then PITCREW_PROTECTED[$role-$app]=1
+      else unset "PITCREW_PROTECTED[$role-$app]"; fi ;;
     be.dir|fe.dir)
       # `dir` is the boilerplate every hand-written config repeats: the command
       # is almost always "go to this directory, then run this". Recorded here

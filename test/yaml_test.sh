@@ -113,6 +113,52 @@ test_doctor_checks_become_the_hook_the_rest_of_the_tool_calls() {
   assert_eq "${YAML_DOCTOR_CMD[0]}"  "command -v bash" "the command"
 }
 
+test_a_role_can_be_marked_protected() {
+  _load 'apps:
+  api:
+    be:
+      cmd: "true"
+      port: 1
+      protected: true
+    fe:
+      cmd: "true"
+      port: 2' >/dev/null
+  assert_eq "${PITCREW_PROTECTED[be-api]:-}" "1" "the backend is protected"
+  assert_empty "${PITCREW_PROTECTED[fe-api]:-}" "the frontend is not — it is per role, not per app"
+}
+
+test_a_protected_value_that_is_not_a_yes_or_no_is_reported() {
+  # A config that meant to protect something and quietly did not is the exact
+  # failure this format exists to prevent.
+  local out; out=$(_warnings 'apps:
+  api:
+    be:
+      cmd: "true"
+      protected: maybe')
+  assert_match "$out" "is not a yes/no value" "says so"
+  assert_empty "${PITCREW_PROTECTED[be-api]:-}" "and does not guess yes"
+}
+
+test_protected_accepts_the_spellings_people_actually_write() {
+  local word
+  for word in true yes on 1; do
+    _load "apps:
+  api:
+    be:
+      cmd: \"true\"
+      protected: $word" >/dev/null
+    assert_eq "${PITCREW_PROTECTED[be-api]:-}" "1" "$word means protected"
+  done
+  for word in false no off 0; do
+    _load "apps:
+  api:
+    be:
+      cmd: \"true\"
+      protected: $word" >/dev/null
+    assert_empty "${PITCREW_PROTECTED[be-api]:-}" "$word does not"
+  done
+}
+
 # ── $ROOT expansion ────────────────────────────────────────────────────────
 test_root_and_home_expand_and_nothing_else_does() {
   _load 'apps:

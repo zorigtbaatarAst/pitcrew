@@ -11,6 +11,33 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **Plugins.** A plugin is a shell file in `~/.config/pitcrew/plugins/` that
+  calls `diag_register`. No manifest, no lifecycle, no API version. `pitcrew
+  plugins` lists what loaded and attributes every check to the file that
+  registered it, and `doctor` says how many are active. Deliberately **not**
+  loaded from inside a checkout: a repo whose plugins were sourced
+  automatically would mean `pitcrew status` on a fresh clone runs its code,
+  which is exactly what a data-only YAML config exists to avoid.
+- **A slow tier for checks.** `diag_register <fn> slow` marks a check that may
+  fork; those are skipped by the dashboard's per-frame run and only executed by
+  `pitcrew diagnose`. This makes "no forks in the frame loop" structural rather
+  than a rule every plugin author has to have read. The JSON says which tier a
+  state object came from (`health.deep`), and the desktop app grew a **Full
+  diagnostics** button that asks for the rest.
+- **A bundled example plugin** (`examples/plugins/jvm.sh`) that catches
+  something neither half of the system can see alone: pitcrew knows the RAM cap
+  it launched a JVM under, the JVM knows its `-Xmx`, and when `-Xmx` plus native
+  exceeds the cap the kernel kills the process long before the heap fills — the
+  "my service just disappears under load with nothing in the log" failure. Its
+  parsers are pure functions over captured `jcmd` output, so they are tested on
+  a machine with no JVM.
+- **`protected: true`** per role (`--be-protected` / `--fe-protected` in the
+  bash format). `diagnose` will never propose stopping a protected component,
+  however idle it looks — but still lists it, under a 🔒, because a candidate
+  list that silently omits your biggest idle service reads as a bug rather than
+  as a decision you made. Not a lock: `pitcrew stop` still stops it.
+- **`pitcrew diagnose --watch`** — NDJSON, one health object per interval
+  (default 30s), running the slow checks. What a desktop notifier should sit on.
 - **`pitcrew diagnose`** — the tool now answers rather than only reporting.
   Crashed components with their exit code and age, services stuck in `starting`
   past the boot timeout, ports served by something else, **memory pressure that
@@ -46,6 +73,30 @@ field is removed or changes meaning.
 - **A loading state.** The desktop app said nothing at all between launch and
   the first sample, which at a 10-second interval is ten seconds of a window
   that looks broken.
+
+### Changed
+- **Idleness now survives the process that measured it.** It used to be
+  observable only for as long as one pitcrew process happened to be watching, so
+  a one-shot `diagnose` could report a couple of seconds and a reopened
+  dashboard forgot everything. Writing down "last did work at T" and trusting it
+  later would be a guess — nobody was watching in the gap. So pitcrew persists
+  the process's *monotonic cumulative CPU counter* alongside the timestamp and
+  compares on the next run: if the counter has not moved beyond the idle
+  threshold over the elapsed wall clock, the service **provably** did no work in
+  the gap. The record is discarded outright if the pid or the collector changed.
+  `diagnose` samples for one second and inherits the rest.
+
+### Fixed
+- **`pitcrew edit` opened the wrong file.** For a repo that ships its own
+  config, the registry entry is a two-line pointer at it — so `edit` let you
+  change a file the tool does not read. It now follows the indirection (through
+  `source` for the bash format, `include:` for YAML), which is what the desktop
+  app has always done.
+- **"Env overrides" was documented backwards.** `PITCREW_ROOT`, `PITCREW_BE_MAX`,
+  `PITCREW_FE_MAX` and `PITCREW_WAIT` are *defaults* that a config file's own
+  value beats, not overrides that beat it. `README` and `pitcrew help` now say
+  what the code does.
+- Six `lib/` modules named the wrong file in their own header comment.
 - **YAML configs.** A project can now be described by a `pitcrew.yaml` instead
   of a `pitcrew.config.sh`: `apps: → <name>: → be:/fe: → cmd/port/health`, with
   `dir:` folding the repeated `cd $ROOT/... &&` out of every start command, and

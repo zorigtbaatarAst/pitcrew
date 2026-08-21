@@ -39,7 +39,24 @@
 # forks. It only reads arrays snapshot() has already filled.
 
 DIAG_CHECKS=()
-diag_register() { DIAG_CHECKS+=("$1"); }
+declare -gA DIAG_CHECK_SLOW=()
+
+# diag_register <fn> [slow]
+#
+# A check marked `slow` is allowed to fork — to run `jcmd`, `docker`, `curl`,
+# whatever it needs. It is skipped by the dashboard's per-frame run and only
+# executed by `pitcrew diagnose`, which is an explicit, one-off question.
+#
+# This tier exists so that constraint 4 (no forks in the frame loop) is
+# STRUCTURAL rather than a rule plugin authors have to have read. Without it
+# the first genuinely useful third-party check — anything that has to ask
+# another program a question — would have to choose between being wrong and
+# being absent.
+diag_register() {
+  DIAG_CHECKS+=("$1")
+  [ "${2:-}" = slow ] && DIAG_CHECK_SLOW[$1]=1
+  return 0
+}
 
 # Findings, as parallel arrays — bash has no records, and six aligned arrays
 # beat one array of delimited strings that every consumer has to re-split.
@@ -276,9 +293,10 @@ diag_check_errors() {
 # decides. See cmd_diagnose for the review step.
 DIAG_IDLE_COMPS=()
 DIAG_IDLE_BYTES=0
+DIAG_PROTECTED=()                 # would have qualified, but the config says never
 declare -gA DIAG_IDLE_WHY=()      # comp -> the evidence, so the UI never has to invent it
 diag_check_idle() {
-  DIAG_IDLE_COMPS=(); DIAG_IDLE_BYTES=0; DIAG_IDLE_WHY=()
+  DIAG_IDLE_COMPS=(); DIAG_IDLE_BYTES=0; DIAG_IDLE_WHY=(); DIAG_PROTECTED=()
   local c idle rss up
 
   # Two conditions, and both are things pitcrew actually measured:
@@ -305,6 +323,14 @@ diag_check_idle() {
     [ "$up" -ge "$PITCREW_IDLE_MIN" ] || continue
     rss=${SNAP_RSS[$c]:-0}
     [ "$rss" -gt 0 ] || continue
+    # Protected components are excluded here rather than filtered out later, so
+    # they can never appear in the command a UI is about to run. They are still
+    # REPORTED — a list of candidates that quietly omits the one you were
+    # expecting to see reads as a bug in the tool.
+    if [ -n "${PITCREW_PROTECTED[$c]:-}" ]; then
+      DIAG_PROTECTED+=("$c")
+      continue
+    fi
     dur_human "$idle"; local ih=$DUR
     dur_human "$up"
     DIAG_IDLE_COMPS+=("$c")
@@ -320,7 +346,8 @@ diag_check_idle() {
   [ "$pct" -ge "$PITCREW_MEM_WARN_PCT" ] || [ "${SYS_SWAP_USED_KB:-0}" -gt $(( 64 * 1024 )) ] || return 0
 
   human "$DIAG_IDLE_BYTES"
-  diag_add info recoverable "${#DIAG_IDLE_COMPS[@]} idle services are holding $HUMAN" \
+  local noun="idle services are"; [ ${#DIAG_IDLE_COMPS[@]} -eq 1 ] && noun="idle service is"
+  diag_add info recoverable "${#DIAG_IDLE_COMPS[@]} $noun holding $HUMAN" \
     "no CPU since pitcrew started watching, and up long enough to be forgotten" \
     "pitcrew stop ${DIAG_IDLE_COMPS[*]}" ""
 }
@@ -340,15 +367,23 @@ diag_register diag_check_idle
 # present and the headline is the first finding at that severity. Deliberately
 # not "the most recent" or "the most numerous": when a stack is on fire the
 # thing you need on the one line you will actually read is the worst thing.
-diag_run() {
+DIAG_DEEP=0            # whether this run included the slow checks
+
+diag_run() { # [--full]
+  local full=0
+  [ "${1:-}" = --full ] && full=1
   DIAG_SEV=(); DIAG_ID=(); DIAG_TITLE=(); DIAG_DETAIL=(); DIAG_FIX=(); DIAG_SCOPE=()
   DIAG_N=0; DIAG_CRIT=0; DIAG_WARN=0; DIAG_INFO=0
   DIAG_VERDICT=ok; DIAG_HEADLINE=""
+  DIAG_DEEP=$full
 
   [ ${#DIAG_PORT[@]} -gt 0 ] || diag_ports_init
 
   local check
   for check in "${DIAG_CHECKS[@]}"; do
+    [ "$full" = 1 ] || [ -z "${DIAG_CHECK_SLOW[$check]:-}" ] || continue
+    # A plugin can be half-loaded, renamed or removed. That must degrade to one
+    # fewer check, never to a dashboard that stops repainting.
     declare -F "$check" >/dev/null && "$check"
   done
 
@@ -403,22 +438,28 @@ diag_verdict_line() { # → R: the one line that says whether things are fine
   esac
 }
 
-cmd_diagnose() { # [--json]
-  if [ "${1:-}" = --json ]; then diag_json; return $?; fi
+cmd_diagnose() { # [--json] [--watch [--interval N]]
+  case "${1:-}" in
+    --json)  shift; [ "${1:-}" = --watch ] && { shift; diag_watch "$@"; return $?; }
+             [ $# -eq 0 ] || die "diagnose --json: unknown argument '$1'"
+             diag_json; return $? ;;
+    --watch) shift; diag_watch "$@"; return $? ;;
+  esac
   [ $# -eq 0 ] || die "diagnose: unknown argument '$1'"
 
   banner
   # CPU% — and therefore quietness — is a delta, so one snapshot can only ever
-  # report "unknown". Sample across a short window instead: three samples is
-  # enough that a service which merely happened to be between requests at the
-  # instant we looked does not read as idle.
+  # report "unknown": two samples a second apart is the minimum that yields a
+  # real reading. The longer history comes from the persisted CPU counter (see
+  # lib/03a-snapshot.sh), not from sitting here sampling for ten seconds.
   local _s
-  for _s in 1 2 3; do
+  for _s in 1 2; do
     snapshot
     err_scan
-    [ "$_s" = 3 ] || sleep 1
+    [ "$_s" = 2 ] || sleep 1
   done
-  diag_run
+  diag_run --full
+  idle_save_now          # so the NEXT run can carry this observation forward
   err_close
 
   diag_verdict_line
@@ -469,8 +510,28 @@ cmd_diagnose() { # [--json]
     say "    ${C_FAINT}→${RESET} ${C_SUBTLE}pitcrew stop ${DIAG_IDLE_COMPS[*]}${RESET}"
     say ""
   fi
+  _diag_protected_block
 
   [ "$DIAG_VERDICT" = crit ] && return 1
+  return 0
+}
+
+# Say what was deliberately left out. A candidate list that silently omits the
+# service you expected to see reads as a bug; naming it — and saying it was the
+# config's decision, not a guess — is the difference between a tool you trust
+# with a stop button and one you check by hand every time.
+_diag_protected_block() {
+  [ ${#DIAG_PROTECTED[@]} -gt 0 ] || return 0
+  local c
+  say "  ${BOLD}protected${RESET} ${C_MUTED}— idle too, and never proposed${RESET}"
+  say ""
+  for c in "${DIAG_PROTECTED[@]}"; do
+    human "${SNAP_RSS[$c]:-0}"
+    printf '    %b🔒%b %b%-19s%b %b%7s%b   %bprotected in the config%b\n' \
+      "$C_WARN" "$RESET" "$C_TEXT" "$c" "$RESET" "$C_MUTED" "$HUMAN" "$RESET" \
+      "$C_FAINT" "$RESET"
+  done
+  say ""
   return 0
 }
 
@@ -503,17 +564,43 @@ _diag_machine_block() {
   say ""
 }
 
+# NDJSON: one health object per interval, forever. The same shape as
+# `diagnose --json`, for the same reason `json --watch` exists next to
+# `status --json` — a notifier or a status line wants to be told when the
+# verdict CHANGES, and polling a one-shot command re-pays the sampling cost
+# every time. Here it also means the slow checks run on a schedule you chose
+# rather than on every repaint.
+diag_watch() { # [--interval N]
+  local interval=${PITCREW_DIAG_INTERVAL:-30}
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --interval)   [ $# -ge 2 ] || die "--interval needs a value"; interval=$2; shift 2 ;;
+      --interval=*) interval=${1#*=}; shift ;;
+      *) die "diagnose --watch: unknown argument '$1'" ;;
+    esac
+  done
+  case "$interval" in ''|*[!0-9]*) die "--interval needs whole seconds, got [$interval]" ;; esac
+  [ "$interval" -ge 1 ] || die "--interval must be at least 1 second"
+  # SIGPIPE is the normal way this ends: the reader went away.
+  trap 'exit 0' PIPE
+  while :; do
+    diag_json || true             # a critical finding is not a reason to stop streaming
+    sleep "$interval"
+  done
+}
+
 # The same findings as data. Used by `pitcrew diagnose --json` and embedded in
 # the state object by lib/16-output.sh, so the desktop app reads a verdict
 # rather than re-deriving one from components it would have to interpret itself.
 diag_json() {
   local _s
-  for _s in 1 2 3; do
+  for _s in 1 2; do
     snapshot
     err_scan
-    [ "$_s" = 3 ] || sleep 1
+    [ "$_s" = 2 ] || sleep 1
   done
-  diag_run
+  diag_run --full
+  idle_save_now
   err_close
   printf '{"schema":%s,' "$PITCREW_JSON_SCHEMA"
   printf '"project":%s,' "$(_json_str "${PITCREW_PROJECT_NAME:-}")"
@@ -527,8 +614,12 @@ diag_json() {
 # Just the health object, so cmd_json can embed it without duplicating this.
 diag_json_health() {
   local i first=1
-  printf '{"verdict":%s,"headline":%s,"counts":{"crit":%d,"warn":%d,"info":%d},"findings":[' \
+  # `deep` says whether the slow checks ran. A consumer that sees false knows
+  # it is looking at the cheap tier and can offer to ask for the full one —
+  # which is exactly what the desktop app's "Full diagnostics" button does.
+  printf '{"verdict":%s,"headline":%s,"deep":%s,"counts":{"crit":%d,"warn":%d,"info":%d},"findings":[' \
     "$(_json_str "$DIAG_VERDICT")" "$(_json_str "$DIAG_HEADLINE")" \
+    "$([ "$DIAG_DEEP" = 1 ] && printf true || printf false)" \
     "$DIAG_CRIT" "$DIAG_WARN" "$DIAG_INFO"
   for i in "${!DIAG_SEV[@]}"; do
     [ $first = 1 ] || printf ','
@@ -542,6 +633,16 @@ diag_json_health() {
   first=1
   local c
   for c in "${DIAG_IDLE_COMPS[@]:-}"; do
+    [ -n "$c" ] || continue
+    [ $first = 1 ] || printf ','
+    first=0
+    printf '%s' "$(_json_str "$c")"
+  done
+  # Reported, not omitted: a UI needs to be able to show the lock rather than
+  # leave the user wondering why their biggest idle service is not on the list.
+  printf '],"protected":['
+  first=1
+  for c in "${DIAG_PROTECTED[@]:-}"; do
     [ -n "$c" ] || continue
     [ $first = 1 ] || printf ','
     first=0

@@ -32,6 +32,7 @@ project.
 - [Starting in waves](#starting-in-waves)
 - [RAM caps](#ram-caps)
 - [Diagnostics](#diagnostics)
+- [Plugins](#plugins)
 - [Dashboard](#dashboard)
 - [Desktop app](#desktop-app)
 - [How it works](#how-it-works)
@@ -237,8 +238,10 @@ pitcrew stale [--restart]         apps whose code changed since they started
 pitcrew profile save <name> <targets...> | list | rm <name>
 pitcrew shell [<name>]            run a configured quick shell (shells:), foreground
 pitcrew doctor                    check the local environment
-pitcrew diagnose [--json]         what is wrong with the STACK, why, and what
+pitcrew diagnose [--json] [--watch]
+                                  what is wrong with the STACK, why, and what
                                     to do about it (exit 1 on a critical finding)
+pitcrew plugins                   what is loaded from ~/.config/pitcrew/plugins
 pitcrew init [<dir>] [--sh]       look at a project and write a pitcrew.yaml (--sh
                                     for the older bash format; default dir: $PWD)
 pitcrew check [<file>]            load a config and say what is wrong with it
@@ -320,7 +323,7 @@ The keys, all optional except `apps:` and one `cmd:`:
 
 | Key | Purpose |
 |---|---|
-| `apps.<name>.be` / `.fe` | a role: `cmd`, `port`, `dir`, `health`, `watch`, `max` |
+| `apps.<name>.be` / `.fe` | a role: `cmd`, `port`, `dir`, `health`, `watch`, `max`, `protected` |
 | `apps.<name>.url_path` | cosmetic API path suffix for `pitcrew urls` |
 | `deps` / `protected_deps` | docker containers to start; ones never auto-stopped |
 | `deps_ready` | best-effort command run once after deps start |
@@ -405,6 +408,16 @@ done
 
 It exits quietly on SIGPIPE, so closing the reader is a normal way to stop it.
 
+`pitcrew diagnose --watch` is the same idea for the verdict, on its own slower
+interval (default 30s) — and unlike the state stream it runs the slow checks,
+so it is what a desktop notifier should sit on:
+
+```bash
+pitcrew diagnose --watch --interval 60 | while read -r frame; do
+  jq -r 'select(.health.verdict == "crit") | .health.headline' <<<"$frame"
+done
+```
+
 ### The JSON contract
 
 `status --json` has consumers now — the desktop app, status lines, CI gates — so
@@ -414,16 +427,20 @@ renamed or dropped field fails there rather than in your dashboard.
 | | |
 |---|---|
 | top level | `schema` `project` `root` `collector` `at` `logDir` `errorPattern` `machine` `components` `deps` `health` `summary` |
-| component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` `url` `health` `since` `restarts` `idle` |
+| component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` `url` `health` `since` `restarts` `idle` `protected` |
 | machine | `memTotal` `memUsed` `cpuPercent` `swapTotal` `swapUsed` |
 | dep | `name` `state` |
-| health | `verdict` `headline` `counts` `findings` `recoverable` |
+| health | `verdict` `headline` `deep` `counts` `findings` `recoverable` |
 | finding | `severity` `id` `title` `detail` `fix` `scope` |
 | summary | `up` `starting` `crashed` `external` `down` |
 
 `schema` is **1**. Adding a field is backwards compatible and does not bump it;
 removing one or changing what it means does. Bytes are bytes, `cpu` is an
 integer percent, and anything unknown is `null` — never `0`.
+
+`health.deep` says whether the **slow** checks ran — the NDJSON stream carries
+only the cheap tier, so a consumer that sees `false` knows it can offer to ask
+for the rest (`pitcrew diagnose --json`).
 
 `health` carries the **verdict**, not just the facts: `verdict` is `ok`, `warn`
 or `crit`, `headline` is the one sentence worth reading, and `findings` is what
@@ -588,15 +605,45 @@ implementation, three surfaces.
 | `dep-down` | a declared container that is not running |
 | `log-errors` | a service that is up and quietly logging exceptions |
 | `recoverable` | quiet, long-running services, and what stopping them returns |
+| `jvm-heap` / `jvm-cap` | from the bundled example plugin — see below |
+
+### How "idle" is measured, and why it survives a restart
+
+A candidate has to be *both* **quiet** and **old**, and both are measurements
+rather than guesses.
+
+Quietness is tracked per component and **persisted across pitcrew processes**,
+which sounds like it cannot be honest — between two runs nobody was watching,
+so how would pitcrew know a service was not hammered in the gap? Because it does
+not have to infer it. `/proc` (and `ps -o time`) expose a *monotonic cumulative
+CPU counter* per process. pitcrew writes that counter down next to the
+timestamp, and on the next run compares: if the counter has not moved beyond
+the idle threshold over the elapsed wall clock, the service **provably** did no
+meaningful work in the gap, watched or not. Only then is the old timestamp
+carried forward. The counter belongs to a PID and its units to a collector, so a
+record is discarded outright when either changed — a restarted service starts
+its idle clock at zero, which is correct.
+
+That is what makes a one-shot `pitcrew diagnose` useful: it samples for a
+second, and inherits the rest.
+
+Oldness is uptime past `PITCREW_IDLE_MIN` (default 10 minutes). A service you
+started thirty seconds ago is not a candidate however quiet it is.
 
 ### It proposes, you decide
 
 The recovery flow is **diagnose → candidates → review → apply**, and there is no
-step where pitcrew picks its own victims. A candidate has to be *both* quiet
-(no CPU for every sample since pitcrew started watching) *and* old (up for at
-least `PITCREW_IDLE_MIN`, default 10 minutes) — and neither is proof that
-nothing needs it, which is exactly why the evidence is printed next to every
-name and the last thing you get is a command rather than an action.
+step where pitcrew picks its own victims. Neither signal is proof that nothing
+needs a service, which is exactly why the evidence is printed next to every name
+(`quiet 41m · up 3h20m`) and the last thing you get is a command rather than an
+action.
+
+A role marked **`protected: true`** in the config is never proposed at all —
+for the backend everything else talks to, or the one thing you are actually
+working on. It is not a lock: `pitcrew stop` still stops it. Protected
+components are still *listed*, under their own heading with a 🔒, because a
+candidate list that silently omits your biggest idle service reads as a bug in
+the tool rather than as a decision you made.
 
 In the dashboard's `d` panel and the desktop app the apply step is a button,
 but it is a button under a list of every component it will stop, with what each
@@ -606,26 +653,74 @@ Thresholds are all tunable: `PITCREW_MEM_WARN_PCT` (85), `PITCREW_MEM_CRIT_PCT`
 (93), `PITCREW_CAP_NEAR_PCT` (90), `PITCREW_IDLE_MIN` (600s), `PITCREW_IDLE_CPU`
 (2%).
 
-### Adding a check
+## Plugins
 
-A check is a function that reads the snapshot and reports what it finds. It
-registers itself, and the built-in checks use the same call any future plugin
-would — there is no privileged path:
+A **plugin is a shell file that registers a diagnostic check.** That is the
+whole of it — there is no manifest, no lifecycle, no API version. It is
+deliberately the only extension point in the codebase.
 
 ```bash
-# in your pitcrew.config.sh, or eventually in a plugin
+mkdir -p ~/.config/pitcrew/plugins
+cp examples/plugins/jvm.sh ~/.config/pitcrew/plugins/
+pitcrew plugins        # what is loaded, and what each file registered
+```
+
+```bash
+# ~/.config/pitcrew/plugins/disk.sh
 check_disk() {
-  [ "$(df --output=pcent "$ROOT" | tail -1 | tr -dc 0-9)" -lt 90 ] && return 0
+  [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ] || return 0
   diag_add warn disk-full "the checkout's disk is nearly full" \
     "builds will fail in confusing ways" "df -h $ROOT" ""
 }
-diag_register check_disk
+diag_register check_disk          # runs every dashboard frame
 ```
 
-It then appears in the dashboard verdict, in `pitcrew diagnose`, in the JSON,
-and in the desktop app's Overview, without touching any of them. This is
-deliberately the only extension point in the codebase so far — see
-`lib/19-diag.sh` for why it stops there.
+A check reads the same `SNAP_*` arrays the built-ins read and calls the same
+`diag_add`. It then appears in the dashboard verdict, in `pitcrew diagnose`, in
+the JSON and in the desktop app's Overview, without touching any of them. The
+built-in checks register through exactly this call; there is no privileged path.
+
+### Two tiers, and why
+
+```bash
+diag_register my_check          # cheap: runs on every frame
+diag_register my_check slow     # may fork: only on `pitcrew diagnose`
+```
+
+`diag_run` is called once per dashboard frame, where the whole product promise
+is **zero forks**. A check that has to ask another program a question — `jcmd`,
+`docker`, `curl` — cannot run there. Marking it `slow` keeps it out
+structurally, rather than by trusting every plugin author to have read a rule.
+
+The JSON says which tier a state object came from (`health.deep`), so the
+desktop app can show a **Full diagnostics** button that asks for the rest
+instead of silently showing you half the checks.
+
+### Plugins load from your machine only
+
+`~/.config/pitcrew/plugins/`, never from anything inside a checkout. That is a
+deliberate refusal. A repository that ships a `pitcrew.config.sh` already asks
+you to run its code, but that is one visible, well-known file — and YAML configs
+exist precisely so a project can be described by **data**. A `.pitcrew/plugins/`
+directory that got sourced automatically would silently undo that: `pitcrew
+status` in a freshly cloned repo would execute whatever the repo felt like.
+Nothing about "look at the dashboard" should mean "run this stranger's shell".
+
+### The bundled example
+
+`examples/plugins/jvm.sh` is a worked plugin, and it earns its place by catching
+something neither half of the system can see alone:
+
+> pitcrew knows the RAM cap it launched a JVM under. The JVM knows the `-Xmx` it
+> settled on. When `-Xmx` plus native exceeds the cap, the kernel kills the
+> process long before the heap ever fills — which presents as *"my service just
+> disappears under load, with nothing in the log"*, because there was no
+> exception, the process was shot.
+
+It also warns when a heap is above 90% of its own ceiling. It is registered
+`slow` (it forks a `jcmd` per JVM), and its parsers are pure functions taking
+captured `jcmd` output on stdin, so `test/plugin_test.sh` verifies them on a
+machine with no JVM on it.
 
 ## Dashboard
 

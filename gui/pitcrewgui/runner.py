@@ -132,6 +132,40 @@ class Runner:
         """The CLI this Runner drives — some checks shell out to it directly."""
         return self._pitcrew
 
+    def run_json(self, args: list[str], on_done) -> None:
+        """A pitcrew command whose stdout is JSON, parsed off the main loop.
+
+        Separate from `run` because that one MERGES stderr into stdout so a
+        failure's explanation is visible — which is right for human output and
+        fatal for a payload, since one config warning on stderr would land in
+        the middle of the object. Here stderr is captured separately and only
+        used to explain a failure.
+        """
+        launcher = Gio.SubprocessLauncher.new(
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        launcher.setenv("NO_COLOR", "1", True)
+        try:
+            proc = launcher.spawnv([self._pitcrew, *args])
+        except GLib.Error as error:
+            on_done(None, f"could not run pitcrew: {error.message}")
+            return
+
+        def finished(p, result) -> None:
+            try:
+                _, out, err = p.communicate_utf8_finish(result)
+            except GLib.Error as error:
+                on_done(None, error.message)
+                return
+            try:
+                on_done(json.loads(out or ""), "")
+            except ValueError:
+                # `diagnose` exits non-zero on a critical finding, so a bad exit
+                # is not itself an error — unparseable output is.
+                on_done(None, (err or "pitcrew produced no JSON").strip().splitlines()[-1:][0]
+                        if (err or "").strip() else "pitcrew produced no JSON")
+
+        proc.communicate_utf8_async(None, None, finished)
+
     def run(self, args: list[str], on_done) -> None:
         launcher = Gio.SubprocessLauncher.new(
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)

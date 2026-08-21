@@ -87,8 +87,11 @@ Usage:
   pitcrew restart <app>...
   pitcrew status [--json]           one-shot dashboard, or machine-readable state
   pitcrew doctor [--json]           check the environment; --json exits non-zero if it is wrong
-  pitcrew diagnose [--json]         what is wrong with the STACK, why, and what
-                                     to do about it (exit 1 on a critical finding)
+  pitcrew diagnose [--json] [--watch [--interval N]]
+                                    what is wrong with the STACK, why, and what
+                                     to do about it (exit 1 on a critical finding;
+                                     --watch streams one health object per interval)
+  pitcrew plugins                   what is loaded from ~/.config/pitcrew/plugins
   pitcrew --version
   pitcrew limit [<component> <size|default>]
                                      per-component RAM caps (no args = show them)
@@ -128,7 +131,9 @@ Config discovery, in order: -C/--project · -p/--name · $PITCREW_CONFIG ·
 a pitcrew.yaml (or pitcrew.yml, or the older pitcrew.config.sh) walked up from
 $PWD · a registered project containing $PWD · whatever `pitcrew use` last
 selected.
-Env overrides: PITCREW_CONFIG, PITCREW_ROOT, PITCREW_FE_MAX, PITCREW_BE_MAX, PITCREW_WAIT.
+Environment: PITCREW_CONFIG picks which config to load (-C/-p beat it).
+PITCREW_ROOT, PITCREW_BE_MAX, PITCREW_FE_MAX and PITCREW_WAIT are DEFAULTS —
+a config file that sets the same thing wins over them, not the other way round.
 EOF
 }
 
@@ -188,6 +193,20 @@ config_finalize "$PITCREW_CFG"
 config_validate
 cd "$ROOT" 2>/dev/null || die "project root not found at $ROOT"
 
+# Plugins are sourced HERE, at the top level, for exactly the reason the config
+# is — a bare `declare -A` inside a sourced file is scoped to whatever function
+# did the sourcing and silently thrown away, and a plugin holding a lookup
+# table is an obvious thing to write. They load after the config so a check can
+# read PITCREW_* and decide whether it applies to this project at all.
+# See lib/20-plugins.sh for why the search path is deliberately user-level only.
+plugin_attribute core
+while IFS= read -r _pf; do
+  [ -n "$_pf" ] || continue
+  # shellcheck source=/dev/null
+  source "$_pf"
+  plugin_attribute "${_pf##*/}"
+done < <(plugin_files)
+
 # Remembered so that switching project from inside the UI can re-exec into the
 # same view the user was already looking at.
 PITCREW_CMD=${1:-watch}
@@ -209,6 +228,7 @@ case "${1:-watch}" in
   shell)   shift;  cmd_shell "$@" ;;
   doctor)  shift; if [ "${1:-}" = --json ]; then cmd_doctor_json; exit $?; else cmd_doctor; fi ;;
   diagnose|diag) shift; cmd_diagnose "$@"; exit $? ;;
+  plugins) shift; cmd_plugins "$@"; exit $? ;;
   urls)            cmd_urls ;;
   *)               die "unknown command '${1}' — try: pitcrew help" ;;
 esac

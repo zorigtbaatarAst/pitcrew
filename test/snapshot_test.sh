@@ -140,4 +140,109 @@ test_a_start_time_needs_a_boot_time_to_mean_anything() {
   assert_ok test "$PITCREW_BTIME" -gt 1000000000
 }
 
+# ── idleness that outlives the process that measured it ─────────────────────
+#
+# The interesting case is the one where pitcrew was NOT watching. Carrying a
+# timestamp across that gap would be a guess; carrying it across only when the
+# cumulative CPU counter proves nothing happened is a measurement. These pin
+# that distinction, because getting it wrong puts a busy service on a list of
+# things it is safe to stop.
+
+# These stand on shared globals that the other tests in this file also read, so
+# the fixture saves and the cleanup restores. Assertions record rather than
+# abort, so a failing test still reaches its cleanup.
+_idle_fixture() { # $1 = the record to write → a LOG_DIR containing it
+  SAVED_LOG_DIR=$LOG_DIR
+  SAVED_COMPS=("${PITCREW_COMPS[@]}")
+  SAVED_PIDS=("${!SNAP_PID[@]}"); SAVED_PID_VALS=("${SNAP_PID[@]}")
+  IDLE_DIR=$(mktemp -d)
+  LOG_DIR=$IDLE_DIR
+  printf '%s\n' "$1" > "$IDLE_DIR/.idle"
+  SNAP_NOW_S=2000
+  _IDLE_RESTORED=0
+  SNAP_IDLE_SINCE=()
+  SNAP_PID=([be-both]=4242)
+  _JIFF_TREE_PREV=([be-both]=1000)
+}
+
+_idle_cleanup() {
+  rm -rf "$IDLE_DIR"
+  LOG_DIR=$SAVED_LOG_DIR
+  PITCREW_COMPS=("${SAVED_COMPS[@]}")
+  SNAP_PID=()
+  local i
+  for i in "${!SAVED_PIDS[@]}"; do SNAP_PID[${SAVED_PIDS[i]}]=${SAVED_PID_VALS[i]}; done
+  SNAP_IDLE_SINCE=()
+  _IDLE_RESTORED=0
+}
+
+test_an_idle_clock_is_carried_forward_when_the_counter_proves_it() {
+  # 100 seconds passed unobserved; the CPU counter did not move. Nothing ran,
+  # whether or not anyone was there to see it.
+  _idle_fixture "be-both=$PITCREW_COLLECTOR 4242 1000 1500 1900"
+  _idle_restore
+  assert_eq "${SNAP_IDLE_SINCE[be-both]:-}" "1500" "the old timestamp survives"
+  _idle_cleanup
+}
+
+test_an_idle_clock_is_dropped_when_the_counter_moved() {
+  # Same gap, but the counter advanced by 100s of CPU over 100s of wall clock:
+  # that service was pegged, and calling it idle would be a lie.
+  _idle_fixture "be-both=$PITCREW_COLLECTOR 4242 1000 1500 1900"
+  _JIFF_TREE_PREV=([be-both]=$(( 1000 + 100 * 100 )))
+  _idle_restore
+  assert_empty "${SNAP_IDLE_SINCE[be-both]:-}" "it worked while we were away"
+  _idle_cleanup
+}
+
+test_a_little_counter_movement_is_still_idle() {
+  # A JVM at rest still ticks over on GC and timers. A threshold of zero would
+  # mean nothing is ever idle, which makes the whole feature useless.
+  _idle_fixture "be-both=$PITCREW_COLLECTOR 4242 1000 1500 1900"
+  _JIFF_TREE_PREV=([be-both]=$(( 1000 + 100 )))    # ~1% of one core over the gap
+  _idle_restore
+  assert_eq "${SNAP_IDLE_SINCE[be-both]:-}" "1500" "under the threshold is still quiet"
+  _idle_cleanup
+}
+
+test_a_restarted_process_starts_its_idle_clock_again() {
+  # The counter belongs to a PID. A new process with a new pid inherits none of
+  # the old one's quietness, however identical the component name is.
+  _idle_fixture "be-both=$PITCREW_COLLECTOR 9999 1000 1500 1900"
+  _idle_restore
+  assert_empty "${SNAP_IDLE_SINCE[be-both]:-}" "different pid, no history"
+  _idle_cleanup
+}
+
+test_a_record_from_the_other_collector_is_discarded() {
+  # /proc counts jiffies and `ps` counts centiseconds. Comparing one against
+  # the other is comparing different units, so the record is refused rather
+  # than converted on a guess.
+  _idle_fixture "be-both=somethingelse 4242 1000 1500 1900"
+  _idle_restore
+  assert_empty "${SNAP_IDLE_SINCE[be-both]:-}" "different units, no history"
+  _idle_cleanup
+}
+
+test_a_counter_that_went_backwards_is_discarded() {
+  _idle_fixture "be-both=$PITCREW_COLLECTOR 4242 5000 1500 1900"
+  _idle_restore      # current counter (1000) is BELOW the recorded 5000
+  assert_empty "${SNAP_IDLE_SINCE[be-both]:-}" "a counter cannot decrease without a restart"
+  _idle_cleanup
+}
+
+test_saving_never_overwrites_history_with_nothing() {
+  # The first snapshot of every run happens before any component has an idle
+  # clock. Writing then would destroy exactly what the next run wants to read.
+  _idle_fixture "be-both=$PITCREW_COLLECTOR 4242 1000 1500 1900"
+  SNAP_IDLE_SINCE=()
+  PITCREW_COMPS=(be-both)
+  idle_save_now
+  assert_match "$(cat "$IDLE_DIR/.idle")" '1500' "the record is still there"
+  SNAP_IDLE_SINCE=([be-both]=1900)
+  idle_save_now
+  assert_match "$(cat "$IDLE_DIR/.idle")" '1900' "and a real save does replace it"
+  _idle_cleanup
+}
+
 run_tests
