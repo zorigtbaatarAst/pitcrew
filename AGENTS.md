@@ -321,6 +321,11 @@ writer or the Python, it belongs here instead.
 - **A cap is a property of the machine, not the project.** Per-component
   overrides live in `~/.config/pitcrew/<session>/limits`, never in the repo's
   config. Resolution: machine-local override -> per-app cap -> role default.
+- **A mode is a layout, not a filter over one.** Zen does not draw the table
+  with rows removed — it draws a list, because the table's two header rows,
+  column pair and graph column cost more rows than the content does once the
+  content is one crashed service. Filtering a layout built for twelve rows is
+  how you get a wide, mostly-blank screen and call it focus.
 - **A mode never hides the way out of itself.** Zen strips gauges, legends,
   meters, healthy rows — but keeps `q quit` and `z leave zen` in the terminal
   hint row and keeps the view switcher in the desktop app. The hint row is
