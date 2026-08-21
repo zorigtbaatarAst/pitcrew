@@ -181,6 +181,21 @@ field is removed or changes meaning.
   still lives on Resources, where it has room.
 
 ### Fixed
+- **The desktop app could not start on Ubuntu 24.04 LTS.** It used
+  `AdwToggleGroup` in two places; that widget arrived in libadwaita 1.7 and the
+  current LTS ships 1.5, where constructing it *aborts the process* rather than
+  raising — from a Start Menu shortcut or an app grid, an app that vanishes on
+  launch and says nothing. Replaced with a linked row of `GtkToggleButton`s
+  that works everywhere, and `platform.ADW_MINIMUM` now states the floor (1.5)
+  and is checked before any window is built, so the next time someone reaches
+  for a newer widget the failure is a sentence instead of a silence.
+- **The Windows process-table parser used `mktime()`, a gawk extension.** BSD
+  awk does not return zero for an unknown function, it refuses to run the
+  program — so on macOS the entire parser produced nothing and every field came
+  out empty. Replaced with plain arithmetic (days-from-civil), which also let
+  the WMI timestamp's UTC offset be *applied* rather than assumed to cancel. A
+  test now runs the parser under `awk --traditional` and fails if the output
+  differs, so this cannot creep back.
 - **CI had never passed.** Every run in the visible history was red, going back
   months, and all of it came down to the tests assuming the environment they
   happened to be written in:

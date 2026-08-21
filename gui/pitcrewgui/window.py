@@ -47,6 +47,7 @@ from .widgets import (
     FindingRow,
     Graph,
     Meter,
+    SegmentedControl,
     ShareChart,
     human_age,
 )
@@ -714,11 +715,10 @@ class Window(Adw.ApplicationWindow):
             selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=4,
             row_spacing=4, column_spacing=16)
 
-        self._scale_toggle = Adw.ToggleGroup(halign=Gtk.Align.END)
-        self._scale_toggle.add(Adw.Toggle(name="fit", label="Fit"))
-        self._scale_toggle.add(Adw.Toggle(name="machine", label="Machine"))
-        self._scale_toggle.set_active_name("fit")
-        self._scale_toggle.connect("notify::active-name", lambda *_: self._apply_scale())
+        self._scale_toggle = SegmentedControl(on_change=self._apply_scale,
+                                              halign=Gtk.Align.END)
+        self._scale_toggle.add_option("fit", "Fit")
+        self._scale_toggle.add_option("machine", "Machine")
         self._scale_toggle.set_tooltip_text(
             "Fit scales to what the project uses; Machine scales to this machine's RAM")
 

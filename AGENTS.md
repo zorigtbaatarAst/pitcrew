@@ -88,6 +88,12 @@ attribute, and most are pinned by a test.
    the state object; do not re-derive it in Python. `model.py` is pure
    presentation (no GTK, no OS calls) and is where testable logic goes.
 
+   **libadwaita 1.5 is the floor** (`platform.ADW_MINIMUM`) — what Ubuntu 24.04
+   LTS ships. A widget from a newer version does not raise, GTK *aborts the
+   process*, so this is checked before any window is built. Check what the LTS
+   has before reaching for something new; `AdwToggleGroup` (1.7) cost the app
+   the ability to start on the most common Linux desktop.
+
    **Do not put a view inside `AdwPreferencesPage` if it has columns or
    figures.** That widget carries its own ~600px clamp which cannot be widened,
    and it is what left half of every window empty. Use a Box in an `Adw.Clamp`

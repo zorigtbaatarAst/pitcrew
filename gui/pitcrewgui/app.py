@@ -6,7 +6,7 @@ import sys
 
 from gi.repository import Adw, Gio
 
-from .platform import find_pitcrew
+from .platform import adwaita_too_old, find_pitcrew
 from .registry import current_project
 from .settings import SETTINGS, SETTINGS_BY_KEY, Settings
 from .window import Window
@@ -86,6 +86,14 @@ def main(argv: list[str]) -> int:
         return 2
 
     settings.update(overrides)
+
+    # Before any window is built: a widget from a newer libadwaita does not
+    # raise, it aborts the process, and an app that vanishes on launch tells
+    # you nothing.
+    too_old = adwaita_too_old()
+    if too_old:
+        print(f"pitcrew-gui: {too_old}", file=sys.stderr)
+        return 1
 
     pitcrew = find_pitcrew()
     if not pitcrew:

@@ -179,6 +179,35 @@ def python_candidates() -> tuple[str, ...]:
     return ("/usr/bin/python3", "python3")
 
 
+# The oldest libadwaita this app is known to work on. 1.5 is what Ubuntu 24.04
+# LTS ships, and supporting the current LTS is worth more than any widget added
+# since. Raising this is a decision, not an accident: check what the LTS has
+# first, and remember that using a newer widget does not fail with an
+# ImportError — GTK aborts the process, which from a Start Menu shortcut is an
+# app that does nothing at all.
+ADW_MINIMUM = (1, 5)
+
+
+def adwaita_too_old() -> str:
+    """A message naming the version found, or "" when it is new enough."""
+    try:
+        # Deferred on purpose, and not a style slip: this module is imported by
+        # bootstrap.py BEFORE the bindings are known to exist — that is the
+        # whole reason bootstrap can re-exec into an interpreter that has them.
+        # A top-level `from gi.repository import Adw` here would make the file
+        # unimportable in exactly the case it exists to handle.
+        from gi.repository import Adw  # noqa: PLC0415
+    except (ImportError, ValueError):
+        return ""            # no bindings at all is a different question
+    found = (Adw.MAJOR_VERSION, Adw.MINOR_VERSION)
+    if found >= ADW_MINIMUM:
+        return ""
+    want = ".".join(str(part) for part in ADW_MINIMUM)
+    have = ".".join(str(part) for part in found)
+    return (f"libadwaita {want} or newer is needed; this system has {have}.\n"
+            "  the terminal dashboard needs none of this — just run `pitcrew`")
+
+
 def missing_bindings_message() -> str:
     if IS_MACOS:
         return ("no python with the GTK bindings found.\n"

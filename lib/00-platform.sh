@@ -341,19 +341,41 @@ sys_gauges() {
 # never seen Windows — the same bargain _vm_stat_avail_kb strikes for macOS.
 #
 # Input is wmic's CSV: Node,CreationDate,KernelModeTime,Name,ParentProcessId,ProcessId,UserModeTime,WorkingSetSize
+# Days since 1970-01-01 for a civil date, by arithmetic alone.
+#
+# NOT awk's mktime(): that is a GNU extension. BSD awk does not merely return
+# zero for it, it refuses to run the program at all — so on macOS the whole
+# parser produced nothing and every field came out empty. "No GNU-only tools"
+# is a rule this project holds everywhere else, and awk is not exempt.
+#
+# Howard Hinnant's days_from_civil. March-based years put the leap day at the
+# end, which is what removes every special case.
+_PF_DAYS_FROM_CIVIL='
+function days_from_civil(y, m, d,    era, yoe, doy, doe) {
+  if (m <= 2) y--
+  era = int(y / 400)
+  yoe = y - era * 400
+  doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
+  doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+  return era * 146097 + doe - 719468
+}'
+
 _wmic_ps_parse() { # $1 = epoch seconds now; wmic CSV on stdin → ps-shaped columns
-  awk -F, -v now="$1" '
+  awk -F, -v now="$1" "$_PF_DAYS_FROM_CIVIL"'
     NR == 1 || NF < 8 { next }
     {
-      # WMI CreationDate is yyyymmddHHMMSS.ffffff+ZZZ, in LOCAL time. Only the
-      # difference from now matters, and mktime reads local time too, so the
-      # offset cancels and does not have to be parsed.
+      # WMI CreationDate is yyyymmddHHMMSS.ffffff±MMM, where the suffix is
+      # minutes east of UTC. Parsed rather than assumed to cancel: computing the
+      # epoch by hand gives a UTC instant, so the offset has to come off it.
       created = substr($2, 1, 14)
       elapsed = 0
       if (created ~ /^[0-9]{14}$/) {
-        spec = substr(created,1,4) " " substr(created,5,2) " " substr(created,7,2) " " \
-               substr(created,9,2) " " substr(created,11,2) " " substr(created,13,2)
-        birth = mktime(spec)
+        offset = 0
+        if (match($2, /[+-][0-9]+$/)) offset = substr($2, RSTART, RLENGTH) + 0
+        birth = days_from_civil(substr(created,1,4) + 0, substr(created,5,2) + 0,
+                                substr(created,7,2) + 0) * 86400 \
+              + substr(created,9,2) * 3600 + substr(created,11,2) * 60 \
+              + substr(created,13,2) - offset * 60
         if (birth > 0 && now > birth) elapsed = now - birth
       }
       cs   = int(($3 + $7) / 100000)          # 100ns ticks -> centiseconds

@@ -14,6 +14,7 @@ from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
 from . import ansi
 from .runner import LineReader
+from .widgets import SegmentedControl
 
 TAIL_LINES = 400          # what a fresh selection shows before following live
 MAX_LINES = 5000          # ceiling per component, so a chatty dev server cannot
@@ -82,11 +83,9 @@ class LogView(Gtk.Box):
         # Backends and frontends fail differently and you are usually looking for
         # one kind: a stack trace or a bundler error. Twelve names in one flat
         # list makes you read every one of them to find out which is which.
-        self._roles = Adw.ToggleGroup()
+        self._roles = SegmentedControl(on_change=self._refill)
         for name, label in (("all", "All"), ("be", "Backend"), ("fe", "Frontend")):
-            self._roles.add(Adw.Toggle(name=name, label=label))
-        self._roles.set_active_name("all")
-        self._roles.connect("notify::active-name", lambda *_: self._refill())
+            self._roles.add_option(name, label)
 
         self._follow = Gtk.ToggleButton(icon_name="go-bottom-symbolic", active=True,
                                         tooltip_text="Follow new lines")

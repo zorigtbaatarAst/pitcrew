@@ -22,10 +22,12 @@ _wmic_fixture() { # $1 = process creation epoch
   # it -r, so the fixture built an empty timestamp on macOS and the assertions
   # failed there while passing on Linux. bash 5 has this builtin, and "no GNU
   # coreutils" is a rule this project holds everywhere else.
-  local born; printf -v born '%(%Y%m%d%H%M%S)T' "$1"
+  # UTC, and labelled as such (+000), so the expected elapsed time is the same
+  # number in every timezone the suite might run in.
+  local born; TZ=UTC printf -v born '%(%Y%m%d%H%M%S)T' "$1"
   printf 'Node,CreationDate,KernelModeTime,Name,ParentProcessId,ProcessId,UserModeTime,WorkingSetSize\r\n'
-  printf 'DESKTOP,%s.123456+060,12000000,java.exe,4242,9100,138000000,2147483648\r\n' "$born"
-  printf 'DESKTOP,%s.123456+060,500000,bash.exe,1,4242,1500000,10485760\r\n' "$born"
+  printf 'DESKTOP,%s.123456+000,12000000,java.exe,4242,9100,138000000,2147483648\r\n' "$born"
+  printf 'DESKTOP,%s.123456+000,500000,bash.exe,1,4242,1500000,10485760\r\n' "$born"
 }
 
 _netstat_fixture() {
@@ -80,6 +82,23 @@ test_elapsed_time_comes_out_of_the_wmi_creation_date() {
     | sed -n 1p | awk '{print $5}')
   _etime_secs "$field"
   assert_eq "$_ETIME" "3725" "up 1h02m05s"
+}
+
+test_the_creation_date_offset_is_applied_not_assumed_to_cancel() {
+  # The suffix is minutes east of UTC. A process created at 11:00 UTC+02:00 was
+  # created at 09:00 UTC, and reading the digits without the offset would make
+  # it look two hours younger than it is.
+  local now=1787280000 utc plus2
+  TZ=UTC printf -v utc '%(%Y%m%d%H%M%S)T' $(( now - 3600 ))
+  local row='Node,CreationDate,KernelModeTime,Name,ParentProcessId,ProcessId,UserModeTime,WorkingSetSize\nD,%s.0%s,0,x.exe,1,2,0,1024\n'
+  # shellcheck disable=SC2059  # the format string is built above, on purpose
+  local at_utc; at_utc=$(printf "$row" "$utc" "+000" | _wmic_ps_parse "$now" | awk '{print $5}')
+  _etime_secs "$at_utc"; local secs_utc=$_ETIME
+  # the same wall-clock digits, but two hours east: an EARLIER instant
+  local at_plus2; at_plus2=$(printf "$row" "$utc" "+120" | _wmic_ps_parse "$now" | awk '{print $5}')
+  _etime_secs "$at_plus2"; local secs_plus2=$_ETIME
+  assert_eq "$secs_utc" "3600" "at UTC, an hour old"
+  assert_eq "$secs_plus2" "$(( 3600 + 7200 ))" "two hours east is two hours older in UTC terms"
 }
 
 test_a_process_with_no_readable_creation_date_still_reports() {
@@ -149,6 +168,24 @@ test_windows_never_claims_to_enforce_a_ram_cap() {
   # meters look identical whether a cap bites or not, so this must not drift.
   ( PITCREW_OS=windows
     assert_fails _caps_enforced )
+}
+
+test_the_parser_uses_no_gawk_extensions() {
+  # It used mktime(), which is GNU-only — and BSD awk does not return zero for
+  # an unknown function, it refuses to run the program, so the whole parser
+  # produced nothing on macOS. --traditional turns every gawk extension off,
+  # which is the closest thing to BSD awk available on a Linux runner.
+  command -v gawk >/dev/null 2>&1 || return 0
+  awk --traditional 'BEGIN{}' </dev/null 2>/dev/null || return 0
+
+  local now=1787280000 strict plain
+  plain=$(_wmic_fixture $(( now - 3725 )) | tr -d '\r' | _wmic_ps_parse "$now")
+  awk() { command awk --traditional "$@"; }
+  strict=$(_wmic_fixture $(( now - 3725 )) | tr -d '\r' | _wmic_ps_parse "$now")
+  unset -f awk
+
+  assert_eq "$strict" "$plain" "identical with every gawk extension disabled"
+  assert_match "$strict" '9100 4242' "and it actually produced something"
 }
 
 run_tests

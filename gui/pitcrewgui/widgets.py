@@ -363,6 +363,67 @@ class ShareChart(Gtk.DrawingArea):
             cr.show_text(f"+{len(self._slices) - 8} more")
 
 
+class SegmentedControl(Gtk.Box):
+    """A row of linked toggle buttons where exactly one is active.
+
+    This is `AdwToggleGroup`, written out. That widget arrived in libadwaita
+    1.7 and Ubuntu 24.04 LTS — the current LTS — ships 1.5, where constructing
+    it aborts the process. Two convenience widgets are not worth refusing to
+    start on the distribution most people are running, and everything else in
+    this app works on 1.5.
+
+    Same tiny surface the ToggleGroup calls used: add_option, get_active_name,
+    set_active_name, and one callback.
+    """
+
+    def __init__(self, on_change=None, **kwargs) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
+        self.add_css_class("linked")
+        self._on_change = on_change
+        self._buttons: dict[str, Gtk.ToggleButton] = {}
+        self._active: str | None = None
+        self._settling = False
+
+    def add_option(self, name: str, label: str) -> None:
+        button = Gtk.ToggleButton(label=label)
+        button.connect("toggled", self._toggled, name)
+        self._buttons[name] = button
+        self.append(button)
+        if self._active is None:
+            self.set_active_name(name)
+
+    def get_active_name(self) -> str | None:
+        return self._active
+
+    def set_active_name(self, name: str) -> None:
+        if name not in self._buttons or name == self._active:
+            return
+        self._apply(name)
+        if self._on_change is not None:
+            self._on_change()
+
+    def _toggled(self, button: Gtk.ToggleButton, name: str) -> None:
+        if self._settling:
+            return
+        if not button.get_active():
+            # Clicking the active one again must not leave the group with
+            # nothing selected — there is no "no filter" state to fall into.
+            self._settling = True
+            button.set_active(True)
+            self._settling = False
+            return
+        self._apply(name)
+        if self._on_change is not None:
+            self._on_change()
+
+    def _apply(self, name: str) -> None:
+        self._settling = True
+        for other, button in self._buttons.items():
+            button.set_active(other == name)
+        self._active = name
+        self._settling = False
+
+
 class Bar(Gtk.DrawingArea):
     """A flat rounded progress bar drawn to the shared ramp.
 
