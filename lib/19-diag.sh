@@ -624,7 +624,7 @@ diag_json() {
   idle_save_now
   err_close
   printf '{"schema":%s,' "$PITCREW_JSON_SCHEMA"
-  printf '"project":%s,' "$(_json_str "${PITCREW_PROJECT_NAME:-}")"
+  _json_str "${PITCREW_PROJECT_NAME:-}"; printf '"project":%s,' "$JSTR"
   printf '"health":'
   diag_json_health
   printf '}\n'
@@ -638,17 +638,25 @@ diag_json_health() {
   # `deep` says whether the slow checks ran. A consumer that sees false knows
   # it is looking at the cheap tier and can offer to ask for the full one —
   # which is exactly what the desktop app's "Full diagnostics" button does.
+  local h_verdict h_headline h_deep=false
+  _json_str "$DIAG_VERDICT";  h_verdict=$JSTR
+  _json_str "$DIAG_HEADLINE"; h_headline=$JSTR
+  [ "$DIAG_DEEP" = 1 ] && h_deep=true
   printf '{"verdict":%s,"headline":%s,"deep":%s,"counts":{"crit":%d,"warn":%d,"info":%d},"findings":[' \
-    "$(_json_str "$DIAG_VERDICT")" "$(_json_str "$DIAG_HEADLINE")" \
-    "$([ "$DIAG_DEEP" = 1 ] && printf true || printf false)" \
+    "$h_verdict" "$h_headline" "$h_deep" \
     "$DIAG_CRIT" "$DIAG_WARN" "$DIAG_INFO"
   for i in "${!DIAG_SEV[@]}"; do
     [ $first = 1 ] || printf ','
     first=0
+    local n_sev n_id n_title n_detail n_fix n_scope
+    _json_str "${DIAG_SEV[i]}";    n_sev=$JSTR
+    _json_str "${DIAG_ID[i]}";     n_id=$JSTR
+    _json_str "${DIAG_TITLE[i]}";  n_title=$JSTR
+    _json_str "${DIAG_DETAIL[i]}"; n_detail=$JSTR
+    _json_str "${DIAG_FIX[i]}";    n_fix=$JSTR
+    _json_str "${DIAG_SCOPE[i]}";  n_scope=$JSTR
     printf '{"severity":%s,"id":%s,"title":%s,"detail":%s,"fix":%s,"scope":%s}' \
-      "$(_json_str "${DIAG_SEV[i]}")" "$(_json_str "${DIAG_ID[i]}")" \
-      "$(_json_str "${DIAG_TITLE[i]}")" "$(_json_str "${DIAG_DETAIL[i]}")" \
-      "$(_json_str "${DIAG_FIX[i]}")" "$(_json_str "${DIAG_SCOPE[i]}")"
+      "$n_sev" "$n_id" "$n_title" "$n_detail" "$n_fix" "$n_scope"
   done
   printf '],"recoverable":{"components":['
   first=1
@@ -657,7 +665,7 @@ diag_json_health() {
     [ -n "$c" ] || continue
     [ $first = 1 ] || printf ','
     first=0
-    printf '%s' "$(_json_str "$c")"
+    _json_str "$c"; printf '%s' "$JSTR"
   done
   # Reported, not omitted: a UI needs to be able to show the lock rather than
   # leave the user wondering why their biggest idle service is not on the list.
@@ -667,7 +675,7 @@ diag_json_health() {
     [ -n "$c" ] || continue
     [ $first = 1 ] || printf ','
     first=0
-    printf '%s' "$(_json_str "$c")"
+    _json_str "$c"; printf '%s' "$JSTR"
   done
   printf '],"bytes":%d}}' "${DIAG_IDLE_BYTES:-0}"
 }

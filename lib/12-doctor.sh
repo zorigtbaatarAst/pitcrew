@@ -128,13 +128,16 @@ cmd_doctor() {
 # `portClashes` without knowing what the pretty version looks like.
 cmd_doctor_json() {
   snapshot
-  local dep deps_json="" first=1 clashes
+  local dep deps_json="" first=1 clashes _dep_row
   for dep in "${PITCREW_DEPS[@]:-}"; do
     [ -n "$dep" ] || continue
     [ $first = 1 ] || deps_json+=","
     first=0
-    deps_json+="$(printf '{"name":%s,"running":%s}' \
-      "$(_json_str "$dep")" "$(container_running "$dep" && echo true || echo false)")"
+    local d_name d_run=false
+    _json_str "$dep"; d_name=$JSTR
+    container_running "$dep" && d_run=true
+    printf -v _dep_row '{"name":%s,"running":%s}' "$d_name" "$d_run"
+    deps_json+=$_dep_row
   done
 
   ram_preflight "${PITCREW_COMPS[@]}"
@@ -150,14 +153,14 @@ cmd_doctor_json() {
 
   printf '{'
   printf '"schema":%s,' "$PITCREW_JSON_SCHEMA"
-  printf '"version":%s,' "$(_json_str "${PITCREW_VERSION:-unknown}")"
-  printf '"os":%s,' "$(_json_str "$PITCREW_OS")"
-  printf '"bash":%s,' "$(_json_str "$BASH_VERSION")"
-  printf '"collector":%s,' "$(_json_str "$PITCREW_COLLECTOR")"
+  _json_str "${PITCREW_VERSION:-unknown}"; printf '"version":%s,' "$JSTR"
+  _json_str "$PITCREW_OS"; printf '"os":%s,' "$JSTR"
+  _json_str "$BASH_VERSION"; printf '"bash":%s,' "$JSTR"
+  _json_str "$PITCREW_COLLECTOR"; printf '"collector":%s,' "$JSTR"
   printf '"capsEnforced":%s,' "$(_caps_enforced && echo true || echo false)"
   printf '"capsFit":%s,' "$([ -z "$RAM_WARN" ] && echo true || echo false)"
-  printf '"capsWarning":%s,' "$(_json_str "${RAM_WARN:-}")"
-  printf '"portClashes":%s,' "$(_json_num "${clashes:-0}")"
+  _json_str "${RAM_WARN:-}"; printf '"capsWarning":%s,' "$JSTR"
+  _json_num "${clashes:-0}"; printf '"portClashes":%s,' "$JNUM"
   printf '"tools":{"lsof":%s,"fzf":%s,"docker":%s},' \
     "$(command -v lsof  >/dev/null 2>&1 && echo true || echo false)" \
     "$(command -v fzf   >/dev/null 2>&1 && echo true || echo false)" \

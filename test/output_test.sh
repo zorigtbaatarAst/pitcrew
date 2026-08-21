@@ -79,10 +79,10 @@ test_json_escapes_what_it_must() {
 test_unknown_numbers_are_null_not_zero() {
   # a component that is not running has no RSS; reporting 0 would be a lie a
   # status line would happily plot
-  assert_eq "$(_json_num '')"     'null' "empty"
-  assert_eq "$(_json_num 'abc')"  'null' "not a number"
-  assert_eq "$(_json_num '0')"    '0'    "a real zero stays zero"
-  assert_eq "$(_json_num '8080')" '8080' "a real number"
+  _json_num '';     assert_eq "$JNUM" 'null' "empty"
+  _json_num 'abc';  assert_eq "$JNUM" 'null' "not a number"
+  _json_num '0';    assert_eq "$JNUM" '0'    "a real zero stays zero"
+  _json_num '8080'; assert_eq "$JNUM" '8080' "a real number"
 }
 
 # ── wait: the exit codes are the contract ───────────────────────────────────
@@ -121,12 +121,15 @@ test_wait_is_explicit_about_ports_it_does_not_own() {
 # zero that a status line could not tell apart from an idle service.
 
 test_json_cpu_helper_reports_unknown_rather_than_a_fake_zero() {
+  # The encoders set a global rather than printing — see the note atop
+  # lib/16-output.sh. Reading them through $( ) is exactly the subshell the
+  # convention exists to remove, so the test does not do it either.
   local saved=${SNAP_CPU_OK:-0}
   SNAP_CPU_OK=0
-  assert_eq "$(_json_cpu 42)" "null" "no baseline: null, never 0"
+  _json_cpu 42;  assert_eq "$JNUM" "null" "no baseline: null, never 0"
   SNAP_CPU_OK=1
-  assert_eq "$(_json_cpu 42)" "42"   "with a baseline the reading passes through"
-  assert_eq "$(_json_cpu '')"  "null" "a component with no process is still null"
+  _json_cpu 42;  assert_eq "$JNUM" "42"   "with a baseline the reading passes through"
+  _json_cpu '';  assert_eq "$JNUM" "null" "a component with no process is still null"
   SNAP_CPU_OK=$saved
 }
 

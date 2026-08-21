@@ -75,12 +75,20 @@ attribute, and most are pinned by a test.
    GNU-only `sed`/`grep` flags. BSD `sed` does not understand `\+`. A stock
    macOS must work after only `brew install bash`.
 
-7. **The JSON contract is versioned separately.** `schema` in
+7. **`lib/16-output.sh` is a frame loop too.** `json --watch` is the desktop
+   app's whole data path and a status line's polling loop, so the no-forks rule
+   applies there exactly as it does to the dashboard. The encoders
+   (`_json_str`, `_json_num`, `_json_cpu`, and `comp_max_source`) SET A GLOBAL
+   and print nothing — calling any of them as `$(...)` puts back the 295 forks
+   and 176ms an object this cost before, invisibly, because the output is
+   identical either way. `test/perf_test.sh` fails if you do.
+
+8. **The JSON contract is versioned separately.** `schema` in
    `pitcrew status --json` / `pitcrew json`. Bump it only when a field is
    removed or changes meaning; adding fields is free. `test/output_test.sh`
    pins the exact key set, so add new fields there in the same change.
 
-8. **The GUI is a renderer, not a second monitor.** Everything it shows arrives
+9. **The GUI is a renderer, not a second monitor.** Everything it shows arrives
    through `pitcrew json --watch`. It must never read `/proc`, run `ps`, or
    decide for itself whether the stack is healthy — the verdict travels in the
    stream's `health` object and the process tree in `components[].processes`

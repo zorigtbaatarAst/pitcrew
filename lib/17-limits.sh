@@ -117,12 +117,15 @@ limit_size_choices() { # $1 comp
   done
 }
 
-comp_max_source() { # $1 comp → override | app | role
+comp_max_source() { # $1 comp → MAXSRC: override | app | role
+  # Sets a global rather than echoing, so the JSON writer can ask without a
+  # subshell — it asks once per component per frame. Same convention as
+  # `human` → HUMAN in the render path.
   local app=${1#??-}
-  [ -n "${COMP_MAX_OVERRIDE[$1]:-}" ] && { echo override; return; }
-  if [ "${1:0:2}" = be ]; then [ -n "${PITCREW_BE_MAX_APP[$app]:-}" ] && { echo app; return; }
-  else [ -n "${PITCREW_FE_MAX_APP[$app]:-}" ] && { echo app; return; }; fi
-  echo role
+  [ -n "${COMP_MAX_OVERRIDE[$1]:-}" ] && { MAXSRC=override; return; }
+  if [ "${1:0:2}" = be ]; then [ -n "${PITCREW_BE_MAX_APP[$app]:-}" ] && { MAXSRC=app; return; }
+  else [ -n "${PITCREW_FE_MAX_APP[$app]:-}" ] && { MAXSRC=app; return; }; fi
+  MAXSRC=role
 }
 
 cmd_limit() { # [] | [<comp> <size|default>]

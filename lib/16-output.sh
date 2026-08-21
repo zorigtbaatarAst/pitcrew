@@ -16,18 +16,31 @@ PITCREW_JSON_SCHEMA=1
 # read. 0 turns the field into an empty list.
 PITCREW_JSON_PROCS="${PITCREW_JSON_PROCS:-12}"
 
-_json_str() { # $1 → a JSON string literal, with the two characters that matter escaped
+# ── encoding, without forking ────────────────────────────────────────────────
+#
+# These SET A GLOBAL; they do not print. That is the same calling convention
+# lib/04-meters.sh uses for the render path (`human` → HUMAN, `bar` → R), and
+# for the same reason: a `$(helper)` is a subshell, and this object has one per
+# field per component.
+#
+# It was not a subtle cost. Twelve components came to 295 forks and 176ms an
+# object — five times what the whole terminal frame costs — and `json --watch`
+# pays it on every interval, forever, so a desktop app that renders a frame in
+# 0.4ms sat behind a producer burning ~9% of a core on string escaping. The
+# same work through a global is 2ms.
+#
+# The rule that follows: nothing in this file may be called as `$(...)`.
+_json_str() { # $1 → JSTR, a JSON string literal with the two characters that matter escaped
   local v=${1//\\/\\\\}
-  printf '"%s"' "${v//\"/\\\"}"
+  JSTR="\"${v//\"/\\\"}\""
 }
 
-_json_num() { # a number, or null when we genuinely do not know
-  case "${1:-}" in ''|*[!0-9-]*) printf 'null' ;; *) printf '%s' "$1" ;; esac
+_json_num() { # $1 → JNUM: a number, or null when we genuinely do not know
+  case "${1:-}" in ''|*[!0-9-]*) JNUM=null ;; *) JNUM=$1 ;; esac
 }
 
 _json_cpu() { # SNAP_CPU is meaningless without a previous sample — say null, not 0
-  [ "${SNAP_CPU_OK:-0}" = 1 ] || { printf 'null'; return; }
-  _json_num "${1:-}"
+  if [ "${SNAP_CPU_OK:-0}" = 1 ]; then _json_num "${1:-}"; else JNUM=null; fi
 }
 
 # The component's process tree, biggest first. The terminal dashboard has shown
@@ -45,9 +58,12 @@ _json_processes() { # $1 comp
     n=$((n + 1))
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"pid":%s,"cmd":%s,"rss":%s,"cpu":%s}' \
-      "$(_json_num "$p")" "$(_json_str "${SNAP_PROC_CMD[$p]:-?}")" \
-      "$(_json_num "${SNAP_PROC_RSS[$p]:-}")" "$(_json_cpu "${SNAP_PROC_CPU[$p]:-}")"
+    local p_pid p_cmd p_rss p_cpu
+    _json_num "$p";                        p_pid=$JNUM
+    _json_str "${SNAP_PROC_CMD[$p]:-?}";   p_cmd=$JSTR
+    _json_num "${SNAP_PROC_RSS[$p]:-}";    p_rss=$JNUM
+    _json_cpu "${SNAP_PROC_CPU[$p]:-}";    p_cpu=$JNUM
+    printf '{"pid":%s,"cmd":%s,"rss":%s,"cpu":%s}' "$p_pid" "$p_cmd" "$p_rss" "$p_cpu"
   done
   printf ']'
   return 0
@@ -64,15 +80,15 @@ cmd_json() {
   # one is backwards compatible and does not. test/output_test.sh pins the whole
   # key set, so neither can happen by accident.
   printf '"schema":%s,' "$PITCREW_JSON_SCHEMA"
-  printf '"project":%s,' "$(_json_str "${PITCREW_PROJECT_NAME:-}")"
-  printf '"root":%s,' "$(_json_str "$ROOT")"
-  printf '"collector":%s,' "$(_json_str "$PITCREW_COLLECTOR")"
+  _json_str "${PITCREW_PROJECT_NAME:-}"; printf '"project":%s,' "$JSTR"
+  _json_str "$ROOT";                        printf '"root":%s,' "$JSTR"
+  _json_str "$PITCREW_COLLECTOR";           printf '"collector":%s,' "$JSTR"
   # Where the logs are and what counts as an error line, so a reader can show
   # the same lines the dashboard counts without knowing pitcrew's layout or
   # re-inventing the pattern.
-  printf '"logDir":%s,' "$(_json_str "$LOG_DIR")"
-  printf '"profileDir":%s,' "$(_json_str "$PROFILE_DIR")"
-  printf '"errorPattern":%s,' "$(_json_str "$PITCREW_ERROR_PATTERN")"
+  _json_str "$LOG_DIR";              printf '"logDir":%s,' "$JSTR"
+  _json_str "$PROFILE_DIR";          printf '"profileDir":%s,' "$JSTR"
+  _json_str "$PITCREW_ERROR_PATTERN"; printf '"errorPattern":%s,' "$JSTR"
   # The names only. A GUI cannot host an interactive psql, but it can tell you
   # this project has one and hand you the exact command — which beats the shells
   # being a feature you only discover by reading the config.
@@ -81,20 +97,23 @@ cmd_json() {
   for _sh in "${!PITCREW_SHELLS[@]}"; do
     [ $_sfirst = 1 ] || printf ','
     _sfirst=0
-    printf '%s' "$(_json_str "$_sh")"
+    _json_str "$_sh"; printf '%s' "$JSTR"
   done
   printf '],'
   # The machine itself. A reader plotting RAM against a per-component cap has no
   # idea whether 18G of caps is generous or suicidal without knowing what the
   # box actually has — and pitcrew already measures this for its own gauges.
   sys_gauges
+  local m_total m_used m_cpu m_swaptotal m_swapused m_at
+  _json_num $(( ${SYS_MEM_TOTAL_KB:-0} * 1024 ));  m_total=$JNUM
+  _json_num $(( ${SYS_MEM_USED_KB:-0} * 1024 ));   m_used=$JNUM
+  _json_num "${SYS_CPU_PCT:-0}";                   m_cpu=$JNUM
+  _json_num $(( ${SYS_SWAP_TOTAL_KB:-0} * 1024 )); m_swaptotal=$JNUM
+  _json_num $(( ${SYS_SWAP_USED_KB:-0} * 1024 ));  m_swapused=$JNUM
   printf '"machine":{"memTotal":%s,"memUsed":%s,"cpuPercent":%s,"swapTotal":%s,"swapUsed":%s},' \
-    "$(_json_num $(( ${SYS_MEM_TOTAL_KB:-0} * 1024 )))" \
-    "$(_json_num $(( ${SYS_MEM_USED_KB:-0} * 1024 )))" \
-    "$(_json_num "${SYS_CPU_PCT:-0}")" \
-    "$(_json_num $(( ${SYS_SWAP_TOTAL_KB:-0} * 1024 )))" \
-    "$(_json_num $(( ${SYS_SWAP_USED_KB:-0} * 1024 )))"
-  printf '"at":%s,' "$(_json_num "${SNAP_NOW_S:-0}")"
+    "$m_total" "$m_used" "$m_cpu" "$m_swaptotal" "$m_swapused"
+  _json_num "${SNAP_NOW_S:-0}"; m_at=$JNUM
+  printf '"at":%s,' "$m_at"
   printf '"components":['
   for c in "${PITCREW_COMPS[@]}"; do
     app=${c#??-}; role=${c:0:2}
@@ -118,16 +137,33 @@ cmd_json() {
                   down) down=$((down+1));; esac
     [ $first = 1 ] || printf ','
     first=0
+    # Eighteen fields, and every one of them used to be a `$( )`. Encoded into
+    # locals first so the printf below stays exactly the object it was.
+    local f_name f_app f_role f_state f_port f_pid f_rss f_cpu f_err f_exit
+    local f_limit f_limitsrc f_url f_health f_since f_restarts f_idle f_prot
+    _json_str "$c";                    f_name=$JSTR
+    _json_str "$app";                  f_app=$JSTR
+    _json_str "$role";                 f_role=$JSTR
+    _json_str "$st";                   f_state=$JSTR
+    _json_num "$port";                 f_port=$JNUM
+    _json_num "${SNAP_PID[$c]:-}";     f_pid=$JNUM
+    _json_num "${SNAP_RSS[$c]:-}";     f_rss=$JNUM
+    _json_cpu "${SNAP_CPU[$c]:-}";     f_cpu=$JNUM
+    _json_num "${ERR_COUNT[$c]:-0}";   f_err=$JNUM
+    _json_num "${SNAP_EXIT[$c]:-}";    f_exit=$JNUM
+    _json_num "${COMP_MAX_B[$c]:-}";   f_limit=$JNUM
+    comp_max_source "$c";              _json_str "$MAXSRC"; f_limitsrc=$JSTR
+    _json_str "$url";                  f_url=$JSTR
+    _json_str "$health";               f_health=$JSTR
+    _json_num "${SNAP_SINCE[$c]:-}";   f_since=$JNUM
+    _json_num "${RESTART_N[$c]:-0}";   f_restarts=$JNUM
+    _json_num "${SNAP_IDLE[$c]:-}";    f_idle=$JNUM
+    f_prot=false; [ -n "${PITCREW_PROTECTED[$c]:-}" ] && f_prot=true
     printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s,"protected":%s' \
-      "$(_json_str "$c")" "$(_json_str "$app")" "$(_json_str "$role")" "$(_json_str "$st")" \
-      "$(_json_num "$port")" "$(_json_num "${SNAP_PID[$c]:-}")" \
-      "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_cpu "${SNAP_CPU[$c]:-}")" \
-      "$(_json_num "${ERR_COUNT[$c]:-0}")" "$(_json_num "${SNAP_EXIT[$c]:-}")" \
-      "$(_json_num "${COMP_MAX_B[$c]:-}")" "$(_json_str "$(comp_max_source "$c")")" \
-      "$(_json_str "$url")" "$(_json_str "$health")" \
-      "$(_json_num "${SNAP_SINCE[$c]:-}")" "$(_json_num "${RESTART_N[$c]:-0}")" \
-      "$(_json_num "${SNAP_IDLE[$c]:-}")" \
-      "$([ -n "${PITCREW_PROTECTED[$c]:-}" ] && printf true || printf false)"
+      "$f_name" "$f_app" "$f_role" "$f_state" \
+      "$f_port" "$f_pid" "$f_rss" "$f_cpu" "$f_err" "$f_exit" \
+      "$f_limit" "$f_limitsrc" "$f_url" "$f_health" \
+      "$f_since" "$f_restarts" "$f_idle" "$f_prot"
     _json_processes "$c"
     printf '}'
   done
@@ -138,7 +174,10 @@ cmd_json() {
     [ -n "$dep" ] || continue
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"name":%s,"state":%s}' "$(_json_str "$dep")" "$(_json_str "${SNAP_DEP[$dep]:-down}")"
+    local d_name d_state
+    _json_str "$dep";                     d_name=$JSTR
+    _json_str "${SNAP_DEP[$dep]:-down}";  d_state=$JSTR
+    printf '{"name":%s,"state":%s}' "$d_name" "$d_state"
   done
   # The verdict, not just the facts. A reader that had to re-derive "is
   # anything wrong" from the component list would be reimplementing

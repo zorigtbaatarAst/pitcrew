@@ -46,10 +46,14 @@ _perf_cleanup() {
 }
 
 _forks_over() { # $1 = frames → FORKS, the number of children this shell spawned
-  local n=$1 i
+  _forks_of "$1" _frame
+}
+
+_forks_of() { # $1 = iterations, $2... = what to run → FORKS
+  local n=$1 i; shift
   FORKS=0
   trap 'FORKS=$((FORKS + 1))' CHLD
-  for ((i = 0; i < n; i++)); do _frame >/dev/null 2>&1; done
+  for ((i = 0; i < n; i++)); do "$@" >/dev/null 2>&1; done
   trap - CHLD
 }
 
@@ -134,4 +138,43 @@ test_idle_logs_are_not_re_read_every_frame() {
 }
 
 trap _perf_cleanup EXIT
+test_the_json_writer_forks_nothing_either() {
+  # `pitcrew json --watch` is the desktop app's whole data path and a status
+  # line's polling loop, so it is a frame loop in every sense that matters —
+  # but it was never held to the frame loop's contract.
+  #
+  # It escaped every field through `$(_json_str ...)`. Twelve components came
+  # to 295 forks and 176ms an object, five times the cost of the entire
+  # terminal frame, while the GUI consuming it rendered in 0.4ms. The same
+  # work through a global is 14ms.
+  #
+  # A `$( )` around any of the encoders would put all of that straight back,
+  # and it would be invisible: the output is identical either way.
+  # Each object takes a snapshot, so the collector's own cost is allowed here
+  # for the same reasons the frame budget allows it — and no more than that.
+  local before=$FORKS objects=5 per=0 what="no forks at all"
+  if [ "$PITCREW_COLLECTOR" != proc ]; then
+    per=2; what="one ps and one port listing per object"
+    [ "${PITCREW_SYS_CPU_SELF:-0}" = 1 ] || { per=3; what="$what, one vm_stat"; }
+  fi
+  _forks_of "$objects" cmd_json
+  [ "$FORKS" -le $(( objects * per + 2 )) ] \
+    || _t_bad "$FORKS forks over $objects json objects ($what) — an encoder is being called as \$( )"
+  printf '      \033[90m%d objects, %d forks (%s)\033[0m\n' "$objects" "$FORKS" "$PITCREW_COLLECTOR"
+  FORKS=$before
+}
+
+test_the_json_encoders_set_a_global_rather_than_printing() {
+  # The convention, stated as an assertion. An encoder that PRINTS is only
+  # usable through a subshell, so the two facts are the same fact — and the
+  # next person to add a field will copy whatever the neighbouring line does.
+  local out
+  out=$(_json_str 'a"b'; printf '|%s' "$JSTR")
+  assert_eq "$out" '|"a\"b"' "_json_str sets JSTR and prints nothing"
+  out=$(_json_num ""; printf '|%s' "$JNUM")
+  assert_eq "$out" '|null' "_json_num sets JNUM and prints nothing"
+  out=$(comp_max_source "${PITCREW_COMPS[0]}"; printf '|%s' "$MAXSRC")
+  assert_eq "$out" '|role' "comp_max_source sets MAXSRC and prints nothing"
+}
+
 run_tests

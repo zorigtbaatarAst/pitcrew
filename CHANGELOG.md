@@ -135,6 +135,31 @@ field is removed or changes meaning.
   that looks broken.
 
 ### Changed
+- **`pitcrew json` got 12× faster and stopped forking.** Every field was
+  escaped through `$(_json_str …)`, and a command substitution is a subshell —
+  so one state object cost one fork per field per component. Twelve components
+  came to **295 forks and 176ms**, five times the price of the entire terminal
+  frame, and `json --watch` pays it on every interval forever. Measured against
+  a desktop app that renders a frame in 0.4ms and parses one in 0.02ms: the
+  producer was burning about 9% of a core on string escaping so the consumer
+  could do nothing with the time.
+
+  The encoders now set a global instead of printing — the same convention
+  `lib/04-meters.sh` has always used for the render path (`human` → `HUMAN`,
+  `bar` → `R`), and for the same reason. `comp_max_source` too.
+
+  | components | before | after |
+  |---|---|---|
+  | 4 | 74 ms | 7 ms |
+  | 12 | 176 ms | 14 ms |
+  | 24 | 336 ms | 21 ms |
+
+  Forks: **295 → 0**. The output is byte-for-byte what it was, which is how the
+  change was verified — captured objects from before and after, including a
+  project whose name contains quotes and backslashes, compare identical.
+  `test/perf_test.sh` now holds `cmd_json` to the frame loop's contract, and a
+  second test pins the convention itself, so a future `$( )` around an encoder
+  fails rather than quietly costing 20 forks an object.
 - **Idleness now survives the process that measured it.** It used to be
   observable only for as long as one pitcrew process happened to be watching, so
   a one-shot `diagnose` could report a couple of seconds and a reopened

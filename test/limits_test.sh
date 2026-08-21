@@ -34,14 +34,14 @@ test_the_role_default_applies_when_nothing_else_does() {
   reset_limits
   assert_eq "$(comp_max be-both)" "2G" "backends take PITCREW_BE_MAX"
   assert_eq "$(comp_max fe-both)" "4G" "frontends take PITCREW_FE_MAX"
-  assert_eq "$(comp_max_source be-both)" "role" "and say where that came from"
+  comp_max_source be-both; assert_eq "$MAXSRC" "role" "and say where that came from"
 }
 
 test_a_per_app_cap_in_the_config_beats_the_role_default() {
   reset_limits
   PITCREW_BE_MAX_APP["beonly"]="512M"
   assert_eq "$(comp_max be-beonly)" "512M" "the app's own cap wins"
-  assert_eq "$(comp_max_source be-beonly)" "app" "reported as coming from the config"
+  comp_max_source be-beonly; assert_eq "$MAXSRC" "app" "reported as coming from the config"
   assert_eq "$(comp_max be-both)"   "2G"   "and does not leak to other apps"
   unset 'PITCREW_BE_MAX_APP[beonly]'
 }
@@ -51,7 +51,7 @@ test_a_machine_local_override_beats_both() {
   PITCREW_BE_MAX_APP["both"]="512M"
   save_limit be-both 3G
   assert_eq "$(comp_max be-both)" "3G" "the override wins over the config"
-  assert_eq "$(comp_max_source be-both)" "override" "and says so"
+  comp_max_source be-both; assert_eq "$MAXSRC" "override" "and says so"
   unset 'PITCREW_BE_MAX_APP[both]'
   reset_limits
 }
