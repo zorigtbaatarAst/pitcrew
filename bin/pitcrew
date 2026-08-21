@@ -87,6 +87,8 @@ Usage:
   pitcrew restart <app>...
   pitcrew status [--json]           one-shot dashboard, or machine-readable state
   pitcrew doctor [--json]           check the environment; --json exits non-zero if it is wrong
+  pitcrew diagnose [--json]         what is wrong with the STACK, why, and what
+                                     to do about it (exit 1 on a critical finding)
   pitcrew --version
   pitcrew limit [<component> <size|default>]
                                      per-component RAM caps (no args = show them)
@@ -206,6 +208,7 @@ case "${1:-watch}" in
   profile) shift;  cmd_profile "$@" ;;
   shell)   shift;  cmd_shell "$@" ;;
   doctor)  shift; if [ "${1:-}" = --json ]; then cmd_doctor_json; exit $?; else cmd_doctor; fi ;;
+  diagnose|diag) shift; cmd_diagnose "$@"; exit $? ;;
   urls)            cmd_urls ;;
   *)               die "unknown command '${1}' — try: pitcrew help" ;;
 esac

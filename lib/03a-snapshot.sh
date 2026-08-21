@@ -25,6 +25,11 @@ PITCREW_PAGESIZE=$(getconf PAGESIZE 2>/dev/null || echo 4096)
 PITCREW_CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 PITCREW_HEALTH_INTERVAL="${PITCREW_HEALTH_INTERVAL:-5}"
 PITCREW_DEP_INTERVAL="${PITCREW_DEP_INTERVAL:-10}"
+PITCREW_SWAP_INTERVAL="${PITCREW_SWAP_INTERVAL:-5}"
+# A component whose whole process tree stays at or under this much CPU counts
+# as idle. Not zero: a JVM at rest still ticks over on GC and timers, so a
+# threshold of 0 would mean nothing is ever idle.
+PITCREW_IDLE_CPU="${PITCREW_IDLE_CPU:-2}"
 
 declare -gA SNAP_PORT_OPEN=()          # port          -> 1 if listening on loopback
 declare -gA SNAP_STATE=()              # comp          -> up|starting|crashed|down
@@ -41,6 +46,8 @@ declare -gA SNAP_DEP=()                # dep container -> up|down
 declare -gA SNAP_SINCE=()              # comp -> epoch seconds its root process started
 declare -gA SNAP_EXIT=()               # comp -> exit status of the last run
 declare -gA SNAP_EXIT_AT=()            # comp -> epoch seconds it ended
+declare -gA SNAP_IDLE_SINCE=()         # comp -> epoch secs it last did real work
+declare -gA SNAP_IDLE=()               # comp -> seconds idle, "" when unmeasurable
 declare -gA _JIFF_PREV=()              # pid           -> CPU-time counter at previous sample
 declare -gA _JIFF_TREE_PREV=()         # comp          -> summed tree CPU time, previous sample
 declare -gA _JIFF_TREE_NOW=()          # comp          -> summed tree CPU time, this sample
@@ -490,6 +497,15 @@ _dep_poll() {
   return 0
 }
 
+# Swap on its own slow interval — see sys_swap in lib/00-platform.sh for why it
+# is not sampled per frame.
+_swap_poll() {
+  [ $(( SNAP_NOW_S - ${SNAP_SWAP_AT:-0} )) -ge "$PITCREW_SWAP_INTERVAL" ] || return 0
+  SNAP_SWAP_AT=$SNAP_NOW_S
+  sys_swap
+  return 0
+}
+
 # ── component states, derived from the arrays above ─────────────────────────
 _snapshot_states() {
   local c app role port pid st
@@ -516,6 +532,25 @@ _snapshot_states() {
     fi
     SNAP_STATE[$c]=$st
 
+    # How long this component has been doing nothing. "What can I safely stop?"
+    # is unanswerable without it, and the alternative — asking the user to
+    # remember which service they last touched — is not an answer.
+    #
+    # Only measurable once CPU% is (it is a delta, so the first sample in a
+    # process has no baseline), and only meaningful for something running. A
+    # one-shot command therefore reports "" rather than a confident zero.
+    if [ "$st" != up ] && [ "$st" != starting ]; then
+      unset "SNAP_IDLE_SINCE[$c]"
+      SNAP_IDLE[$c]=""
+    elif [ "${SNAP_CPU_OK:-0}" != 1 ]; then
+      SNAP_IDLE[$c]=""
+    else
+      if [ "${SNAP_CPU[$c]:-0}" -gt "$PITCREW_IDLE_CPU" ] || [ -z "${SNAP_IDLE_SINCE[$c]:-}" ]; then
+        SNAP_IDLE_SINCE[$c]=$SNAP_NOW_S
+      fi
+      SNAP_IDLE[$c]=$(( SNAP_NOW_S - SNAP_IDLE_SINCE[$c] ))
+    fi
+
     # "crashed" on its own tells you nothing actionable. The wrapper in
     # launch_process records how the run ended, so say so.
     unset "SNAP_EXIT[$c]" "SNAP_EXIT_AT[$c]"
@@ -534,6 +569,7 @@ snapshot() {
   esac
   _health_poll
   _dep_poll
+  _swap_poll
   _snapshot_states
   SNAP_READY=1
 }

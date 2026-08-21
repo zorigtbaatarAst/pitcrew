@@ -11,6 +11,41 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **`pitcrew diagnose`** — the tool now answers rather than only reporting.
+  Crashed components with their exit code and age, services stuck in `starting`
+  past the boot timeout, ports served by something else, **memory pressure that
+  names who is holding the memory**, caps that add up to more than the machine,
+  components approaching the cap that will kill them, dead dependencies, and
+  services that are up and quietly logging exceptions. `--json` for the same as
+  data; exit 1 on a critical finding, so CI can gate on it.
+- **A verdict, everywhere.** The first line of the live dashboard is now
+  `● all 6 components healthy` or `● be-worker crashed`, `d` opens the full
+  diagnostics panel without leaving it, `pitcrew status` ends with the same
+  line, and the desktop app leads with it. One implementation
+  (`lib/19-diag.sh`), four surfaces — they cannot disagree.
+- **Recovery candidates.** Quiet, long-running services are listed with what
+  stopping them returns and the evidence for calling them idle (`quiet 41m ·
+  up 3h20m`). The flow is diagnose → candidates → review → apply, and pitcrew
+  never picks its own victims: the last thing you get is a command, or a button
+  under a list of every component it will stop.
+- **Swap is measured** (`/proc/meminfo` on Linux, `vm.swapusage` on macOS), on
+  its own slow interval so the frame loop keeps its fork budget. RAM at 60%
+  with a gigabyte swapped is a worse place to be than RAM at 90% with none, and
+  nothing else in the tool could see the difference.
+- **A check registry** — `diag_register <fn>` — which is pitcrew's first
+  extension point. The built-in checks use exactly the call a plugin would, and
+  a check added anywhere shows up in the dashboard, `diagnose`, the JSON and the
+  desktop app without touching any of them.
+- **An Overview view in the desktop app**, opening on the verdict: machine
+  meters including swap, the findings worst-first with a one-click jump to the
+  relevant log, the recovery candidates behind a confirm dialog that names every
+  one of them, and a ranked "largest consumers" list. The header status light is
+  now driven by the verdict rather than the worst component state — every
+  component can be up while the machine is swapping, and a green dot over that
+  is a lie.
+- **A loading state.** The desktop app said nothing at all between launch and
+  the first sample, which at a 10-second interval is ten seconds of a window
+  that looks broken.
 - **YAML configs.** A project can now be described by a `pitcrew.yaml` instead
   of a `pitcrew.config.sh`: `apps: → <name>: → be:/fe: → cmd/port/health`, with
   `dir:` folding the repeated `cd $ROOT/... &&` out of every start command, and

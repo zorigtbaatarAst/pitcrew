@@ -289,7 +289,19 @@ status_table() {
   say "${GREY}${leg}${RESET}"
 }
 
-cmd_status() { banner; status_table; echo; }
+cmd_status() {
+  banner
+  status_table
+  # status_table has already taken the snapshot and scanned the logs, so the
+  # verdict costs nothing more than the checks themselves. One line, at the
+  # bottom, where the eye lands after reading the table.
+  diag_run
+  diag_verdict_line
+  say ""
+  say "  $R"
+  [ "$DIAG_N" -gt 0 ] && say "  ${C_FAINT}${DIAG_N} finding$([ "$DIAG_N" = 1 ] || printf 's') · ${RESET}${C_MUTED}pitcrew diagnose${RESET}"
+  echo
+}
 
 # The rail colour is the worst state across an app's roles: it is a
 # peripheral-vision signal, so it must report the thing that needs attention,

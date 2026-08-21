@@ -14,6 +14,7 @@ from .model import (
     nice_max,
     rgb,
 )
+from .model import plain as plain_text
 from .settings import SETTINGS_BY_KEY
 
 
@@ -359,6 +360,82 @@ class ShareChart(Gtk.DrawingArea):
             cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
             cr.move_to(left + 12, top + 8 * 17)
             cr.show_text(f"+{len(self._slices) - 8} more")
+
+
+class Meter(Gtk.Box):
+    """One labelled resource bar: what it is, how full, and the real figures.
+
+    A bar on its own is a proportion with no units, and a pair of figures on
+    their own makes you do the division. Both, on one line, is the whole point:
+    the bar is for the glance and the numbers are for the decision.
+    """
+
+    def __init__(self, label: str) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        name = Gtk.Label(label=label, xalign=0, width_chars=4)
+        name.add_css_class("caption")
+        name.add_css_class("dim-label")
+        self.append(name)
+
+        self._bar = Gtk.LevelBar(hexpand=True, valign=Gtk.Align.CENTER)
+        self._bar.set_min_value(0)
+        self._bar.set_max_value(100)
+        # The named offsets are what make a LevelBar change colour at a
+        # threshold instead of being a blue rectangle all the way to 100%.
+        self._bar.add_offset_value(Gtk.LEVEL_BAR_OFFSET_LOW, 70)
+        self._bar.add_offset_value(Gtk.LEVEL_BAR_OFFSET_HIGH, 88)
+        self._bar.add_offset_value(Gtk.LEVEL_BAR_OFFSET_FULL, 100)
+        self.append(self._bar)
+
+        self._value = Gtk.Label(xalign=1, width_chars=18)
+        self._value.add_css_class("caption")
+        self._value.add_css_class("numeric")
+        self.append(self._value)
+
+    def set(self, percent: float, text: str) -> None:
+        self._bar.set_value(max(0.0, min(100.0, float(percent))))
+        self._value.set_text(text)
+
+
+class FindingRow(Adw.ActionRow):
+    """One diagnostic finding, exactly as lib/19-diag.sh reported it.
+
+    Deliberately dumb: the severity, the title, the evidence and the suggested
+    command all arrive in the stream. Nothing here decides what is wrong or how
+    bad it is — that judgement lives in one place, in the shell, so the desktop
+    app and the terminal dashboard can never disagree about it.
+    """
+
+    ICONS = {
+        "crit": ("dialog-error-symbolic", "error"),
+        "warn": ("dialog-warning-symbolic", "warning"),
+        "info": ("dialog-information-symbolic", "accent"),
+    }
+
+    def __init__(self, finding: dict, on_logs=None) -> None:
+        super().__init__(title=plain_text(finding.get("title", "")),
+                         subtitle=plain_text(finding.get("detail", "")),
+                         use_markup=False)
+        icon_name, css = self.ICONS.get(finding.get("severity", "info"),
+                                        self.ICONS["info"])
+        icon = Gtk.Image(icon_name=icon_name, valign=Gtk.Align.CENTER)
+        icon.add_css_class(css)
+        self.add_prefix(icon)
+
+        # A finding that names a component and suggests looking at its log is
+        # one click away from that log — printing the command for someone to
+        # retype in another window would be a strange thing for a GUI to do.
+        scope, fix = finding.get("scope") or "", finding.get("fix") or ""
+        if scope and fix.startswith("pitcrew logs") and on_logs is not None:
+            button = Gtk.Button(label="Logs", valign=Gtk.Align.CENTER)
+            button.add_css_class("flat")
+            button.connect("clicked", lambda _b: on_logs(scope, False))
+            self.add_suffix(button)
+        elif fix:
+            hint = Gtk.Label(label=fix, valign=Gtk.Align.CENTER, selectable=True)
+            hint.add_css_class("caption")
+            hint.add_css_class("dim-label")
+            self.add_suffix(hint)
 
 
 class ComponentRow(Adw.ActionRow):

@@ -92,6 +92,85 @@ def empty_message(total: int) -> str:
     return (f"Nothing is running.\n{total} stopped component{plural} "
             f"hidden by “Show stopped components”.")
 
+# The verdict lib/19-diag.sh reached, as something to paint with. Same three
+# levels, same meaning, and the dot colours match the terminal dashboard's so
+# the two do not disagree about what amber means.
+VERDICT_STYLE = {
+    "ok":   ("#33d17a", "success"),
+    "warn": ("#f6d32d", "warning"),
+    "crit": ("#e01b24", "error"),
+}
+
+def verdict_of(state: dict) -> tuple[str, str, str]:
+    """(level, colour, headline) for the whole stack.
+
+    Read straight out of the stream. The GUI deliberately does not work this
+    out from the component list: that judgement is a product decision, it lives
+    in one place (the shell), and a second implementation here would drift from
+    it the first time either side gained a check.
+
+    Falls back to the component counts only when talking to a pitcrew too old
+    to send a verdict — a blank header is worse than an approximate one.
+    """
+    health = state.get("health") or {}
+    level = health.get("verdict")
+    if level in VERDICT_STYLE:
+        return level, VERDICT_STYLE[level][0], health.get("headline") or ""
+    summary = state.get("summary") or {}
+    if summary.get("crashed"):
+        return "crit", VERDICT_STYLE["crit"][0], f"{summary['crashed']} crashed"
+    if summary.get("starting"):
+        return "warn", VERDICT_STYLE["warn"][0], f"{summary['starting']} starting"
+    return "ok", VERDICT_STYLE["ok"][0], f"{summary.get('up', 0)} up"
+
+
+def findings_of(state: dict) -> list[dict]:
+    """Findings worst-first, which is the order they need to be read in."""
+    health = state.get("health") or {}
+    rank = {"crit": 0, "warn": 1, "info": 2}
+    return sorted(health.get("findings") or [],
+                  key=lambda f: rank.get(f.get("severity"), 3))
+
+
+def machine_meters(machine: dict, project_rss: float) -> list[tuple[str, float, str]]:
+    """(label, percent, figures) for the machine gauges.
+
+    Swap is included only when the machine has any: a row reading "0 B / 0 B"
+    on a swapless container is noise, and its absence is not a fact worth a
+    line of screen.
+    """
+    rows: list[tuple[str, float, str]] = []
+    total = machine.get("memTotal") or 0
+    used = machine.get("memUsed") or 0
+    if total:
+        rows.append(("RAM", used * 100 / total,
+                     f"{human_bytes(used)} / {human_bytes(total)}"))
+    rows.append(("CPU", machine.get("cpuPercent") or 0,
+                 f"{machine.get('cpuPercent') or 0}%"))
+    swap_total = machine.get("swapTotal") or 0
+    if swap_total:
+        swap_used = machine.get("swapUsed") or 0
+        rows.append(("SWAP", swap_used * 100 / swap_total,
+                     f"{human_bytes(swap_used)} / {human_bytes(swap_total)}"))
+    if total:
+        rows.append(("THIS", project_rss * 100 / total,
+                     f"{human_bytes(project_rss)} of this machine"))
+    return rows
+
+
+def top_consumers(components: list[dict], limit: int = 5) -> list[tuple[str, float, float]]:
+    """(name, bytes, share-of-this-project) for the biggest components.
+
+    "What is eating my RAM" is the question the Resources view answers with a
+    ring chart you have to hover; it deserves a plain ranked list too, because
+    reading an ordered list of numbers is faster than comparing arc lengths.
+    """
+    rows = [(c["name"], float(c.get("rss") or 0)) for c in components if c.get("rss")]
+    rows.sort(key=lambda row: row[1], reverse=True)
+    total = sum(value for _name, value in rows) or 1.0
+    return [(name, value, value * 100 / total) for name, value in rows[:limit]]
+
+
 def group_of(comp: dict, mode: str) -> tuple[str, str]:
     """(sort key, heading) for a component under the chosen grouping.
 

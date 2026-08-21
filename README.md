@@ -31,6 +31,7 @@ project.
 - [Two projects, one machine](#two-projects-one-machine)
 - [Starting in waves](#starting-in-waves)
 - [RAM caps](#ram-caps)
+- [Diagnostics](#diagnostics)
 - [Dashboard](#dashboard)
 - [Desktop app](#desktop-app)
 - [How it works](#how-it-works)
@@ -236,6 +237,8 @@ pitcrew stale [--restart]         apps whose code changed since they started
 pitcrew profile save <name> <targets...> | list | rm <name>
 pitcrew shell [<name>]            run a configured quick shell (shells:), foreground
 pitcrew doctor                    check the local environment
+pitcrew diagnose [--json]         what is wrong with the STACK, why, and what
+                                    to do about it (exit 1 on a critical finding)
 pitcrew init [<dir>] [--sh]       look at a project and write a pitcrew.yaml (--sh
                                     for the older bash format; default dir: $PWD)
 pitcrew check [<file>]            load a config and say what is wrong with it
@@ -410,15 +413,24 @@ renamed or dropped field fails there rather than in your dashboard.
 
 | | |
 |---|---|
-| top level | `schema` `project` `root` `collector` `at` `logDir` `errorPattern` `machine` `components` `deps` `summary` |
-| component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` |
-| machine | `memTotal` `memUsed` `cpuPercent` |
+| top level | `schema` `project` `root` `collector` `at` `logDir` `errorPattern` `machine` `components` `deps` `health` `summary` |
+| component | `name` `app` `role` `state` `port` `pid` `rss` `cpu` `errors` `exit` `limit` `limitSource` `url` `health` `since` `restarts` `idle` |
+| machine | `memTotal` `memUsed` `cpuPercent` `swapTotal` `swapUsed` |
 | dep | `name` `state` |
+| health | `verdict` `headline` `counts` `findings` `recoverable` |
+| finding | `severity` `id` `title` `detail` `fix` `scope` |
 | summary | `up` `starting` `crashed` `external` `down` |
 
 `schema` is **1**. Adding a field is backwards compatible and does not bump it;
 removing one or changing what it means does. Bytes are bytes, `cpu` is an
 integer percent, and anything unknown is `null` — never `0`.
+
+`health` carries the **verdict**, not just the facts: `verdict` is `ok`, `warn`
+or `crit`, `headline` is the one sentence worth reading, and `findings` is what
+led to it. That is there so a consumer never has to re-derive "is anything
+wrong" from the component list — that judgement lives in one place
+(`lib/19-diag.sh`), and a second implementation in another language would drift
+from it the first time either side gained a check.
 
 `pitcrew doctor --json` is the same idea for the environment, and is a **gate**:
 it exits non-zero when the caps do not fit the machine or ports clash with
@@ -518,6 +530,102 @@ goes through `pitcrew limit`, the same way adding a project goes through
 `pitcrew init`. Sixteen backends at the
 8G default commit 128G on a 31G box, at which point no cap ever fires and the
 kernel's OOM killer picks the victim instead — better to be told.
+
+## Diagnostics
+
+Every other view in pitcrew reports **facts**. `pitcrew diagnose` reports an
+**answer**.
+
+```bash
+pitcrew diagnose          # what is wrong, why, and what to do about it
+pitcrew diagnose --json   # the same as data; exits 1 on a critical finding
+```
+
+```
+  ● be-worker crashed
+
+  machine
+    RAM  ██████████████████░░░░░░ 23.9G / 31.0G  77%
+    CPU  ████░░░░░░░░░░░░░░░░░░░░ 18%
+    SWP  ███░░░░░░░░░░░░░░░░░░░░░ 1.1G / 7.9G
+    this project holds 11.4G
+
+  ✗ be-worker crashed
+    exited 3, 2m ago
+    → pitcrew logs be-worker
+
+  ⚠ memory pressure — 1.1G of swap in use
+    this project holds 11.4G of it — largest: be-sales 4.1G, be-api 3.2G
+    → pitcrew diagnose
+
+  ∙ 2 idle services are holding 5.3G
+    no CPU since pitcrew started watching, and up long enough to be forgotten
+    → pitcrew stop be-analytics be-ceo
+
+  recoverable — idle, and what stopping them returns
+
+    be-analytics             3.1G   quiet 41m · up 3h20m
+    be-ceo                   2.2G   quiet 52m · up 3h20m
+
+    total 5.3G
+    → pitcrew stop be-analytics be-ceo
+```
+
+The same verdict is the **first line of the live dashboard**, `d` opens this
+panel inside it, and it is the top of the desktop app's Overview. One
+implementation, three surfaces.
+
+### What it checks
+
+| | |
+|---|---|
+| `crashed` | a component that died, with its exit code and how long ago |
+| `stuck` | "starting" for longer than the boot timeout — not booting, stuck |
+| `external` | a port served by something pitcrew did not start (looks like success) |
+| `memory` | machine RAM or **swap** under pressure, naming who is holding it |
+| `caps-overcommit` | caps that add up to more than the machine — the OOM killer picks instead |
+| `cap-near` | a component approaching the cap that will kill it |
+| `dep-down` | a declared container that is not running |
+| `log-errors` | a service that is up and quietly logging exceptions |
+| `recoverable` | quiet, long-running services, and what stopping them returns |
+
+### It proposes, you decide
+
+The recovery flow is **diagnose → candidates → review → apply**, and there is no
+step where pitcrew picks its own victims. A candidate has to be *both* quiet
+(no CPU for every sample since pitcrew started watching) *and* old (up for at
+least `PITCREW_IDLE_MIN`, default 10 minutes) — and neither is proof that
+nothing needs it, which is exactly why the evidence is printed next to every
+name and the last thing you get is a command rather than an action.
+
+In the dashboard's `d` panel and the desktop app the apply step is a button,
+but it is a button under a list of every component it will stop, with what each
+is holding. Nothing is ever stopped that was not on screen when you decided.
+
+Thresholds are all tunable: `PITCREW_MEM_WARN_PCT` (85), `PITCREW_MEM_CRIT_PCT`
+(93), `PITCREW_CAP_NEAR_PCT` (90), `PITCREW_IDLE_MIN` (600s), `PITCREW_IDLE_CPU`
+(2%).
+
+### Adding a check
+
+A check is a function that reads the snapshot and reports what it finds. It
+registers itself, and the built-in checks use the same call any future plugin
+would — there is no privileged path:
+
+```bash
+# in your pitcrew.config.sh, or eventually in a plugin
+check_disk() {
+  [ "$(df --output=pcent "$ROOT" | tail -1 | tr -dc 0-9)" -lt 90 ] && return 0
+  diag_add warn disk-full "the checkout's disk is nearly full" \
+    "builds will fail in confusing ways" "df -h $ROOT" ""
+}
+diag_register check_disk
+```
+
+It then appears in the dashboard verdict, in `pitcrew diagnose`, in the JSON,
+and in the desktop app's Overview, without touching any of them. This is
+deliberately the only extension point in the codebase so far — see
+`lib/19-diag.sh` for why it stops there.
 
 ## Dashboard
 
@@ -661,9 +769,15 @@ colour of the number, which is where you look for it anyway.
 
 ## Desktop app
 
-`gui/` is a GTK4 / libadwaita front-end, laid out like GNOME System Monitor: a
-component list, a Resources view of live CPU and memory graphs, and a Projects
-view that manages the registry.
+`gui/` is a GTK4 / libadwaita front-end: an **Overview** that opens on the
+verdict — what is wrong, what is holding the memory, and what is safe to stop —
+then a component list, a Resources view of live CPU and memory graphs, and a
+Projects view that manages the registry.
+
+Every number and every judgement on screen arrives through `pitcrew json
+--watch`. The GUI never reads `/proc`, never runs `ps`, and never decides for
+itself whether the stack is healthy — it is a renderer for the state object,
+which is why it and the terminal dashboard cannot disagree.
 
 ```bash
 make install-gui     # symlink, plus whatever this OS uses to list apps

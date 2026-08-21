@@ -26,6 +26,7 @@ _json_cpu() { # SNAP_CPU is meaningless without a previous sample — say null, 
 cmd_json() {
   snapshot
   err_scan
+  diag_run
   local c app role port first=1 up=0 starting=0 crashed=0 external=0 down=0 st
   printf '{'
   # A version, because this object has consumers now: the desktop app, status
@@ -46,10 +47,12 @@ cmd_json() {
   # idea whether 18G of caps is generous or suicidal without knowing what the
   # box actually has — and pitcrew already measures this for its own gauges.
   sys_gauges
-  printf '"machine":{"memTotal":%s,"memUsed":%s,"cpuPercent":%s},' \
+  printf '"machine":{"memTotal":%s,"memUsed":%s,"cpuPercent":%s,"swapTotal":%s,"swapUsed":%s},' \
     "$(_json_num $(( ${SYS_MEM_TOTAL_KB:-0} * 1024 )))" \
     "$(_json_num $(( ${SYS_MEM_USED_KB:-0} * 1024 )))" \
-    "$(_json_num "${SYS_CPU_PCT:-0}")"
+    "$(_json_num "${SYS_CPU_PCT:-0}")" \
+    "$(_json_num $(( ${SYS_SWAP_TOTAL_KB:-0} * 1024 )))" \
+    "$(_json_num $(( ${SYS_SWAP_USED_KB:-0} * 1024 )))"
   printf '"at":%s,' "$(_json_num "${SNAP_NOW_S:-0}")"
   printf '"components":['
   for c in "${PITCREW_COMPS[@]}"; do
@@ -74,14 +77,15 @@ cmd_json() {
                   down) down=$((down+1));; esac
     [ $first = 1 ] || printf ','
     first=0
-    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s}' \
+    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s}' \
       "$(_json_str "$c")" "$(_json_str "$app")" "$(_json_str "$role")" "$(_json_str "$st")" \
       "$(_json_num "$port")" "$(_json_num "${SNAP_PID[$c]:-}")" \
       "$(_json_num "${SNAP_RSS[$c]:-}")" "$(_json_cpu "${SNAP_CPU[$c]:-}")" \
       "$(_json_num "${ERR_COUNT[$c]:-0}")" "$(_json_num "${SNAP_EXIT[$c]:-}")" \
       "$(_json_num "${COMP_MAX_B[$c]:-}")" "$(_json_str "$(comp_max_source "$c")")" \
       "$(_json_str "$url")" "$(_json_str "$health")" \
-      "$(_json_num "${SNAP_SINCE[$c]:-}")" "$(_json_num "${RESTART_N[$c]:-0}")"
+      "$(_json_num "${SNAP_SINCE[$c]:-}")" "$(_json_num "${RESTART_N[$c]:-0}")" \
+      "$(_json_num "${SNAP_IDLE[$c]:-}")"
   done
   printf '],"deps":['
   first=1
@@ -92,7 +96,13 @@ cmd_json() {
     first=0
     printf '{"name":%s,"state":%s}' "$(_json_str "$dep")" "$(_json_str "${SNAP_DEP[$dep]:-down}")"
   done
-  printf '],"summary":{"up":%d,"starting":%d,"crashed":%d,"external":%d,"down":%d}}\n' \
+  # The verdict, not just the facts. A reader that had to re-derive "is
+  # anything wrong" from the component list would be reimplementing
+  # lib/19-diag.sh in whatever language it happens to be written in — and would
+  # drift from what the dashboard says the moment either side changed.
+  printf '],"health":'
+  diag_json_health
+  printf ',"summary":{"up":%d,"starting":%d,"crashed":%d,"external":%d,"down":%d}}\n' \
     "$up" "$starting" "$crashed" "$external" "$down"
   err_close
   return 0

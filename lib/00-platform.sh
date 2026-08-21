@@ -208,6 +208,71 @@ sys_gauges_macos() {
   SYS_MEM_USED_KB=$((SYS_MEM_TOTAL_KB - avail_kb))
 }
 
+# ── swap ────────────────────────────────────────────────────────────────────
+# Swap is the clearest single signal that a development box is in trouble, and
+# the one number none of the other gauges can stand in for: RAM at 96% is
+# normal on a machine with a big page cache, RAM at 96% *with swap climbing* is
+# a laptop about to stutter for ten minutes. Diagnostics needs it (lib/19-diag)
+# and nothing else measures it.
+#
+# Sampled on its own slow interval rather than per frame. On Linux this is
+# fork-free either way; on macOS it costs one `sysctl`, and the frame loop's
+# two-fork budget is a promise. Swap does not move fast enough to care.
+SYS_SWAP_TOTAL_KB=0
+SYS_SWAP_USED_KB=0
+
+sys_swap_linux() {
+  # The Swap lines sit well past MemAvailable, so unlike sys_gauges_linux this
+  # reads the whole file — still one open/read/close, still no fork.
+  local k v total=0 free=0
+  local -a mi
+  mapfile -t mi < /proc/meminfo 2>/dev/null || return 0
+  for k in "${mi[@]}"; do
+    case "${k%%:*}" in
+      SwapTotal) v=${k#*:}; v=${v% kB}; total=${v// /} ;;
+      SwapFree)  v=${k#*:}; v=${v% kB}; free=${v// /}; break ;;   # SwapFree follows SwapTotal
+    esac
+  done
+  case "$total$free" in ''|*[!0-9]*) return 0 ;; esac
+  SYS_SWAP_TOTAL_KB=$total
+  SYS_SWAP_USED_KB=$(( total - free ))
+}
+
+# `sysctl -n vm.swapusage` → "total = 2048.00M  used = 1024.50M  free = ..."
+# The suffix is always M on every release that has this key, but read it rather
+# than assume it: a number silently off by 1024 is worse than no number.
+sys_swap_macos() {
+  local line total used
+  line=$(sysctl -n vm.swapusage 2>/dev/null) || return 0
+  [ -n "$line" ] || return 0
+  total=${line#*total = }; total=${total%% *}
+  used=${line#*used = };   used=${used%% *}
+  _swap_kb "$total"; SYS_SWAP_TOTAL_KB=$SWAP_KB
+  _swap_kb "$used";  SYS_SWAP_USED_KB=$SWAP_KB
+}
+
+_swap_kb() { # "1024.50M" → SWAP_KB (integer KiB; the fraction is noise here)
+  local v=$1 unit=${1: -1}
+  SWAP_KB=0
+  v=${v%[KMGkmg]}
+  v=${v%%.*}
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  case "$unit" in
+    K|k) SWAP_KB=$v ;;
+    M|m) SWAP_KB=$(( v * 1024 )) ;;
+    G|g) SWAP_KB=$(( v * 1024 * 1024 )) ;;
+    *)   SWAP_KB=$(( v / 1024 )) ;;               # a bare byte count
+  esac
+}
+
+sys_swap() {
+  case "$PITCREW_OS" in
+    linux)     sys_swap_linux 2>/dev/null ;;
+    macos|bsd) sys_swap_macos 2>/dev/null ;;
+  esac
+  return 0
+}
+
 sys_gauges() {
   SYS_CPU_PCT=${SYS_CPU_PCT:-0}; SYS_MEM_USED_KB=""; SYS_MEM_TOTAL_KB=""
   SYS_P_TOTAL=${SYS_P_TOTAL:-0}; SYS_P_IDLE=${SYS_P_IDLE:-0}

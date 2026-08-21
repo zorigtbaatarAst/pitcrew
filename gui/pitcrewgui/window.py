@@ -10,20 +10,25 @@ from .model import (
     SERIES_COLORS,
     STATE_STYLE,
     UNKNOWN_STYLE,
+    VERDICT_STYLE,
     Series,
     empty_message,
+    findings_of,
     group_is_idle,
     group_of,
     human_bytes,
+    machine_meters,
     plain,
     share_slices,
+    top_consumers,
+    verdict_of,
 )
 from .notify import CrashWatcher
 from .profiles import profile_names
 from .registry import current_project, declared_root, known_projects, project_file
 from .runner import Runner, Stream
 from .settings import SETTINGS_BY_KEY, Settings
-from .widgets import ComponentRow, Dot, Graph, ShareChart
+from .widgets import ComponentRow, Dot, FindingRow, Graph, Meter, ShareChart, human_age
 
 
 class Window(Adw.ApplicationWindow):
@@ -45,6 +50,10 @@ class Window(Adw.ApplicationWindow):
         self._crashes.enabled = settings["notify"] == "crash"
 
         self._stack = Adw.ViewStack()
+        # Overview leads because it answers the question you opened the window
+        # to ask. Components is a list, and a list is evidence, not an answer.
+        self._stack.add_titled_with_icon(
+            self._build_overview(), "overview", "Overview", "dialog-information-symbolic")
         self._stack.add_titled_with_icon(
             self._build_components(), "components", "Components", "view-list-symbolic")
         self._stack.add_titled_with_icon(
@@ -81,7 +90,7 @@ class Window(Adw.ApplicationWindow):
         self.set_content(self._toasts)
 
         self._install_shortcuts()
-        if settings["tab"] in ("components", "resources", "logs", "projects"):
+        if settings["tab"] in ("overview", "components", "resources", "logs", "projects"):
             self._stack.set_visible_child_name(settings["tab"])
         self._restart_stream()
 
@@ -103,6 +112,10 @@ class Window(Adw.ApplicationWindow):
         # Rebuilding the list is only correct-and-cheap because it happens when
         # the SHAPE changes, not every frame. This is that shape.
         self._layout_key: tuple | None = None
+        # Until the first sample lands there is nothing to draw and no error to
+        # report. An empty list looks identical to a broken app, and a stream
+        # interval of 10s means someone stares at it for ten seconds.
+        self._have_frame = False
         self._last_components: list[dict] = []
         self._last_log_dir: str | None = None
         self._machine_total = 0
@@ -119,7 +132,7 @@ class Window(Adw.ApplicationWindow):
         if app is None:
             return
 
-        views = ("components", "resources", "logs", "projects")
+        views = ("overview", "components", "resources", "logs", "projects")
         switch = Gio.SimpleAction.new("view", GLib.VariantType.new("s"))
         switch.connect("activate", lambda _a, t: self._stack.set_visible_child_name(t.get_string()))
         self.add_action(switch)
@@ -152,7 +165,7 @@ class Window(Adw.ApplicationWindow):
         page = Adw.PreferencesPage()
         group = Adw.PreferencesGroup(title="Shortcuts")
         for keys, what in (
-            ("Ctrl+1 … Ctrl+4", "Components / Resources / Logs / Projects"),
+            ("Ctrl+1 … Ctrl+5", "Overview / Components / Resources / Logs / Projects"),
             ("/  or  Ctrl+F", "Filter the log"),
             ("Ctrl+M", "RAM caps"),
             ("Ctrl+,", "Preferences"),
@@ -169,7 +182,7 @@ class Window(Adw.ApplicationWindow):
         width, height = self.get_default_size()
         self._settings["width"] = max(600, width)
         self._settings["height"] = max(400, height)
-        self._settings["tab"] = self._stack.get_visible_child_name() or "components"
+        self._settings["tab"] = self._stack.get_visible_child_name() or "overview"
         self._settings.save()
         return False        # let the window close
 
@@ -208,29 +221,29 @@ class Window(Adw.ApplicationWindow):
         self._running_dot = Dot(STATE_STYLE["down"][1], size=9)
         self._running_label = Gtk.Label(label="—")
         self._running_label.add_css_class("caption")
-        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER, margin_start=6)
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         box.append(self._running_dot)
         box.append(self._running_label)
-        box.set_tooltip_text("Components up / configured")
-        return box
+        button = Gtk.Button(child=box, valign=Gtk.Align.CENTER, margin_start=6)
+        button.add_css_class("flat")
+        button.set_tooltip_text("Components up / configured")
+        button.connect("clicked",
+                       lambda _b: self._stack.set_visible_child_name("overview"))
+        self._running_pill = button
+        return button
 
-    def _update_running_pill(self, components: list[dict], summary: dict) -> None:
+    def _update_running_pill(self, state: dict, components: list[dict], summary: dict) -> None:
         up = summary.get("up", 0) + summary.get("external", 0)
         starting = summary.get("starting", 0)
         crashed = summary.get("crashed", 0)
         total = len(components)
 
-        # Colour by the worst thing happening, not by the count: a crash matters
-        # more than the fact that nine others are fine.
-        if crashed:
-            state = "crashed"
-        elif starting:
-            state = "starting"
-        elif up:
-            state = "up"
-        else:
-            state = "down"
-        self._running_dot.set_color(STATE_STYLE[state][1])
+        # Coloured by the VERDICT, not by the worst component state. Those are
+        # not the same question: every component can be up while the machine is
+        # swapping, and a green dot over that is a lie the header has no excuse
+        # for telling when the stream carries the real answer.
+        level, colour, headline = verdict_of(state)
+        self._running_dot.set_color(colour)
 
         text = f"{up}/{total} up"
         if starting:
@@ -238,6 +251,11 @@ class Window(Adw.ApplicationWindow):
         if crashed:
             text += f" · {crashed} crashed"
         self._running_label.set_text(text)
+        self._running_pill.set_tooltip_text(
+            headline or "Components up / configured")
+        # Clicking the health indicator goes to the health page. Anything else
+        # would be a status light that resents being asked about itself.
+        self._running_pill.set_visible(True)
 
     def _build_menu_button(self) -> Gtk.Widget:
         menu = Gio.Menu()
@@ -275,6 +293,173 @@ class Window(Adw.ApplicationWindow):
             app.set_accels_for_action("win.preferences", ["<Primary>comma"])
         return Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
                               tooltip_text="Main menu")
+
+    # ── overview ────────────────────────────────────────────────────────────
+    def _build_overview(self) -> Gtk.Widget:
+        """Health, then resources, then what to do about it — in that order.
+
+        Everything on this page is read from the stream's `health` object, which
+        lib/19-diag.sh produced. None of it is worked out here: the desktop app
+        and the terminal dashboard show the same verdict because there is only
+        one thing computing it.
+        """
+        page = Adw.PreferencesPage()
+
+        # The verdict, as the first thing on the page and the largest thing on
+        # it. A status page rather than a row: this is a headline, not an item.
+        self._verdict_dot = Dot(VERDICT_STYLE["ok"][0], size=14)
+        self._verdict_title = Gtk.Label(xalign=0, wrap=True, hexpand=True)
+        self._verdict_title.add_css_class("title-3")
+        self._verdict_sub = Gtk.Label(xalign=0, wrap=True, label="waiting for the first sample…")
+        self._verdict_sub.add_css_class("dim-label")
+
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+        text.append(self._verdict_title)
+        text.append(self._verdict_sub)
+        head = Gtk.Box(spacing=12, margin_top=6, margin_bottom=6)
+        head.append(self._verdict_dot)
+        head.append(text)
+        self._verdict_group = Adw.PreferencesGroup()
+        self._verdict_group.add(head)
+        page.add(self._verdict_group)
+
+        # Resources: four one-line meters, because the question is "how much
+        # room is left" and that is a proportion with two numbers beside it.
+        self._meters_group = Adw.PreferencesGroup(title="Machine")
+        self._meter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                                  margin_top=6, margin_bottom=6)
+        self._meters: dict[str, Meter] = {}
+        self._meters_group.add(self._meter_box)
+        page.add(self._meters_group)
+
+        # Findings. Hidden entirely when there are none — an empty "Problems"
+        # group with a cheerful placeholder in it is a box that trains you to
+        # ignore the box.
+        self._findings_group = Adw.PreferencesGroup(
+            title="Needs attention", visible=False)
+        self._finding_rows: list[Adw.ActionRow] = []
+        page.add(self._findings_group)
+
+        # Recovery: the review step. Every candidate is named, with what it is
+        # holding and the evidence for calling it idle, and only then is there
+        # a button. pitcrew never picks victims off-screen.
+        self._recover_group = Adw.PreferencesGroup(
+            title="Recoverable",
+            description="Idle, and what stopping them gives back", visible=False)
+        self._recover_button = Gtk.Button(valign=Gtk.Align.CENTER)
+        self._recover_button.add_css_class("destructive-action")
+        self._recover_button.connect("clicked", lambda _b: self._stop_recoverable())
+        self._recover_group.set_header_suffix(self._recover_button)
+        self._recover_rows: list[Adw.ActionRow] = []
+        self._recoverable: list[str] = []
+        page.add(self._recover_group)
+
+        # And the plain ranked answer to "what is eating my RAM".
+        self._consumers_group = Adw.PreferencesGroup(title="Largest consumers", visible=False)
+        self._consumer_rows: list[Adw.ActionRow] = []
+        page.add(self._consumers_group)
+
+        return page
+
+    def _render_overview(self, state: dict) -> None:
+        components = state.get("components", [])
+        level, colour, headline = verdict_of(state)
+        self._verdict_dot.set_color(colour)
+        self._verdict_title.set_text(headline or "—")
+
+        health = state.get("health") or {}
+        counts = health.get("counts") or {}
+        summary = state.get("summary") or {}
+        bits = [f"{summary.get('up', 0)} of {len(components)} components up"]
+        for key, word in (("crit", "critical"), ("warn", "warning"), ("info", "note")):
+            n = counts.get(key) or 0
+            if n:
+                bits.append(f"{n} {word}{'s' if n != 1 else ''}")
+        self._verdict_sub.set_text("   ·   ".join(bits))
+
+        project_rss = sum(c.get("rss") or 0 for c in components)
+        for label, percent, figures in machine_meters(state.get("machine") or {}, project_rss):
+            meter = self._meters.get(label)
+            if meter is None:
+                meter = self._meters[label] = Meter(label)
+                self._meter_box.append(meter)
+            meter.set(percent, figures)
+
+        self._render_findings(findings_of(state))
+        self._render_recoverable(health.get("recoverable") or {}, components)
+        self._render_consumers(components)
+
+    def _render_findings(self, findings: list[dict]) -> None:
+        for row in self._finding_rows:
+            self._findings_group.remove(row)
+        self._finding_rows.clear()
+        for finding in findings:
+            row = FindingRow(finding, self._show_logs_for)
+            self._findings_group.add(row)
+            self._finding_rows.append(row)
+        self._findings_group.set_visible(bool(findings))
+
+    def _render_recoverable(self, recoverable: dict, components: list[dict]) -> None:
+        names = recoverable.get("components") or []
+        for row in self._recover_rows:
+            self._recover_group.remove(row)
+        self._recover_rows.clear()
+        self._recoverable = list(names)
+        if not names:
+            self._recover_group.set_visible(False)
+            return
+        by_name = {c["name"]: c for c in components}
+        for name in names:
+            comp = by_name.get(name, {})
+            idle = comp.get("idle")
+            bits = [human_bytes(comp.get("rss"))]
+            if idle is not None:
+                bits.append(f"quiet {human_age(idle)}")
+            if comp.get("since") and self._last_at:
+                bits.append(f"up {human_age(self._last_at - comp['since'])}")
+            row = Adw.ActionRow(title=plain(name), subtitle="   ·   ".join(bits),
+                                use_markup=False)
+            row.add_prefix(Dot(STATE_STYLE["up"][1]))
+            self._recover_group.add(row)
+            self._recover_rows.append(row)
+        self._recover_button.set_label(
+            f"Stop these {len(names)} · frees {human_bytes(recoverable.get('bytes') or 0)}")
+        self._recover_group.set_visible(True)
+
+    def _stop_recoverable(self) -> None:
+        """Apply, after the review. The dialog names every component again:
+        the list is right there on screen, but a destructive action confirmed
+        against a list you have to scroll back to is not really confirmed."""
+        if not self._recoverable:
+            return
+        names = list(self._recoverable)
+        dialog = Adw.AlertDialog(
+            heading=f"Stop {len(names)} idle components?",
+            body="\n".join(names) + "\n\nThey can be started again at any time.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("stop", "Stop them")
+        dialog.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.connect("response", lambda _d, response: (
+            self._run_action("stop", *names) if response == "stop" else None))
+        dialog.present(self)
+
+    def _render_consumers(self, components: list[dict]) -> None:
+        rows = top_consumers(components)
+        for row in self._consumer_rows:
+            self._consumers_group.remove(row)
+        self._consumer_rows.clear()
+        for name, value, share in rows:
+            row = Adw.ActionRow(title=plain(name), use_markup=False,
+                                subtitle=f"{share:.0f}% of what this project is holding")
+            label = Gtk.Label(label=human_bytes(value), valign=Gtk.Align.CENTER)
+            label.add_css_class("numeric")
+            row.add_suffix(label)
+            row.set_activatable(True)
+            row.connect("activated", lambda _r, n=name: self._show_detail(n))
+            self._consumers_group.add(row)
+            self._consumer_rows.append(row)
+        self._consumers_group.set_visible(bool(rows))
 
     def _build_components(self) -> Gtk.Widget:
         # Twelve rows plus six headings is a lot of scrolling to answer "is
@@ -603,6 +788,11 @@ class Window(Adw.ApplicationWindow):
         self._crashes.reset()
         self._series.clear()
         self._clear_lists()
+        self._have_frame = False
+        self._verdict_title.set_text("…")
+        self._verdict_sub.set_text("waiting for the first sample")
+        self._verdict_dot.set_color(STATE_STYLE["down"][1])
+        self._show_empty_state(0, 0)
 
         if not self._project:
             self._fail("No project selected — run `pitcrew init <dir>` or `pitcrew use <name>`.")
@@ -629,6 +819,7 @@ class Window(Adw.ApplicationWindow):
     # ── rendering ───────────────────────────────────────────────────────────
     def _on_state(self, state: dict) -> None:
         self._banner.set_revealed(False)
+        self._have_frame = True
         components = state.get("components", [])
         self._last_components = components
         # The stream's own clock, not the GUI's: uptime is measured against the
@@ -654,8 +845,9 @@ class Window(Adw.ApplicationWindow):
         self._render_deps(state.get("deps", []))
         self._render_graphs(components, history)
 
+        self._render_overview(state)
         summary = state.get("summary", {})
-        self._update_running_pill(components, summary)
+        self._update_running_pill(state, components, summary)
         self._update_machine_summary(components, state.get("machine") or {})
         counts = [f"{summary[k]} {k}" for k in ("up", "starting", "crashed", "down") if summary.get(k)]
         self.set_title(f"{state.get('project') or 'pitcrew'} — {' · '.join(counts)}")
@@ -734,7 +926,9 @@ class Window(Adw.ApplicationWindow):
         if shown:
             self._empty_group.set_visible(False)
             return
-        if needle:
+        if not self._have_frame:
+            self._empty_label.set_text("Waiting for the first sample from pitcrew…")
+        elif needle:
             self._empty_label.set_text(f"Nothing matches “{needle}”.")
         else:
             self._empty_label.set_text(empty_message(total))

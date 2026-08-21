@@ -42,6 +42,7 @@ cmd_watch() {
            [ "$n" -gt 0 ] && SEL=$(( (SEL + 1) % n )) ;;      # mark-and-advance
       l|L) log_view "${VIEW[$SEL]:-}" ;;
       e|E) err_view ;;
+      d|D) diag_view ;;
       o|O) case "$SORT" in name) SORT=state ;; state) SORT=ram ;; ram) SORT=cpu ;; *) SORT=name ;; esac ;;
       /)   filter_prompt ;;
       a|A) target_set
@@ -176,5 +177,94 @@ err_view() {
     printf '\033[H%b\033[0J' "$FIT"
     read_key 1 || continue
     case "$KEY" in q|Q|esc) break ;; esac
+  done
+}
+
+# The diagnostics panel: the same findings `pitcrew diagnose` prints, without
+# leaving the dashboard.
+#
+# The recovery flow is deliberately diagnose → candidates → review → apply, and
+# the review step is this screen: every component that would be stopped is
+# listed by name with what it is holding and how long it has been idle, and
+# only then does `s` act. A button that picks its own victims off-screen is the
+# one thing a developer cannot afford to trust — the whole value is knowing
+# exactly what is about to happen before it does.
+diag_view() {
+  local i sev shown rows W H frame line c
+  while true; do
+    term_size; W=$TERM_W; H=$TERM_H
+    rows=$((H - 2))
+    frame=""
+    diag_verdict_line
+    frame+="  $R"$'\e[K\n\e[K\n'; shown=2
+
+    # the machine, in one line rather than the three `diagnose` can afford
+    if [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ]; then
+      local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB ))
+      human $(( SYS_MEM_USED_KB * 1024 )); local usedh=$HUMAN
+      human $(( SYS_MEM_TOTAL_KB * 1024 )); local totalh=$HUMAN
+      pct_color "$mpct"; bar "$mpct" 16; local mbar=$R
+      pct_color "${SYS_CPU_PCT:-0}"; bar "${SYS_CPU_PCT:-0}" 16; local cbar=$R
+      printf -v line '  %bRAM%b %s %b%s%b%b/%s%b   %bCPU%b %s %b%s%%%b' \
+        "$C_MUTED" "$RESET" "$mbar" "$C_TEXT" "$usedh" "$RESET" "$C_MUTED" "$totalh" "$RESET" \
+        "$C_MUTED" "$RESET" "$cbar" "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET"
+      frame+="$line"$'\e[K\n'; shown=$((shown + 1))
+      if [ "${SYS_SWAP_USED_KB:-0}" -gt 0 ]; then
+        human $(( SYS_SWAP_USED_KB * 1024 ))
+        frame+="  ${C_MUTED}SWP${RESET} ${C_WARN}${HUMAN} in use${RESET}"$'\e[K\n'
+        shown=$((shown + 1))
+      fi
+      frame+=$'\e[K\n'; shown=$((shown + 1))
+    fi
+
+    if [ "$DIAG_N" -eq 0 ]; then
+      frame+="  ${C_OK}nothing needs your attention${RESET}"$'\e[K\n'
+      shown=$((shown + 1))
+    fi
+    for sev in crit warn info; do
+      for i in "${!DIAG_SEV[@]}"; do
+        [ "${DIAG_SEV[i]}" = "$sev" ] || continue
+        [ $shown -ge $((rows - 4)) ] && break 2
+        diag_icon "$sev"
+        printf -v line '  %s %b%s%b' "$R" "$C_TEXT$BOLD" "${DIAG_TITLE[i]}" "$RESET"
+        frame+="${line:0:$((W + 60))}"$'\e[K\n'; shown=$((shown + 1))
+        frame+="      ${C_MUTED}${DIAG_DETAIL[i]:0:$((W - 8))}${RESET}"$'\e[K\n'; shown=$((shown + 1))
+      done
+    done
+
+    if [ ${#DIAG_IDLE_COMPS[@]} -gt 0 ] && [ $shown -lt $((rows - 4)) ]; then
+      human "$DIAG_IDLE_BYTES"
+      frame+=$'\e[K\n'"  ${BOLD}recoverable${RESET} ${C_MUTED}— stopping these returns ${RESET}${C_ACCENT}${HUMAN}${RESET}"$'\e[K\n'
+      shown=$((shown + 2))
+      for c in "${DIAG_IDLE_COMPS[@]}"; do
+        [ $shown -ge $((rows - 2)) ] && break
+        human "${SNAP_RSS[$c]:-0}"
+        printf -v line '    %b%-22s%b %b%7s%b   %b%s%b' \
+          "$C_TEXT" "$c" "$RESET" "$C_ACCENT" "$HUMAN" "$RESET" \
+          "$C_MUTED" "${DIAG_IDLE_WHY[$c]:-}" "$RESET"
+        frame+="$line"$'\e[K\n'; shown=$((shown + 1))
+      done
+    fi
+
+    while [ "$shown" -lt "$rows" ]; do frame+=$'\e[K\n'; shown=$((shown + 1)); done
+    line=" ${C_CAP}${C_TEXT} q ${RESET}${C_MUTED} back${RESET}  "
+    [ ${#DIAG_IDLE_COMPS[@]} -gt 0 ] && \
+      line+="${C_CAP}${C_TEXT} s ${RESET}${C_MUTED} stop the ${#DIAG_IDLE_COMPS[@]} idle above${RESET}  "
+    line+="${C_CAP}${C_TEXT} r ${RESET}${C_MUTED} re-check${RESET}"
+    frame+="$line"$'\e[K'
+    fit_frame "$frame" "$W" "$H"
+    printf '\033[H%b\033[0J' "$FIT"
+
+    read_key 1 || { collect_frame; continue; }
+    case "$KEY" in
+      q|Q|esc) break ;;
+      r|R) collect_frame ;;
+      s|S) [ ${#DIAG_IDLE_COMPS[@]} -gt 0 ] || continue
+           local stopped=("${DIAG_IDLE_COMPS[@]}")
+           for c in "${stopped[@]}"; do stop_comp "$c" >/dev/null 2>&1; done
+           collect_frame
+           toast "${GREY}■${RESET} stopped ${BOLD}${stopped[*]}${RESET}"
+           break ;;
+    esac
   done
 }

@@ -209,6 +209,115 @@ print(pgui.empty_message(12).replace(chr(10), ' '))
   assert_match "$(printf '%s' "$out" | sed -n 3p)" '12 stopped components hidden' "plural, and says why"
 }
 
+# ── the overview: the verdict, and where it comes from ──────────────────────
+
+test_the_verdict_is_read_from_the_stream_not_re_derived() {
+  gui_available || return 0
+  # The GUI must not decide for itself whether the stack is healthy: that
+  # judgement lives in lib/19-diag.sh so the terminal and the desktop app can
+  # never disagree about it. Here the components are all fine and the verdict
+  # says otherwise — the verdict has to win.
+  local out; out=$(_settings_drive "
+state = {'health': {'verdict': 'crit', 'headline': 'memory pressure'},
+         'summary': {'up': 4, 'crashed': 0}}
+print(' '.join(str(x) for x in pgui.verdict_of(state)))
+")
+  assert_match "$out" '^crit ' "the stream's verdict, not one inferred from states"
+  assert_match "$out" 'memory pressure' "and its headline"
+}
+
+test_an_old_pitcrew_without_a_verdict_still_gets_a_header() {
+  gui_available || return 0
+  # The stream gained `health` after the GUI shipped. A blank status light is
+  # worse than an approximate one, so fall back to the counts.
+  local out; out=$(_settings_drive "
+print(pgui.verdict_of({'summary': {'up': 2, 'crashed': 1}})[0])
+print(pgui.verdict_of({'summary': {'up': 2, 'starting': 1}})[0])
+print(pgui.verdict_of({'summary': {'up': 2}})[0])
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "crit" "a crash is critical"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "warn" "something starting is not settled"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "ok"   "otherwise fine"
+}
+
+test_findings_are_ordered_worst_first() {
+  gui_available || return 0
+  local out; out=$(_settings_drive "
+state = {'health': {'findings': [
+  {'severity': 'info', 'title': 'i'},
+  {'severity': 'crit', 'title': 'c'},
+  {'severity': 'warn', 'title': 'w'}]}}
+print(''.join(f['title'] for f in pgui.findings_of(state)))
+")
+  assert_eq "$out" "cwi" "critical, then warning, then note"
+}
+
+test_the_machine_meters_omit_what_the_machine_does_not_have() {
+  gui_available || return 0
+  # A swap row reading 0 B / 0 B on a swapless container is noise, and the
+  # absence of swap is not a fact worth a line of screen.
+  local out; out=$(_settings_drive "
+full = {'memTotal': 1000, 'memUsed': 500, 'cpuPercent': 20, 'swapTotal': 100, 'swapUsed': 50}
+print(' '.join(r[0] for r in pgui.machine_meters(full, 250)))
+print(' '.join(r[0] for r in pgui.machine_meters({'cpuPercent': 5}, 0)))
+print(int(pgui.machine_meters(full, 250)[0][1]))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "RAM CPU SWAP THIS" "every gauge it can measure"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "CPU" "and only those"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "50" "percentages are of the machine"
+}
+
+test_the_largest_consumers_are_ranked_and_shared_out() {
+  gui_available || return 0
+  local out; out=$(_settings_drive "
+comps = [{'name': 'small', 'rss': 100}, {'name': 'big', 'rss': 300},
+         {'name': 'off', 'rss': None}]
+rows = pgui.top_consumers(comps)
+print(' '.join(r[0] for r in rows))
+print(int(rows[0][2]))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "big small" "biggest first, nothing for what is not running"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "75" "share is of what the project holds"
+}
+
+test_the_whole_window_renders_a_frame_without_a_project() {
+  gui_available || return 0
+  # A smoke test over the real widget tree: every view is built, then one
+  # synthetic frame is pushed through the same path the stream uses. A typo in
+  # a rarely-taken render branch is otherwise only found by opening the app.
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+state = {
+  'project': 'demo', 'at': 1000, 'logDir': '/tmp', 'errorPattern': 'ERROR',
+  'machine': {'memTotal': 16 * 1024**3, 'memUsed': 15 * 1024**3,
+              'cpuPercent': 40, 'swapTotal': 2 * 1024**3, 'swapUsed': 1024**3},
+  'components': [
+    {'name': 'be-api', 'app': 'api', 'role': 'be', 'state': 'up', 'rss': 2 * 1024**3,
+     'cpu': 1, 'errors': 0, 'port': 8080, 'limit': 4 * 1024**3, 'since': 100, 'idle': 900},
+    {'name': 'be-worker', 'app': 'worker', 'role': 'be', 'state': 'crashed', 'rss': None,
+     'cpu': None, 'errors': 2, 'exit': 1, 'since': None}],
+  'deps': [{'name': 'pg', 'state': 'down'}],
+  'health': {'verdict': 'crit', 'headline': 'be-worker crashed',
+             'counts': {'crit': 1, 'warn': 1, 'info': 0},
+             'findings': [
+               {'severity': 'crit', 'id': 'crashed', 'title': 'be-worker crashed',
+                'detail': 'exited 1', 'fix': 'pitcrew logs be-worker', 'scope': 'be-worker'},
+               {'severity': 'warn', 'id': 'memory', 'title': 'memory pressure',
+                'detail': 'lots in use', 'fix': 'pitcrew diagnose', 'scope': ''}],
+             'recoverable': {'components': ['be-api'], 'bytes': 2 * 1024**3}},
+  'summary': {'up': 1, 'starting': 0, 'crashed': 1, 'external': 0, 'down': 0}}
+w._on_state(state)
+print(w._verdict_title.get_text())
+print(len(w._finding_rows), len(w._recover_rows), len(w._consumer_rows))
+print('overview' in [w._stack.get_visible_child_name() or '', 'overview'])
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "be-worker crashed" "the headline is the verdict"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "2 1 1" "findings, recovery candidates, consumers"
+}
+
 # ── project registry and config editing ─────────────────────────────────────
 
 test_the_config_editor_follows_the_source_indirection() {

@@ -211,6 +211,21 @@ theme_load() {
 }
 theme_load
 
+# Seconds as something a person reads at a glance. Sets DUR rather than
+# printing it: this is called from the frame loop, where a `$( )` is a fork.
+dur_human() { # $1 seconds → DUR ("42s", "7m", "3h20m", "2d")
+  local s=$1
+  case "$s" in ''|*[!0-9]*) DUR="" ; return 0 ;; esac
+  if   [ "$s" -lt 60 ];    then DUR="${s}s"
+  elif [ "$s" -lt 3600 ];  then DUR="$(( s / 60 ))m"
+  elif [ "$s" -lt 86400 ]; then
+    local h=$(( s / 3600 )) m=$(( s % 3600 / 60 ))
+    if [ "$m" -gt 0 ]; then DUR="${h}h${m}m"; else DUR="${h}h"; fi
+  else DUR="$(( s / 86400 ))d"
+  fi
+  return 0
+}
+
 say()  { printf '%b\n' "$*"; }
 hr()   { printf '%b\n' "${GREY}──────────────────────────────────────────────────────────────────────${RESET}"; }
 die()  { say "${RED}✗${RESET} $*" >&2; exit 1; }

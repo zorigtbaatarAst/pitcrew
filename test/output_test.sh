@@ -31,17 +31,27 @@ print(" ".join(sorted(d["components"][0])))
 print(" ".join(sorted(d["summary"])))
 print(" ".join(sorted(d["machine"])))
 print(" ".join(sorted(d["deps"][0])) if d["deps"] else "name state")
-print(d["schema"])')
+print(d["schema"])
+print(" ".join(sorted(d["health"])))
+print(" ".join(sorted(d["health"]["counts"])))
+print(" ".join(sorted(d["health"]["recoverable"])))')
 
   assert_eq "$(printf '%s' "$keys" | sed -n 1p)" \
-    "at collector components deps errorPattern logDir machine profileDir project root schema summary" "top level"
+    "at collector components deps errorPattern health logDir machine profileDir project root schema summary" "top level"
   assert_eq "$(printf '%s' "$keys" | sed -n 2p)" \
-    "app cpu errors exit health limit limitSource name pid port restarts role rss since state url" "per component"
+    "app cpu errors exit health idle limit limitSource name pid port restarts role rss since state url" "per component"
   assert_eq "$(printf '%s' "$keys" | sed -n 3p)" \
     "crashed down external starting up" "summary counts every state"
-  assert_eq "$(printf '%s' "$keys" | sed -n 4p)" "cpuPercent memTotal memUsed" "machine gauges"
+  assert_eq "$(printf '%s' "$keys" | sed -n 4p)" \
+    "cpuPercent memTotal memUsed swapTotal swapUsed" "machine gauges"
   assert_eq "$(printf '%s' "$keys" | sed -n 5p)" "name state" "per dependency"
   assert_eq "$(printf '%s' "$keys" | sed -n 6p)" "1" "schema version is declared"
+  # The verdict travels with the facts. A GUI that had to work out "is anything
+  # wrong" from the component list would be reimplementing lib/19-diag.sh.
+  assert_eq "$(printf '%s' "$keys" | sed -n 7p)" \
+    "counts findings headline recoverable verdict" "health object"
+  assert_eq "$(printf '%s' "$keys" | sed -n 8p)" "crit info warn" "finding counts by severity"
+  assert_eq "$(printf '%s' "$keys" | sed -n 9p)" "bytes components" "what stopping the idle ones returns"
 }
 
 test_json_reports_the_real_component_model() {

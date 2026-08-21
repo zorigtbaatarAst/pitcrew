@@ -31,6 +31,7 @@ jobs:
             ./bin/pitcrew -C "$fix" doctor
             ./bin/pitcrew -C "$fix" status --json
             ./bin/pitcrew check "$fix"
+            ./bin/pitcrew -C "$fix" diagnose --json
           done
           ./bin/pitcrew check examples/pitcrew.yaml
 
@@ -63,6 +64,7 @@ jobs:
             ./bin/pitcrew -C "$fix" doctor
             ./bin/pitcrew -C "$fix" status --json
             ./bin/pitcrew check "$fix"
+            ./bin/pitcrew -C "$fix" diagnose --json
           done
           ./bin/pitcrew check examples/pitcrew.yaml
 

@@ -57,7 +57,8 @@ SETTINGS = (
     # rather than pulling in GSettings for three integers.
     Setting("width", 900, (600, 5000), "Remembered window width"),
     Setting("height", 680, (400, 4000), "Remembered window height"),
-    Setting("tab", "components", ["components", "resources", "logs", "projects"],
+    Setting("tab", "overview",
+            ["overview", "components", "resources", "logs", "projects"],
             "The view to open on"),
 )
 SETTINGS_BY_KEY = {setting.key: setting for setting in SETTINGS}

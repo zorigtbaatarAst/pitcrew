@@ -35,6 +35,9 @@ collect_frame() {
     hist_push "$c" "${SNAP_RSS[$c]:-0}" "${SNAP_CPU[$c]:-0}"
   done
   hist_push_sys "${SYS_CPU_PCT:-0}" "${SYS_MEM_USED_KB:-0}"
+  # The verdict is part of a frame's data, not something build_frame works out
+  # while drawing. Fork-free like everything else here — see lib/19-diag.sh.
+  diag_run
   return 0
 }
 
@@ -87,7 +90,28 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     # the cursor wrapped — and a single wrong wrap scrolls the whole frame.
     rule_len=$((W - 14 - ${#PITCREW_PROJECT_NAME} - ${#ts})); [ $rule_len -lt 0 ] && rule_len=0
     r=""; while [ ${#r} -lt $rule_len ]; do r+="─"; done
-    frame+="$line$r $ts ──$RESET$gap"; ln=$((ln + gapn))
+    frame+="$line$r $ts ──$RESET"$'\e[K\n'; ln=$((ln + 1))
+
+    # ── the verdict ──
+    # The first line under the title, because it is the first question: can I
+    # go back to what I was doing? Everything else on this screen is evidence
+    # for it. A count of what is up is not an answer — "9 up · 1 crashed" still
+    # leaves the reading to you, and the one that matters is the 1.
+    if [ $micro = 0 ]; then
+      diag_verdict_line
+      local vline=$R vhint="" vwidth=$(( 5 + ${#DIAG_HEADLINE} ))
+      if [ "$DIAG_N" -gt 0 ]; then
+        printf -v vhint '   %b%b d %b%b for details%b' \
+          "$C_CAP" "$C_TEXT" "$RESET" "$C_FAINT" "$RESET"
+        [ $(( vwidth + 16 )) -gt "$W" ] && vhint=""
+      fi
+      frame+="  $vline$vhint"$'\e[K\n'; ln=$((ln + 1))
+    fi
+    # The title and the verdict are lines of their own now, so what is left of
+    # the gap is only the blank spacer under them: one row when there is room,
+    # none when the window is short. Getting this count wrong does not look
+    # wrong — it silently pushes the pinned footer off the bottom of the frame.
+    if [ "$gapn" -gt 1 ]; then frame+=$'\e[K\n'; ln=$((ln + 1)); fi
 
     # ── system gauges, as history rather than a single instant ──
     # Scale floors of 100 and total-RAM make these absolute rather than
@@ -369,7 +393,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
     line=" "
     local kc cap lbl kvis=1 addw
     for kc in "↑↓:select" "␣:mark" "a:start" "s:stop" "r:restart" "⏎:tree" \
-            "/:filter" "o:sort" "l:logs" "e:errors" "p:project" "m:menu" "q:quit"; do
+            "d:diagnose" "/:filter" "o:sort" "l:logs" "e:errors" "p:project" "m:menu" "q:quit"; do
       cap=${kc%%:*}; lbl=${kc#*:}
       addw=$(( ${#cap} + 2 + 1 + ${#lbl} + 2 ))     # " cap " + " " + label + "  "
       [ $(( kvis + addw )) -gt "$W" ] && break
