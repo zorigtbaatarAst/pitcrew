@@ -54,8 +54,8 @@ row.finding-info { border-left-color: alpha(@accent_color, 0.55); }
 
    A chip, not a badge: the outline is what separates "a mode is on, press this
    to leave" from "something is wrong here". Tinted fill alone read as a
-   warning on any theme whose accent sits near amber — which is most of the
-   warm ones, and this app spends amber on real warnings elsewhere. */
+   warning on any theme whose accent sits near amber, which is most of the warm
+   ones, and this app spends amber on real warnings elsewhere. */
 .zen-pill {
   background: alpha(@accent_bg_color, 0.14);
   box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.40);
@@ -70,12 +70,12 @@ row.finding-info { border-left-color: alpha(@accent_color, 0.55); }
 }
 .zen-pill:active { background: alpha(@accent_bg_color, 0.40); }
 
-/* The count is the honest part of the chip — how much is being kept from you —
+/* The count is the honest part of the chip (how much is being kept from you),
    so it stays legible while sitting a step behind the name that never changes. */
 .zen-pill-count { opacity: 0.72; font-feature-settings: "tnum"; }
 
-/* The ✕ is an affordance, not an action of its own: the whole chip is the
-   button. Quiet until the pointer says the chip is about to be pressed. */
+/* The close mark is an affordance, not an action of its own: the whole chip is
+   the button. Quiet until the pointer says it is about to be pressed. */
 .zen-pill-close { opacity: 0.55; }
 .zen-pill:hover .zen-pill-close { opacity: 1; }
 """

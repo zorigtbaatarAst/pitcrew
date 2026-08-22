@@ -31,8 +31,39 @@ for _candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/pyth
   if "$_candidate" -c 'import gi, cairo' >/dev/null 2>&1; then PY_WITH_GI=$_candidate; break; fi
 done
 
+# `import gi, cairo` is not what these tests need. They need the PACKAGE to
+# import, which additionally wants the Gtk, Adw, Gdk and Pango typelibs — a
+# separate install from the Python bindings, and separately missable.
+#
+# Probing the narrower thing is how macOS came to report thirty-nine failures
+# all reading "expected [...] got []": every drive below died on the same
+# import, `2>/dev/null` threw away the one line that said which, and the run
+# was a wall of red that named no cause. Ask the real question once, keep the
+# error, and let test_the_gui_package_imports_at_all be the single thing that
+# reports it.
+GUI_IMPORT_ERR=""
+if [ -n "$PY_WITH_GI" ] && [ -d "$GUI_DIR/pitcrewgui" ]; then
+  GUI_IMPORT_ERR=$("$PY_WITH_GI" -c "
+import sys
+sys.path.insert(0, '$GUI_DIR')
+import gi
+gi.require_version('Gtk', '4.0')
+import pitcrewgui.window, pitcrewgui.app, pitcrewgui.widgets
+" 2>&1) && GUI_IMPORT_ERR=""
+fi
+
 gui_available() {
-  [ -d "$GUI_DIR/pitcrewgui" ] && [ -n "$PY_WITH_GI" ]
+  [ -d "$GUI_DIR/pitcrewgui" ] && [ -n "$PY_WITH_GI" ] && [ -z "$GUI_IMPORT_ERR" ]
+}
+
+test_the_gui_package_imports_at_all() {
+  # The guard on every other test in this file, stated once as an assertion.
+  # Without it a broken environment is indistinguishable from a broken app:
+  # both come back as an empty string, in every test, with no reason attached.
+  [ -d "$GUI_DIR/pitcrewgui" ] && [ -n "$PY_WITH_GI" ] || return 0
+  [ -z "$GUI_IMPORT_ERR" ] || _t_bad "the GUI package will not import under $PY_WITH_GI, so every
+      other test in this file skipped. The interpreter said:
+      $(printf '%s' "$GUI_IMPORT_ERR" | tail -1)"
 }
 
 # Anything that BUILDS a widget needs a display, not just the bindings: a
@@ -65,7 +96,7 @@ pgui.ansi = _ansi_mod
 "
 
 _drive() { # $1 = python body, with Stream / Counting / GLib in scope
-  "$PY_WITH_GI" -c "
+  _py "
 import sys
 import gi
 gi.require_version('Gtk', '4.0')
@@ -93,7 +124,7 @@ def spin(ms):
     GLib.timeout_add(ms, lambda: (loop.quit(), False)[1])
     loop.run()
 $1
-" 2>/dev/null
+"
 }
 
 test_reader_stops_at_eof_instead_of_spinning() {
@@ -369,7 +400,7 @@ print(len(calls))
 # ── settings and grouping ───────────────────────────────────────────────────
 
 _settings_drive() { # $1 = python body, with Settings/SETTINGS_BY_KEY/group_of in scope
-  "$PY_WITH_GI" -c "
+  _py "
 import os, pathlib, sys
 import gi
 gi.require_version('Gtk', '4.0')
@@ -377,7 +408,22 @@ $_PRELUDE
 Settings, SETTINGS, SETTINGS_BY_KEY = pgui.Settings, pgui.SETTINGS, pgui.SETTINGS_BY_KEY
 group_of = pgui.group_of
 $1
-" 2>/dev/null
+"
+}
+
+# Run a program and hand back its stdout — but say what went wrong when there
+# is no stdout to hand back. GTK aborts rather than raises on a good few
+# environment problems, so "the assertion got an empty string" is the normal
+# shape of a failure here, and it is worth nothing on its own.
+_py() { # $1 = python program → its stdout; its stderr onto the run's stderr
+  local err out rc
+  err=$(mktemp)
+  out=$("$PY_WITH_GI" -c "$1" 2>"$err"); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '      \033[90mpython exited %d: %s\033[0m\n' "$rc" "$(tail -1 "$err")" >&2
+  fi
+  rm -f "$err"
+  printf '%s' "$out"
 }
 
 test_settings_round_trip_through_the_house_file_format() {
@@ -1390,6 +1436,48 @@ print(w._empty_label.get_text())
 ")
   assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "the empty state is shown"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "Nothing needs you." "and it is an answer, not an error"
+}
+
+test_zen_never_folds_away_the_list_it_just_built() {
+  gui_display || return 0
+  # The trap this guards: auto-collapse asks "is anything in this group up?"
+  # and answers no for a list of stopped services — which is exactly the list
+  # zen builds. Zen also drops the headings, so nothing was left to expand it
+  # with, and the Components page went blank with "2/12 up" in the header.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+def comp(name, app, state):
+    return {'name': name, 'app': app, 'role': name[:2], 'state': state, 'rss': 10,
+            'cpu': 0, 'errors': 0, 'since': 1}
+comps = [comp('be-a', 'a', 'up'), comp('fe-a', 'a', 'up')]
+for i in range(5):
+    comps += [comp('be-%d' % i, str(i), 'down'), comp('fe-%d' % i, str(i), 'down')]
+w._on_state({
+  'at': 1000, 'machine': {'memTotal': 100, 'memUsed': 10, 'cpuPercent': 1},
+  'components': comps, 'deps': [{'name': 'pg', 'state': 'up'}],
+  'summary': {'up': 2, 'down': 10},
+  'health': {'verdict': 'ok', 'headline': 'all good', 'deep': False,
+             'counts': {}, 'findings': [], 'recoverable': {}}})
+w._toggle_zen()
+rows = w._group_rows.get('', [])
+print(len(rows), sum(1 for r in rows if r.get_visible()))
+print(list(w._group_toggles))
+print(w._zen_count.get_text(), w._zen_count.get_visible())
+# and with nothing left to show, the page says so rather than going blank
+w._settings['stopped'] = 'hide'
+w._on_state(w._last_state)
+print(repr(w._empty_label.get_text()), w._empty_group.get_visible())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "10 10" \
+    "every row zen kept is a row you can see"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "[]" \
+    "and there is no expander in zen, which is what made the fold unescapable"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "2 hidden True" \
+    "the pill says what zen is holding back"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "'Nothing needs you.' True" \
+    "an empty zen list is an answer, not a blank page"
 }
 
 test_zen_never_hides_the_way_out_of_zen() {

@@ -103,7 +103,13 @@ cmd_json() {
   # The machine itself. A reader plotting RAM against a per-component cap has no
   # idea whether 18G of caps is generous or suicidal without knowing what the
   # box actually has — and pitcrew already measures this for its own gauges.
-  sys_gauges
+  #
+  # Measures it in `snapshot`, which is the point: both collectors end with a
+  # sys_gauges call, so reading them again here was a second measurement of
+  # numbers taken microseconds earlier. Free on Linux, where the gauges come
+  # out of /proc/meminfo — but macOS has no such file and pays a `vm_stat`
+  # fork for each one, so `json --watch` forked FOUR times an object where the
+  # frame loop it feeds forks three, and every macOS CI run went red on it.
   local m_total m_used m_cpu m_swaptotal m_swapused m_at
   _json_num $(( ${SYS_MEM_TOTAL_KB:-0} * 1024 ));  m_total=$JNUM
   _json_num $(( ${SYS_MEM_USED_KB:-0} * 1024 ));   m_used=$JNUM

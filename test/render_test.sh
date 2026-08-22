@@ -431,6 +431,24 @@ _all_up() { local c; for c in "${PITCREW_COMPS[@]}"; do SNAP_STATE[$c]=up; done;
 # something that needs you and the screen is correctly not empty.
 _all_deps_up() { local d; for d in "${PITCREW_DEPS[@]:-}"; do [ -n "$d" ] && SNAP_DEP[$d]=up; done; }
 
+# The third thing a healthy screen needs, and the one the fixture cannot state.
+#
+# Diagnostics judges the MACHINE as well as the project, so planting healthy
+# components on whatever box CI happened to hand us is only two thirds of a
+# fixture. It failed exactly there: the macOS runner has 7G, the fixture
+# commits 12G of RAM caps, and `caps-overcommit` fired on every run — a red
+# check about the runner's memory, in a test about what zen draws.
+#
+# Pinned AFTER _render_at, never before: the snapshot inside it calls
+# sys_gauges and would overwrite these with the real numbers again.
+_quiet_machine() {
+  SYS_MEM_TOTAL_KB=$(( 64 * 1024 * 1024 ))    # 64G — over the fixture's 12G of caps
+  SYS_MEM_USED_KB=$(( 8 * 1024 * 1024 ))
+  SYS_SWAP_TOTAL_KB=0
+  SYS_SWAP_USED_KB=0
+  SYS_CPU_PCT=5
+}
+
 test_zen_hides_what_is_fine_and_keeps_what_is_not() {
   _render_at 150 40
   _all_up; SNAP_STATE[be-beonly]=crashed
@@ -460,7 +478,7 @@ test_zen_with_nothing_wrong_says_so_rather_than_going_blank() {
   # diag_run after planting the state, not before: the message zen shows is
   # decided by what diagnostics found, so a stale DIAG_N left over from the
   # fixture's own down dependencies would be testing the wrong screen.
-  _all_up; _all_deps_up; diag_run
+  _all_up; _all_deps_up; _quiet_machine; diag_run
   ZEN=1; build_frame
   local body; body=$(plain "$FRAME")
   assert_match     "$body" 'nothing needs you' "an empty zen screen is the answer, not a bug"
@@ -474,7 +492,7 @@ test_zen_does_not_say_nothing_needs_you_over_a_verdict_that_disagrees() {
   # warning — still leaves the verdict line saying something is up. Printing
   # "nothing needs you" directly under it contradicts the row above it.
   _render_at 150 40
-  _all_up; _all_deps_up; diag_run
+  _all_up; _all_deps_up; _quiet_machine; diag_run
   DIAG_N=1; DIAG_WARN=1; DIAG_VERDICT=warn
   ZEN=1; build_frame
   local body; body=$(plain "$FRAME")
