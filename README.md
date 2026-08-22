@@ -92,11 +92,23 @@ the tool knows what it is running on.
   sees a normal Linux userland, gets real cgroup RAM caps, and draws a
   fork-free dashboard.
 
-  > Honest caveat: the Windows path is **written and unit-tested but not yet
-  > run on Windows** — there was no Windows machine available. Every place a
-  > native tool's output is parsed is covered by `test/windows_test.sh` against
-  > captured output, which is where a port like this actually breaks; what is
-  > unverified is the integration. Reports welcome.
+  The desktop app installs itself here too: `./setup.sh --yes` from an MSYS2
+  **UCRT64** shell installs the GTK stack, puts `pitcrew` on your `PATH`, and
+  writes a Start Menu entry *and* a Desktop icon. See
+  [Desktop app](#desktop-app).
+
+  One known gap, which `pitcrew doctor` reports: `stop` walks a component's
+  process tree with `pgrep -P`, and **Git Bash has no `pgrep`** while MSYS2
+  only has one if you installed `procps-ng`. Without it, stopping reaches the
+  process pitcrew launched but not the ones *it* launched — the JVM under a
+  gradle wrapper survives, and the port stays taken. `pacman -S procps-ng`
+  fixes it on MSYS2.
+
+  > Honest caveat: CI now runs the whole suite on `windows-latest` under Git
+  > Bash, and installs the desktop app end to end on a real MSYS2 — including
+  > failing if the shortcuts are not on disk afterwards. What is still
+  > unverified is **integration**: a real stack of real services, started and
+  > watched on a real Windows box. Reports welcome.
 
 The portable collector is not a fallback that rots: `PITCREW_FORCE_COLLECTOR=ps`
 runs it on Linux, and CI runs the whole suite that way on every push, so the
@@ -108,10 +120,12 @@ has that setup" is exactly how the menu came to be unopenable on a Mac.
 ## Install
 
 On Windows, install [Git for Windows](https://gitforwindows.org/) 2.35 or newer
-(it ships bash 5) or MSYS2, and run everything below from its Bash prompt.
-`install.sh` writes a small shim rather than a symlink there, because a Windows
-symlink needs Developer Mode and a *copy* of the launcher cannot find its own
-`lib/`.
+(it ships bash 5) or MSYS2, and run everything below from its Bash prompt. For
+the **desktop app** it has to be MSYS2's UCRT64 shell — that is where the GTK
+stack lives; see [Desktop app](#desktop-app). `install.sh` writes a small shim
+rather than a symlink there, because a Windows symlink needs Developer Mode and
+a *copy* of the launcher cannot find its own `lib/` (nor, for the GUI, its own
+`pitcrewgui/`).
 
 Requires **bash 5.0 or newer** (`$EPOCHREALTIME`, negative array indices and
 `declare -gA` are used throughout; `pitcrew` checks this up front and tells you
@@ -1014,20 +1028,38 @@ selectable text. A plugin can put anything in that field, so anything else —
 |---|---|
 | **Linux** | a `.desktop` entry and a hicolor icon, per XDG |
 | **macOS** | a `.app` bundle in `~/Applications`, for Launchpad and Spotlight |
-| **Windows** | a Start Menu shortcut, launched with `pythonw` so no console sits behind the app. Needs MSYS2's GTK stack (below) |
+| **Windows** | a **Start Menu entry and a Desktop icon**, launched with `pythonw` so no console sits behind the app. Needs MSYS2's GTK stack (below) |
 
 ### Windows, as an app rather than a script
 
-```
-pacman -S mingw-w64-ucrt64-x86_64-python-gobject \
-          mingw-w64-ucrt64-x86_64-gtk4 \
-          mingw-w64-ucrt64-x86_64-libadwaita
-./gui/install.sh          # writes a Start Menu shortcut
+Install [MSYS2](https://www.msys2.org), open the **UCRT64** shell (not the
+plain MSYS one — the GTK stack lives in a per-environment prefix), and:
+
+```bash
+git clone https://github.com/zorigtbaatarAst/pitcrew.git ~/pitcrew
+cd ~/pitcrew && ./setup.sh --yes
 ```
 
-Then it launches from the Start Menu with a taskbar icon and no console window
-— `pythonw.exe`, not `python.exe`, is the difference between an app and
-someone's script.
+That is the whole thing: it installs PyGObject, pycairo, GTK 4 and libadwaita
+through `pacman`, puts `pitcrew` on your `PATH`, and writes **two shortcuts** —
+one in the Start Menu and one on the Desktop, both pointing at `pythonw.exe`,
+which is the difference between an app with a taskbar icon and someone's script
+with a black console window parked behind it.
+
+To do it by hand instead:
+
+```bash
+pacman -S mingw-w64-ucrt-x86_64-python-gobject \
+          mingw-w64-ucrt-x86_64-python-cairo \
+          mingw-w64-ucrt-x86_64-gtk4 \
+          mingw-w64-ucrt-x86_64-libadwaita
+./install.sh              # the pitcrew command
+./gui/install.sh          # the shortcuts
+```
+
+> The prefix is `mingw-w64-ucrt-x86_64-`, not `mingw-w64-ucrt64-x86_64-`. This
+> README said the latter for a while; no such package exists, so the documented
+> install failed on the first line.
 
 Two things are worth knowing before you decide this is what you want.
 
@@ -1048,6 +1080,11 @@ If you want to hand this to someone who has no MSYS2 at all, that is a
 different job — bundling GTK4, Python and a portable Git into one installer
 (~250 MB, and re-bundled on every release). Worth doing only if Windows becomes
 a first-class target rather than a supported one.
+
+Windows is now built and installed **in CI on a real MSYS2**: the dependency
+installer runs, `setup.sh` runs, and the job fails unless both `pitcrew.lnk`
+files are actually on disk afterwards. What is still unverified is what the app
+looks like once it opens, and how it behaves against a real running stack.
 
 macOS support is **written but untested** — there is no Mac here to run it on.
 The parts that were Linux-only have been fixed (see the seam below); what
@@ -1234,9 +1271,16 @@ implementation: it cannot be written in python-with-`gi` (the bindings are what
 it installs) and it cannot use bash 5 (that is what it installs on macOS), so it
 is bash 3.2 throughout.
 
-Only the Fedora path has actually been run. The other tables are written from
-the documented package names and are unverified — which is the other reason the
-command is printed before anything happens.
+Fedora, Homebrew and MSYS2 are run in CI. The remaining tables are written
+from the documented package names and are unverified — which is the other
+reason the command is printed before anything happens.
+
+Which python it asks is one file, `gui/pyfind.sh`, shared by `setup.sh`,
+`gui/install.sh`, `gui/install-deps.sh` and the test suite. It had been copied
+into all four, every copy looking only in Unix places, and on MSYS2 — where
+the GTK stack lives in a `$MINGW_PREFIX` and `/usr/bin/python3` is a different
+interpreter that will never have `gi` — all four agreed the bindings were
+missing on a machine that had just installed them.
 
 The terminal dashboard stays the primary interface — it is the one that works
 over ssh, which a GTK app never will.

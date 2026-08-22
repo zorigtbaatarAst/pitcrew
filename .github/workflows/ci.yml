@@ -124,10 +124,97 @@ jobs:
       - name: setup.sh takes a clean checkout to ready
         run: ./setup.sh --yes
 
-  # There is no Windows runner here, and adding one would not help much: the
-  # value is in the PARSERS, and those are pure filters over captured output
-  # that the Linux job already runs. What a Windows job would catch is the
-  # integration, which needs a real stack running on a real box.
+  # Windows, for real. Everything the tool does there — the wmic/netstat
+  # collectors, the shim install.sh writes, the bash-5 guard — had been written
+  # and never run. Git for Windows ships bash 5.2, so `shell: bash` on this
+  # runner IS what a user has.
+  #
+  # continue-on-error until it has been green once, then delete that line. A
+  # job that reports is worth more than no job; one that blocks main before
+  # anybody has watched it run is not.
+  #
+  # The scripts are called directly rather than through `make`: GNU make is not
+  # something a Windows user is assumed to have, and neither is this job.
+  windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: the bash we are testing with
+        run: bash --version | head -1; uname -s
+      - name: lint
+        run: bash test/lint.sh
+      - name: test
+        run: bash test/run.sh
+      - name: the tool runs at all
+        run: |
+          for fix in test/fixture test/fixture-yaml; do
+            ./bin/pitcrew -C "$fix" help
+            ./bin/pitcrew -C "$fix" status
+            ./bin/pitcrew -C "$fix" doctor
+            ./bin/pitcrew -C "$fix" status --json
+            ./bin/pitcrew check "$fix"
+            ./bin/pitcrew -C "$fix" diagnose --json
+          done
+      # --no-gui: Git Bash has no GTK stack and never will. The desktop app on
+      # Windows is MSYS2's job, which is the next block.
+      - name: setup.sh takes a clean checkout to ready
+        run: ./setup.sh --yes --no-gui
+      - name: and the command it installed actually runs
+        run: '"$HOME/.local/bin/pitcrew" --version'
+
+  # The desktop app on Windows, end to end, on a real MSYS2: install the GTK
+  # stack with our own installer, run our own setup, and then check that the
+  # thing a user double-clicks is actually on disk. Every bug this was written
+  # to fix was invisible to reading and would have been caught here in one run.
+  windows-gui:
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          # Deliberately NOT the GTK stack: gui/install-deps.sh is what has to
+          # install that, and a job that pre-installed it would only prove the
+          # runner works.
+          install: git
+      - name: what our installer thinks this box needs
+        run: ./gui/install-deps.sh --dry-run
+      - name: let it install it
+        run: ./gui/install-deps.sh --yes
+      # --yes exits non-zero if anything is still missing, but say it loudly: a
+      # silent "installed" that did not is the failure worth catching here, and
+      # on Windows it is the failure that actually happened.
+      - name: and they really are importable now
+        run: ./gui/install-deps.sh | tee /dev/stderr | grep -q 'Nothing to install'
+      - name: the whole setup, desktop app included
+        run: ./setup.sh --yes
+      - name: the launcher finds an interpreter and runs
+        run: ./gui/pitcrew-gui --help
+      # The point of the whole job. A Start Menu entry and a Desktop icon are
+      # what "installed" means here, and both used to be silently skipped.
+      - name: the shortcuts a user clicks really exist
+        run: |
+          for folder in Programs Desktop; do
+            dir=$(powershell.exe -NoProfile -NonInteractive -Command \
+              "(New-Object -ComObject WScript.Shell).SpecialFolders('$folder')" | tr -d '\r')
+            lnk="$(cygpath -u "$dir")/pitcrew.lnk"
+            if [ -f "$lnk" ]; then echo "ok       $lnk"
+            else echo "MISSING  $lnk" >&2; exit 1; fi
+          done
+      - name: gui tests
+        run: bash test/run.sh gui
+
+  # There is no third Windows job, and the two above do not cover integration:
+  # a real stack of real services running on a real box is still untested.
   #
   # The bash-3.2 guard is a feature: it has to say what is wrong and how to fix
   # it, not die with a syntax error out of a random lib file. /bin/bash on a

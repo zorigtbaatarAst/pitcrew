@@ -19,9 +19,11 @@ GUARD = "PITCREW_GUI_REEXEC"
 
 
 def _has_bindings(interpreter: str) -> bool:
+    from .platform import no_window_kwargs
     try:
         result = subprocess.run([interpreter, "-c", "import gi, cairo"],
-                                capture_output=True, timeout=15, check=False)
+                                capture_output=True, timeout=15, check=False,
+                                **no_window_kwargs())
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
@@ -61,5 +63,11 @@ def ensure_bindings(script: str, argv: list[str]) -> None:
 
 
 def _die(message: str) -> None:
-    print(f"pitcrew-gui: {message}", file=sys.stderr)
+    # Through the platform layer, because on Windows there is frequently
+    # nowhere to print: the shortcut runs pythonw.exe, whose sys.stderr is
+    # None, and CPython's print() then returns silently. Every message in this
+    # file — "no bindings", "could not switch interpreter" — was invisible, so
+    # a misconfigured Windows install looked like a shortcut that did nothing.
+    from .platform import report_fatal
+    report_fatal(message)
     raise SystemExit(1)

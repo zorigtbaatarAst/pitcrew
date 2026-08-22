@@ -53,14 +53,10 @@ have_bash5() {
   return 1
 }
 
-have_bindings() {
-  local py
-  for py in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 python3; do
-    command -v "$py" >/dev/null 2>&1 || continue
-    "$py" -c 'import gi, cairo' >/dev/null 2>&1 && return 0
-  done
-  return 1
-}
+# shellcheck source=gui/pyfind.sh
+. "$SELF_DIR/gui/pyfind.sh"
+
+have_bindings() { pitcrew_find_python >/dev/null 2>&1; }
 
 # ── 1. dependencies ─────────────────────────────────────────────────────────
 step "1/4  dependencies"

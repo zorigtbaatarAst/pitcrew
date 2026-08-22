@@ -64,6 +64,14 @@ cmd_doctor() {
     command -v netstat >/dev/null 2>&1 \
       && ok "windows  ports via netstat -ano" \
       || bad "windows  netstat not found — nothing can tell whether a service is listening"
+    # kill_tree walks the tree with `pgrep -P`. Git Bash has no pgrep at all,
+    # and MSYS2 only has one if procps-ng was installed — so `stop` reaches the
+    # process pitcrew started and NOT the JVM its gradle wrapper started under
+    # it. That looks like a stop that worked, right up until the port is still
+    # taken. Said here rather than discovered.
+    command -v pgrep >/dev/null 2>&1 \
+      && ok "windows  pgrep present ${GREY}(stop reaches the whole process tree)${RESET}" \
+      || bad "windows  no pgrep — stop kills only the process pitcrew launched, not the ones it launched in turn (pacman -S procps-ng, or stop the strays yourself)"
     say "  ${GREY}∙ WSL2 remains the fuller experience: real cgroup RAM caps and a fork-free dashboard${RESET}"
   fi
   if [ ${#PITCREW_DEPS[@]} -gt 0 ]; then

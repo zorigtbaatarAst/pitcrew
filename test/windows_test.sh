@@ -188,4 +188,106 @@ test_the_parser_uses_no_gawk_extensions() {
   assert_match "$strict" '9100 4242' "and it actually produced something"
 }
 
+# ── installing on Windows ───────────────────────────────────────────────────
+#
+# None of this can be RUN here, so these pin the two things that were wrong in
+# a way no reading caught: where the installer looks for a python, and what
+# `pitcrew-gui` on $PATH actually is. Both were "works on Linux, cannot work on
+# Windows", and both showed up as an install that reported success and left
+# nothing you could launch.
+
+_ROOT="$PITCREW_DIR"
+
+# pyfind.sh with a chosen uname, so the Windows list can be inspected from here.
+_pyfind_as() { # $1 = uname -s output, $2 = expression to run
+  bash -c "
+    uname() { printf '%s\n' '$1'; }
+    . '$_ROOT/gui/pyfind.sh'
+    $2"
+}
+
+test_the_python_search_looks_where_msys2_actually_keeps_it() {
+  # The GTK stack on Windows lives in a mingw PREFIX, and MSYS2's /usr/bin/python3
+  # is a different interpreter that will never have gi no matter what you install.
+  # Three scripts each carried their own copy of a Unix-only list, so setup.sh
+  # skipped the desktop app, gui/install.sh refused to write the shortcut on the
+  # grounds that it "would not run", and install-deps.sh reported MISSING
+  # immediately after a successful pacman install.
+  local out; out=$(_pyfind_as MINGW64_NT-10.0-22631 'pitcrew_python_candidates')
+  assert_match "$out" '/ucrt64/bin/python3\.exe'  "the UCRT64 prefix"
+  assert_match "$out" '/mingw64/bin/python3\.exe' "the MINGW64 one"
+  assert_match "$out" '/c/msys64/'                 "and MSYS2 seen from Git Bash, where /ucrt64 is not mounted"
+  assert_not_match "$out" '/opt/homebrew'          "no macOS paths on Windows"
+}
+
+test_the_shell_you_opened_beats_any_guess_at_where_msys2_is() {
+  # $MINGW_PREFIX is set by the MSYS2 environment the user actually launched,
+  # so it is the only thing that finds an MSYS2 installed anywhere but C:\msys64.
+  local out; out=$(MINGW_PREFIX=/d/tools/msys/clang64 \
+    _pyfind_as MSYS_NT-10.0-22631 'pitcrew_python_candidates | head -1')
+  assert_eq "$out" "/d/tools/msys/clang64/bin/python3.exe" "the live prefix comes first"
+}
+
+test_every_platform_still_ends_with_something_on_path() {
+  # A list of absolute paths is exactly how the interpreter search broke on
+  # macOS the first time. Whatever the OS, the last entry has to be a bare name.
+  local os
+  for os in Linux Darwin MINGW64_NT-10.0-22631; do
+    local last; last=$(_pyfind_as "$os" 'pitcrew_python_candidates | tail -1')
+    assert_not_match "$last" '^/' "$os: the last resort is not an absolute path"
+  done
+}
+
+test_only_one_shell_script_knows_where_a_python_might_be() {
+  # It was copied into setup.sh, gui/install.sh, gui/install-deps.sh and the
+  # GUI test file, and every copy was wrong in the same way. The bug is the
+  # copying; this is what stops it coming back.
+  #
+  # pitcrewgui/platform.py keeps its own list on purpose: it is the RUNTIME
+  # seam, in a language that cannot source a bash file, and it answers a
+  # different question — which interpreter to re-exec into, not which one to
+  # report on. gui_test.sh pins that the two agree about Windows.
+  local strays f
+  strays=""
+  for f in "$_ROOT/setup.sh" "$_ROOT"/gui/*.sh "$_ROOT"/test/*.sh; do
+    case "$f" in *pyfind.sh|*windows_test.sh) continue ;; esac
+    grep -q '/opt/homebrew/bin/python3' "$f" 2>/dev/null && strays="$strays $f"
+  done
+  assert_empty "${strays# }" "shell scripts carrying their own python search"
+}
+
+test_windows_gets_a_shim_rather_than_a_symlink_for_the_gui_too() {
+  # `ln -s` under MSYS writes a COPY unless Developer Mode is on, and a copy of
+  # pitcrew-gui cannot find the pitcrewgui/ package it resolves from its own
+  # realpath — so `pitcrew-gui` died with ModuleNotFoundError. install.sh had
+  # always written a shim for the CLI; gui/install.sh had not.
+  local body; body=$(cat "$_ROOT/gui/install.sh")
+  assert_match "$body" 'PLATFORM. = windows' "the GUI install branches on Windows before linking"
+  assert_match "$body" 'exec .%s/pitcrew-gui' "and writes a shim there"
+}
+
+test_the_windows_shortcut_targets_a_real_interpreter() {
+  # `target` used to come from a probe that could answer with the bare word
+  # "python3", and a .lnk whose TargetPath is "python3" is a shortcut to
+  # nothing. pyfind.sh resolves to an absolute path for exactly this reason.
+  local body; body=$(cat "$_ROOT/gui/pyfind.sh")
+  assert_match "$body" 'command -v' "the candidate is resolved, not used as typed"
+  assert_match "$(cat "$_ROOT/gui/install.sh")" 'pythonw\.exe' \
+    "and pythonw is preferred, so no console sits behind the app"
+}
+
+test_the_windows_install_asks_windows_where_its_own_folders_are() {
+  # $APPDATA is a WINDOWS path with backslashes, so `[ -d "$APPDATA/Microsoft/..." ]`
+  # tests a filename that cannot exist — the Start Menu was never found and the
+  # install gave up. OneDrive also relocates the Desktop on a great many
+  # machines. WScript.Shell.SpecialFolders is right on all of them.
+  local body code
+  body=$(cat "$_ROOT/gui/install.sh")
+  assert_match "$body" 'SpecialFolders'        "the folders come from Windows"
+  assert_match "$body" '"Programs", "Desktop"' "Start Menu AND Desktop"
+  # Comments may still explain why; code may not do it.
+  code=$(grep -v '^ *#' "$_ROOT/gui/install.sh" | tr '\n' ' ')
+  assert_not_match "$code" 'APPDATA' "no path assembled out of \$APPDATA"
+}
+
 run_tests

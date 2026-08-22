@@ -8,8 +8,8 @@
 #
 #   Linux    XDG: a .desktop file and an icon in the hicolor theme
 #   macOS    a .app bundle in ~/Applications (Launchpad and Spotlight read it)
-#   Windows  a Start Menu shortcut, launched with pythonw so there is no
-#            console window behind the app
+#   Windows  a Start Menu AND a Desktop shortcut, launched with pythonw so
+#            there is no console window behind the app
 #
 # The GTK bindings are NOT checked against a hardcoded interpreter here: the
 # launcher finds one at runtime (pitcrewgui/bootstrap.py), because the right
@@ -28,18 +28,28 @@ case "$(uname -s)" in
   *)                    PLATFORM=unknown ;;
 esac
 
-have_bindings() { # any interpreter that can import both counts
-  local py
-  for py in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 python3; do
-    command -v "$py" >/dev/null 2>&1 || continue
-    "$py" -c 'import gi, cairo' >/dev/null 2>&1 && { printf '%s' "$py"; return 0; }
-  done
-  return 1
-}
+# One file knows where a python with the bindings might be, on every OS —
+# gui/pyfind.sh. Looking only in Unix places here is what left Windows with a
+# desktop app that no documented sequence of commands could install.
+# shellcheck source=gui/pyfind.sh
+. "$SELF_DIR/pyfind.sh"
+
+have_bindings() { pitcrew_find_python; }
 
 mkdir -p "$BIN_DIR"
-ln -sf "$SELF_DIR/pitcrew-gui" "$BIN_DIR/pitcrew-gui"
-echo "linked  $BIN_DIR/pitcrew-gui -> $SELF_DIR/pitcrew-gui"
+# Under MSYS/Git Bash `ln -s` writes a COPY unless Developer Mode is on, and a
+# copy of pitcrew-gui cannot find the pitcrewgui/ package that has to sit next
+# to it — the launcher resolves it from its own realpath. install.sh has always
+# written a shim there for exactly this reason; this file had not, so `pitcrew-gui`
+# on Windows died with ModuleNotFoundError.
+if [ "$PLATFORM" = windows ]; then
+  printf '#!/usr/bin/env bash\nexec "%s/pitcrew-gui" "$@"\n' "$SELF_DIR" > "$BIN_DIR/pitcrew-gui"
+  chmod +x "$BIN_DIR/pitcrew-gui"
+  echo "wrote   $BIN_DIR/pitcrew-gui -> $SELF_DIR/pitcrew-gui (a shim; Windows symlinks need Developer Mode)"
+else
+  ln -sf "$SELF_DIR/pitcrew-gui" "$BIN_DIR/pitcrew-gui"
+  echo "linked  $BIN_DIR/pitcrew-gui -> $SELF_DIR/pitcrew-gui"
+fi
 
 install_linux() {
   local data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -122,59 +132,106 @@ PLIST
 }
 
 # ── Windows ─────────────────────────────────────────────────────────────────
-# A .lnk, because that is what the Start Menu reads. Building one needs
-# PowerShell's WScript.Shell — there is no file format to write by hand.
+# Two .lnk files — Start Menu and Desktop — because that is what "install an
+# app" means here, and because a Start Menu entry alone is a program most
+# people never find twice.
 #
 # The shortcut targets pythonw.exe, not python.exe: the two are the same
 # interpreter and the difference is a console window sitting behind the app for
 # its whole life. That window is the single thing that makes a GTK app on
 # Windows feel like someone's script rather than a program.
+#
+# PowerShell resolves the folders ITSELF, through WScript.Shell.SpecialFolders,
+# rather than this script building them out of $APPDATA. Three reasons, all of
+# which were bugs here:
+#   * $APPDATA is a WINDOWS path with backslashes, so `[ -d "$APPDATA/..." ]`
+#     in bash is testing a filename that cannot exist. The Start Menu was
+#     therefore never found and the install said so and gave up.
+#   * OneDrive relocates the Desktop to %USERPROFILE%\OneDrive\Desktop on a
+#     great many machines, and no hardcoded path is right on both.
+#   * a redirected profile (a domain login) moves both.
 install_windows() {
-  local start_menu ico target
-  start_menu="$APPDATA/Microsoft/Windows/Start Menu/Programs"
-  [ -d "$start_menu" ] || { echo "note    no Start Menu directory at $start_menu — skipped"; return 0; }
-
+  local target ico ps1 out
   target=$(have_bindings) || target=""
   if [ -z "$target" ]; then
-    echo "note    no python with the GTK bindings yet — the shortcut would not run, so it is not written"
+    echo "note    no python with the GTK bindings yet — a shortcut would not run, so none was written"
+    echo "        install them first:  make gui-deps YES=1   (then: make install-gui)"
     return 0
   fi
+
   # pythonw is the same interpreter without a console. Prefer it where it sits
-  # next to the one we found.
+  # next to the one we found — which is why pyfind.sh returns an absolute path
+  # and not the word "python3".
   case "$target" in
     *python3.exe) [ -f "${target%python3.exe}pythonw.exe" ] && target="${target%python3.exe}pythonw.exe" ;;
     *python.exe)  [ -f "${target%python.exe}pythonw.exe" ]  && target="${target%python.exe}pythonw.exe" ;;
+    # Not fatal: Windows appends .exe to an extensionless target itself. Worth
+    # saying, because it means pyfind fell all the way through to a bare name.
+    *) echo "note    the interpreter found is $target — not an MSYS2 mingw python, so check the app opens" ;;
   esac
 
   ico="$SELF_DIR/$APP_ID.ico"
   [ -f "$ico" ] || ico=""
 
-  # The shortcut is built by a SCRIPT FILE rather than `powershell -Command`.
-  # A .lnk needs five properties set on a COM object, and inlining that meant
-  # bash quoting wrapped around PowerShell quoting wrapped around paths with
-  # spaces in them — unreadable, and wrong in a way that writes a shortcut
-  # pointing nowhere instead of failing.
+  if ! command -v powershell.exe >/dev/null 2>&1 && ! command -v pwsh.exe >/dev/null 2>&1; then
+    echo "note    no PowerShell on PATH — cannot write a .lnk. Run pitcrew-gui from a shell instead."
+    return 0
+  fi
+  local shell_exe=powershell.exe
+  command -v powershell.exe >/dev/null 2>&1 || shell_exe=pwsh.exe
+
+  # A SCRIPT FILE rather than `powershell -Command`: a .lnk needs five
+  # properties set on a COM object, and inlining that meant bash quoting
+  # wrapped around PowerShell quoting wrapped around paths with spaces in them
+  # — unreadable, and wrong in a way that writes a shortcut pointing nowhere
+  # instead of failing.
   #
-  # cygpath throughout: PowerShell wants Windows paths and everything here is
-  # a POSIX one.
-  local ps1; ps1=$(mktemp).ps1
+  # cygpath throughout: PowerShell wants Windows paths and everything here is a
+  # POSIX one.
+  # ASCII only inside the PowerShell, deliberately: Windows PowerShell 5.1
+  # reads a .ps1 with no BOM in the system ANSI codepage, not UTF-8, so a
+  # nicely-typeset dash in a message comes out as mojibake on exactly the
+  # machines least able to explain it.
+  ps1=$(mktemp).ps1
   {
-    printf '$s = (New-Object -ComObject WScript.Shell).CreateShortcut("%s")\n' "$(cygpath -w "$start_menu/$APP_NAME.lnk")"
-    printf '$s.TargetPath = "%s"\n'        "$(cygpath -w "$target")"
-    printf '$s.Arguments = %s\n'           "'\"$(cygpath -w "$SELF_DIR/pitcrew-gui")\"'"
-    printf '$s.WorkingDirectory = "%s"\n'  "$(cygpath -w "$SELF_DIR")"
-    printf '$s.Description = "pitcrew - local dev-stack launcher"\n'
-    [ -n "$ico" ] && printf '$s.IconLocation = "%s"\n' "$(cygpath -w "$ico")"
-    printf '$s.Save()\n'
+    printf '$ErrorActionPreference = "Stop"\n'
+    printf '$shell = New-Object -ComObject WScript.Shell\n'
+    printf '$target = "%s"\n'    "$(cygpath -w "$target")"
+    printf '$argline = %s\n'     "'\"$(cygpath -w "$SELF_DIR/pitcrew-gui")\"'"
+    printf '$workdir = "%s"\n'   "$(cygpath -w "$SELF_DIR")"
+    printf '$icon = "%s"\n'      "${ico:+$(cygpath -w "$ico")}"
+    cat <<'PS1'
+foreach ($folder in @("Programs", "Desktop")) {
+  $dir = $shell.SpecialFolders($folder)
+  if (-not $dir) { Write-Output ("skip     " + $folder + " - Windows reports no such folder"); continue }
+  $path = Join-Path $dir "pitcrew.lnk"
+  try {
+    $s = $shell.CreateShortcut($path)
+    $s.TargetPath = $target
+    $s.Arguments = $argline
+    $s.WorkingDirectory = $workdir
+    $s.Description = "pitcrew - local dev-stack launcher"
+    if ($icon) { $s.IconLocation = $icon }
+    $s.Save()
+    Write-Output ("shortcut " + $path)
+  } catch {
+    # One failing folder must not cost the other: a locked-down Desktop is
+    # common on a managed machine, and the Start Menu entry is the one that
+    # matters most.
+    Write-Output ("note     could not write " + $path + " - " + $_.Exception.Message)
+  }
+}
+PS1
   } > "$ps1"
 
-  if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-       -File "$(cygpath -w "$ps1")" >/dev/null 2>&1; then
-    echo "shortcut $start_menu/$APP_NAME.lnk"
-  else
-    echo "note    could not write the Start Menu shortcut (PowerShell refused) — run pitcrew-gui directly"
-  fi
+  out=$("$shell_exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+          -File "$(cygpath -w "$ps1")" 2>&1 | tr -d '\r') || true
   rm -f "$ps1"
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+  else
+    echo "note    PowerShell wrote no shortcut and said nothing — run pitcrew-gui from a shell instead"
+  fi
 }
 
 case "$PLATFORM" in

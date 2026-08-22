@@ -6,7 +6,7 @@ import sys
 
 from gi.repository import Adw, Gio
 
-from .platform import adwaita_too_old, find_pitcrew
+from .platform import adwaita_too_old, find_pitcrew, report_fatal
 from .registry import current_project
 from .settings import SETTINGS, SETTINGS_BY_KEY, Settings
 from .window import Window
@@ -92,12 +92,15 @@ def main(argv: list[str]) -> int:
     # you nothing.
     too_old = adwaita_too_old()
     if too_old:
-        print(f"pitcrew-gui: {too_old}", file=sys.stderr)
+        report_fatal(too_old)
         return 1
 
     pitcrew = find_pitcrew()
     if not pitcrew:
         # Fail loudly here rather than opening a window that can never populate.
-        print("pitcrew not found on $PATH or in ~/.local/bin", file=sys.stderr)
+        # report_fatal, not print: the Windows shortcut runs pythonw, which has
+        # no stderr at all, so this used to be a double-click that did nothing.
+        report_fatal("pitcrew not found on $PATH, next to this app, "
+                     "or in ~/.local/bin")
         return 1
     return Application(pitcrew, project, settings).run([argv[0]])

@@ -11,6 +11,14 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **Windows in CI, twice.** One job runs the lint, the whole suite and the CLI
+  smoke commands on `windows-latest` under Git Bash — the environment a user
+  actually has. A second installs the desktop app end to end on a real MSYS2
+  UCRT64: our own dependency installer, our own `setup.sh`, and then a check
+  that both `pitcrew.lnk` files are on disk, which fails the job if they are
+  not. Both are `continue-on-error` until they have been green once. Every
+  Windows bug fixed in this release was invisible to reading and would have
+  been caught by these in one run.
 - **Zen mode** (`z` in the dashboard, `Ctrl+Z` or the menu in the desktop app,
   `PITCREW_ZEN=1` to start in it). Answers one question — is there anything I
   need to do? — by hiding everything that says no: healthy components, deps
@@ -34,6 +42,59 @@ field is removed or changes meaning.
   listening ports from `netstat -ano`, and pidfiles keep holding MSYS pids so
   `kill` and `kill_tree` work unchanged, translated to Windows pids only where
   a native tool is on the other end.
+
+- **Windows installs and produces a desktop app.** Every piece of the Windows
+  path existed and none of it could complete: the python search in `setup.sh`,
+  `gui/install.sh` and `gui/install-deps.sh` looked only in Unix places, so all
+  three concluded the GTK bindings were missing on a machine that had them —
+  the installer reported MISSING right after a successful `pacman`, and the
+  shortcut was skipped on the grounds that it "would not run". `gui/install.sh`
+  is now a real Windows install:
+  - one interpreter search, `gui/pyfind.sh`, shared by every script that needs
+    one (it had been copied into four, all wrong the same way) and aware of
+    MSYS2's `$MINGW_PREFIX` and its `/ucrt64`, `/mingw64`, `/clang64` prefixes
+  - **a Start Menu entry and a Desktop icon**, with Windows resolving both
+    folders itself through `WScript.Shell.SpecialFolders` — the old code built
+    them out of `$APPDATA`, a path with backslashes in it that bash could never
+    stat, so the Start Menu was never found, and it broke outright under
+    OneDrive, which relocates the Desktop
+  - a shim rather than `ln -s` for `pitcrew-gui`, which under MSYS is a *copy*
+    that cannot find the `pitcrewgui/` package beside it
+  - `mingw-w64-ucrt-x86_64-python-cairo` added to the MSYS2 package list; MSYS2
+    does not pull pycairo in with PyGObject, so `import gi, cairo` failed on
+    the half nobody installed
+- **The Windows app can say what went wrong.** The shortcut runs `pythonw.exe`,
+  whose `sys.stderr` is `None` — and CPython's `print()` returns *silently*
+  when there is nowhere to write. "No bindings", "no bash 5", "pitcrew not
+  found" were all a double-click that did nothing at all. They go through
+  `report_fatal` now, which falls back to a message box.
+- **The GUI could not find the CLI on Windows.** MSYS2's bash has
+  `$HOME=C:\msys64\home\you` and writes the shim under it; the native python a
+  shortcut runs reports `Path.home()` as `C:\Users\you` and found nothing, so
+  every button in the app was dead. It now looks in the checkout it was
+  installed from first — `bin/` and `gui/` are siblings, which is a fact rather
+  than a guess.
+- **`bash` on Windows could be the WSL launcher.** `C:\Windows\System32\bash.exe`
+  is on the PATH of every machine with WSL enabled and is what
+  `shutil.which("bash")` finds first from a shortcut — so the GUI would have
+  run pitcrew inside a Linux VM, against a filesystem with none of the user's
+  project in it.
+- Windows console flashes: every helper the GUI shells out to is a console
+  program, and started from `pythonw` each one got a fresh black window.
+  `CREATE_NO_WINDOW` on the calls the GUI makes directly. (`Gio.Subprocess`
+  takes no creation flags, so the long-lived `json --watch` child is not
+  covered by this — untested either way, and honestly unknown.)
+- MSYS2's *msys* python reports `MSYS_NT-10.0-…` from `platform.system()`, not
+  `Windows`, and under it every Windows special case in the GUI silently
+  switched off.
+- `setup.sh` and `gui/*.sh` are now parse-checked and shellchecked. They were
+  not, which is where the Windows install quietly rotted: three installer
+  scripts nobody linted, on a platform nobody ran.
+- `pitcrew doctor` on Windows now reports that **`stop` cannot reach a whole
+  process tree without `pgrep`** — Git Bash ships none and MSYS2 only has one
+  with `procps-ng`, so a stop looked successful right up until the port was
+  still taken. Reported rather than silently worked around: the fix needs
+  `taskkill` and a pid-space translation that nobody has been able to run yet.
 
 ### Fixed
 - **The menus were unopenable on a stock macOS.** Every picker shelled out to

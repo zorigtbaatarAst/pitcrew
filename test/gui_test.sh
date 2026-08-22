@@ -25,11 +25,14 @@ GUI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/gui"
 # the whole reason the app re-execs instead of pinning a shebang, and a test
 # file that hardcodes /usr/bin/python3 would silently SKIP everything on macOS
 # and report a green run for a GUI nobody checked.
-PY_WITH_GI=""
-for _candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 python3; do
-  command -v "$_candidate" >/dev/null 2>&1 || continue
-  if "$_candidate" -c 'import gi, cairo' >/dev/null 2>&1; then PY_WITH_GI=$_candidate; break; fi
-done
+#
+# The search itself is gui/pyfind.sh — the same one setup.sh, gui/install.sh
+# and gui/install-deps.sh use. A fifth private copy here is how the suite came
+# to report green on a Windows box where the installer could not find a python
+# at all: the test looked in different places than the thing it was testing.
+# shellcheck source=gui/pyfind.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../gui/pyfind.sh"
+PY_WITH_GI=$(pitcrew_find_python) || PY_WITH_GI=""
 
 # `import gi, cairo` is not what these tests need. They need the PACKAGE to
 # import, which additionally wants the Gtk, Adw, Gdk and Pango typelibs — a
@@ -947,6 +950,145 @@ print(bool(pgui.missing_bindings_message()))
 ")
   assert_not_match "$(printf '%s' "$out" | sed -n 1p)" '^/' "the last candidate is not an absolute path"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and there is an install hint when none work"
+}
+
+test_a_gui_launched_app_finds_the_cli_that_shipped_with_it() {
+  gui_available || return 0
+  # $PATH is the first answer and the right one when it works. When it does
+  # not — an app grid, a Launchpad entry, a Windows shortcut, all of which
+  # start with a minimal environment — the checkout this GUI was installed
+  # from is not a guess: bin/ and gui/ are siblings in the repo.
+  #
+  # On Windows the guess was not merely unreliable, it could not work: MSYS2
+  # bash has $HOME=C:\msys64\home\you and writes the shim under it, while the
+  # native python a shortcut runs reports Path.home() as C:\Users\you. Every
+  # button in the app was dead for that one reason.
+  local out; out=$(_settings_drive "
+import pathlib
+import pitcrewgui.platform as pf
+first = pf._cli_fallbacks()[0]
+print(first == pf.REPO_ROOT / 'bin' / 'pitcrew')
+print(first.is_file())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "the checkout comes first among the fallbacks"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and it is really there"
+}
+
+test_msys2_python_is_still_windows() {
+  gui_available || return 0
+  # MSYS2 ships two kinds of python. The mingw/ucrt builds are native Windows
+  # and report "Windows"; the msys one reports "MSYS_NT-10.0-22631". Under that
+  # interpreter every Windows special case switched off — so the GUI would run
+  # a bash script by path on an OS with no shebangs, i.e. a button that does
+  # nothing.
+  local out; out=$(_settings_drive "
+import importlib, platform, sys
+for name in ('Windows', 'MSYS_NT-10.0-22631', 'MINGW64_NT-10.0', 'CYGWIN_NT-10.0', 'Linux'):
+    platform.system = lambda name=name: name
+    module = importlib.reload(importlib.import_module('pitcrewgui.platform'))
+    print(name, module.IS_WINDOWS)
+")
+  assert_match "$out" 'MSYS_NT-10\.0-22631 True' "the msys python counts as Windows"
+  assert_match "$out" 'MINGW64_NT-10\.0 True'    "so does a mingw one"
+  assert_match "$out" 'CYGWIN_NT-10\.0 True'     "and cygwin"
+  assert_match "$out" 'Linux False'              "and Linux does not"
+}
+
+test_the_wsl_launcher_is_never_mistaken_for_a_bash() {
+  gui_available || return 0
+  # C:\Windows\System32\bash.exe is on the PATH of every machine with WSL
+  # enabled, and it is what shutil.which("bash") finds first from a shortcut.
+  # Running the CLI through it executes pitcrew inside a Linux VM against a
+  # filesystem with none of the user's project in it — a failure that reads
+  # like pitcrew being broken rather than like the wrong bash.
+  local out; out=$(_settings_drive "
+import pitcrewgui.platform as pf
+for path in (r'C:\\Windows\\System32\\bash.exe', r'C:\\Windows\\SysNative\\bash.exe',
+             r'C:\\msys64\\usr\\bin\\bash.exe', '/usr/bin/bash'):
+    print(pf._is_wsl_stub(path))
+")
+  assert_eq "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ *$//')" "True True False False" \
+    "only System32/SysNative bash.exe is the WSL launcher"
+}
+
+test_a_windows_app_with_no_console_can_still_say_what_went_wrong() {
+  gui_available || return 0
+  # The shortcut runs pythonw.exe, whose sys.stderr is None — and CPython's
+  # print() returns SILENTLY when there is nowhere to write. So "no bindings",
+  # "no bash", "pitcrew not found" all came out as a double-click that did
+  # nothing at all. report_fatal is the one channel that survives that.
+  local out; out=$(_settings_drive "
+import io, sys
+import pitcrewgui.platform as pf
+captured = io.StringIO()
+real = sys.stderr
+sys.stderr = captured
+pf.report_fatal('something broke')
+sys.stderr = real
+print(repr(captured.getvalue().strip()))
+sys.stderr = None
+pf.IS_WINDOWS = False
+pf.report_fatal('nowhere to print this')      # must not raise
+sys.stderr = real
+print('survived')
+")
+  assert_match "$out" "pitcrew-gui: something broke" "a console gets the message"
+  assert_match "$out" "survived" "and no console is not a crash"
+}
+
+test_nothing_shells_out_on_windows_without_suppressing_the_console() {
+  gui_available || return 0
+  # Every helper the GUI runs — bash, python -c, pitcrew check — is a console
+  # program. Started from pythonw, which has no console, Windows gives each one
+  # a fresh black window that appears and vanishes on a timer.
+  #
+  # And the switch is sys.platform == 'win32', NOT IS_WINDOWS: MSYS2's msys
+  # python answers yes to "behaves like Windows" and raises ValueError on
+  # creationflags, being a Cygwin-style POSIX build — which would break the
+  # launcher on the one interpreter whose only job is to find a better one.
+  local out; out=$(_settings_drive "
+import pitcrewgui.platform as pf
+print(pf.no_window_kwargs() == {})
+pf.IS_WINDOWS = True
+print(pf.no_window_kwargs() == {})
+pf._TAKES_CREATIONFLAGS = True
+print(pf.no_window_kwargs().get('creationflags') == 0x08000000)
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "nothing added off Windows"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "nor on an MSYS python that would reject it"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "True" "CREATE_NO_WINDOW where it is accepted"
+
+  local bare
+  bare=$(grep -n 'subprocess\.run(' "$GUI_DIR"/pitcrewgui/*.py | grep -v 'platform\.py' || true)
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '%s\n' "$line" | grep -q 'no_window_kwargs' && continue
+    # The call may span lines; check the file has the kwargs somewhere near.
+    local file; file=${line%%:*}
+    grep -q 'no_window_kwargs' "$file" || _t_bad "$file shells out without no_window_kwargs()"
+  done <<< "$bare"
+}
+
+test_the_two_python_searches_agree_about_windows() {
+  gui_available || return 0
+  # gui/pyfind.sh answers "which python should the INSTALLER report on"; this
+  # module answers "which should the launcher re-exec into". Different jobs,
+  # but a Windows box where one finds MSYS2 and the other does not is exactly
+  # the install that reports success and produces nothing runnable.
+  local out; out=$(_settings_drive "
+import os
+import pitcrewgui.platform as pf
+pf.IS_WINDOWS = True
+os.environ['MINGW_PREFIX'] = '/ucrt64'
+candidates = pf.python_candidates()
+print(candidates[0])
+print(any('ucrt64' in c for c in candidates), any('mingw64' in c for c in candidates))
+print(candidates[-1])
+")
+  assert_match "$(printf '%s' "$out" | sed -n 1p)" 'ucrt64' "the live MSYS2 prefix comes first"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True True" "both prefixes are covered"
+  assert_not_match "$(printf '%s' "$out" | sed -n 3p)" '[/\\]' "and it still ends with a bare name"
 }
 
 # ── the dependency installer ────────────────────────────────────────────────

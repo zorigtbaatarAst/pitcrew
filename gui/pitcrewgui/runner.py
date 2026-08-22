@@ -9,7 +9,7 @@ import tempfile
 
 from gi.repository import Gio, GLib
 
-from .platform import bash5, cli_argv, missing_bash_message
+from .platform import bash5, cli_argv, missing_bash_message, no_window_kwargs
 
 
 class LineReader:
@@ -266,7 +266,8 @@ def yaml_config_error(pitcrew: str, text: str) -> str:
     try:
         result = subprocess.run(cli_argv(pitcrew, ["check", probe]),
                                 env={**os.environ, "NO_COLOR": "1"},
-                                capture_output=True, text=True, timeout=10, check=False)
+                                capture_output=True, text=True, timeout=10, check=False,
+                                **no_window_kwargs())
     except (OSError, subprocess.SubprocessError) as error:
         return f"could not run pitcrew check: {error}"
     finally:
@@ -296,7 +297,8 @@ def bash_syntax_error(text: str) -> str:
         return missing_bash_message()
     try:
         result = subprocess.run([bash, "-n", probe],
-                                capture_output=True, text=True, timeout=10, check=False)
+                                capture_output=True, text=True, timeout=10, check=False,
+                                **no_window_kwargs())
     except (OSError, subprocess.SubprocessError) as error:
         return f"could not run bash -n: {error}"
     finally:

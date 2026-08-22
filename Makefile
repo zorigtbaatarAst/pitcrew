@@ -7,7 +7,7 @@ help:
 	@echo "make lint    parse-check everything, then shellcheck if installed"
 	@echo "make check   lint + test (what CI runs)"
 	@echo "make install symlink bin/pitcrew onto your PATH"
-	@echo "make install-gui  install the desktop app (Linux .desktop / macOS .app)"
+	@echo "make install-gui  install the desktop app (Linux .desktop / macOS .app / Windows shortcuts)"
 	@echo "make gui-deps     show what the desktop app needs on this OS (add YES=1 to install)"
 	@echo
 	@echo "make test T=meters   run only test files matching 'meters'"

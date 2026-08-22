@@ -58,7 +58,11 @@ packages_for() { # $1 = manager
     zypper) echo "python3-gobject python3-cairo typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1" ;;
     apk)    echo "py3-gobject3 py3-cairo gtk4.0 libadwaita" ;;
     brew)   echo "pygobject3 gtk4 libadwaita" ;;
-    msys2)  echo "mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita" ;;
+    # pycairo is a SEPARATE package here, and it was missing: PyGObject does
+    # not pull it in on MSYS2 the way brew and the Linux distros do, so
+    # `import gi, cairo` failed on the cairo half and the probe reported the
+    # bindings missing right after a successful install.
+    msys2)  echo "mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-python-cairo mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita" ;;
     *)      echo "" ;;
   esac
 }
@@ -81,15 +85,13 @@ bash5_package_for() { # $1 = manager — only where the system bash is too old
 }
 
 # ── what is actually missing ────────────────────────────────────────────────
-have_bindings() {
-  local py
-  for py in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 python3; do
-    command -v "$py" >/dev/null 2>&1 || continue
-    "$py" -c 'import gi, cairo; gi.require_version("Gtk","4.0"); gi.require_version("Adw","1")' \
-      >/dev/null 2>&1 && return 0
-  done
-  return 1
-}
+# The interpreter search lives in one file for every script that needs it. It
+# used to be copied into three, all of which looked only in Unix places — so on
+# MSYS2 this reported MISSING immediately after a successful pacman install.
+# shellcheck source=gui/pyfind.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pyfind.sh"
+
+have_bindings() { pitcrew_find_python_gtk >/dev/null 2>&1; }
 
 have_bash5() {
   local candidate major
