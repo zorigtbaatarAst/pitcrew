@@ -39,7 +39,12 @@ _walk_up_for_config() { # $1 start dir → the nearest in-project config
     for f in "${PITCREW_CONFIG_NAMES[@]}"; do
       [ -f "$d/$f" ] || continue
       if [ -z "$found" ]; then found=$f
-      else warn "$d has both $found and $f — reading $found, ignoring $f"; fi
+      # To STDERR. This function's stdout IS the config path — the caller
+      # captures it in a $( ) — so a warning printed there became part of the
+      # filename, and every command died on a path with a ⚠ in it. Which is
+      # exactly the state `pitcrew migrate` leaves a project in for as long as
+      # it takes somebody to delete the old file.
+      else warn "$d has both $found and $f — reading $found, ignoring $f" >&2; fi
     done
     [ -n "$found" ] && { printf '%s' "$d/$found"; return 0; }
     d=$(dirname "$d")

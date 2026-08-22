@@ -50,6 +50,25 @@ field is removed or changes meaning.
   from the new `pitcrew config --json`, because `lib/18-yaml.sh` is the one
   definition of what pitcrew accepts and a second parser would eventually
   disagree with it). A bash config still gets the text editor and no form.
+- **`pitcrew migrate`** — a `pitcrew.config.sh` rewritten as the YAML that means
+  the same thing, which is possible because pitcrew has already RUN it: a file
+  that builds six apps from a `for` loop over a `declare -A` of ports is six
+  concrete apps in the model by then, and that is what gets written out. It
+  also undoes what the shell format made you open-code — `cd $ROOT/x && …`
+  becomes `dir: x`, absolute paths become relative or `$ROOT`/`$HOME`, and
+  values are quoted only where leaving them bare would change them.
+
+  The result is **checked before anything is written**: loaded in a subshell
+  and compared field by field against the config in memory — every command,
+  port, health path, cap, env prefix, protection flag and exclusion. A
+  mismatch writes nothing and prints the diff. One difference is expected and
+  reported instead of refused: a component with a `dir:` and no `watch:` of its
+  own watches where it runs, which a `.sh` config had no way to say, so
+  `migrate` names every component whose `stale` coverage grows. A
+  `pitcrew_doctor_extra()` function is named as something to port by hand.
+
+  The desktop app offers the same thing as **Convert to YAML** whenever it
+  opens a `.sh` config — the one config it cannot show you as a form.
 - **`pitcrew config --json`** — the config as the editable model: every app,
   its components, and what the FILE says for each (`cmd`, `dir`, `root`,
   `watch`) alongside what it resolved to (`runCmd`). Added so an editor never
@@ -131,6 +150,12 @@ field is removed or changes meaning.
 - MSYS2's *msys* python reports `MSYS_NT-10.0-…` from `platform.system()`, not
   `Windows`, and under it every Windows special case in the GUI silently
   switched off.
+- **A directory holding both `pitcrew.yaml` and `pitcrew.config.sh` broke every
+  command.** The "reading one, ignoring the other" warning went to STDOUT — and
+  that function's stdout *is* the config path, captured by the caller in a
+  `$( )`. So the warning became part of the filename and pitcrew died on a path
+  with a `⚠` in it. Which is exactly the state `pitcrew migrate` leaves a
+  project in until the old file is deleted.
 - **`~` did not expand in a config path.** `$HOME` did and `~` did not, so
   `dir: ~/work/api` resolved to `$ROOT/~/work/api` — a directory that cannot
   exist. `pitcrew check` called it clean and it failed at start time with a

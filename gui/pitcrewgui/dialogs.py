@@ -183,6 +183,21 @@ class ConfigDialog(Adw.Dialog):
         self._stack.add_titled_with_icon(scroller, "yaml", "YAML",
                                          "text-x-generic-symbolic")
 
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        body.append(self._stack)
+        self._stack.set_vexpand(True)
+        body.append(self._output)
+
+        wrapper = Adw.ToolbarView()
+        wrapper.add_top_bar(self._header(editable))
+        wrapper.set_content(body)
+        self.set_child(wrapper)
+
+        if self._is_yaml:
+            self._reload_form()
+
+    def _header(self, editable: bool) -> Adw.HeaderBar:
         save = Gtk.Button(label="Save", sensitive=editable)
         save.add_css_class("suggested-action")
         save.connect("clicked", lambda _b: self._save())
@@ -195,20 +210,18 @@ class ConfigDialog(Adw.Dialog):
         if self._is_yaml:
             header.set_title_widget(Adw.ViewSwitcher(stack=self._stack,
                                                      policy=Adw.ViewSwitcherPolicy.WIDE))
-
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
-                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
-        body.append(self._stack)
-        self._stack.set_vexpand(True)
-        body.append(self._output)
-
-        wrapper = Adw.ToolbarView()
-        wrapper.add_top_bar(header)
-        wrapper.set_content(body)
-        self.set_child(wrapper)
-
-        if self._is_yaml:
-            self._reload_form()
+        else:
+            # The way out of the text editor. A .sh config gets no form, and
+            # the ones that most need one are exactly the ones a form cannot
+            # touch — six apps built from a `for` loop over a `declare -A` of
+            # ports is compact to write and unreadable to anyone asking what
+            # port sales is on. The offer belongs where the problem is.
+            convert = Gtk.Button(label="Convert to YAML")
+            convert.set_tooltip_text("write the equivalent pitcrew.yaml, "
+                                     "then edit it as a form")
+            convert.connect("clicked", lambda _b: self._ask_convert())
+            header.pack_start(convert)
+        return header
 
     # ── the form ────────────────────────────────────────────────────────────
     #
@@ -466,6 +479,43 @@ class ConfigDialog(Adw.Dialog):
         # dialog believes it just wrote.
         if reload_form and self._is_yaml:
             self._reload_form()
+
+    # ── converting a bash config ────────────────────────────────────────────
+
+    def _ask_convert(self) -> None:
+        dialog = Adw.AlertDialog(
+            heading="Convert to YAML?",
+            body=("pitcrew has already run this config, so it can write out what "
+                  "it actually says — every app a loop produced, spelled out.\n\n"
+                  "The result is loaded and compared against this one field by "
+                  "field before anything is written; nothing is written if they "
+                  "differ. Your .sh file is left alone."))
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", "Convert")
+        dialog.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("go")
+        dialog.connect("response", lambda _d, r: r == "go" and self._convert())
+        dialog.present(self)
+
+    def _convert(self) -> None:
+        self._output.show_text("converting…")
+        self._runner.run(["-p", self._name, "migrate"], self._converted)
+
+    def _converted(self, ok: bool, output: str) -> None:
+        # pitcrew's own words, verbatim — including the warnings about what
+        # YAML cannot carry, which are the parts somebody has to port by hand.
+        self._output.show_text(output or ("converted" if ok else "conversion failed"))
+        if not ok:
+            return
+        self._on_saved()
+        # The dialog is bound to the .sh path it opened; the YAML is a
+        # different file. Closing and letting it be reopened is honest, and
+        # cheaper than re-resolving every path this dialog holds.
+        GLib.timeout_add(1200, self._close_after_convert)
+
+    def _close_after_convert(self) -> bool:
+        self.close()
+        return False
 
     def _check(self) -> None:
         problem = self._problem(self._text())

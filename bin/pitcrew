@@ -101,6 +101,10 @@ Usage:
   pitcrew json [--watch [--interval N]]
                                      one state object, or an NDJSON stream
                                      (--watch is the only mode with real cpu%)
+  pitcrew migrate [--print] [--force] [-o <file>]
+                                    rewrite a pitcrew.config.sh as the YAML that
+                                     means the same — checked by loading the
+                                     result and comparing it, field by field
   pitcrew config --json             the config as the editable model: every app,
                                      its components, and what the file says for
                                      each — what an editor needs, so nothing has
@@ -228,6 +232,7 @@ case "${1:-watch}" in
   restart) shift;  [ $# -ge 1 ] || die "restart needs app names"; cmd_stop "$@"; cmd_start "$@" ;;
   status)  shift; if [ "${1:-}" = --json ]; then cmd_json; else cmd_status; fi ;;
   json)    shift; if [ "${1:-}" = --watch ]; then shift; cmd_json_watch "$@"; else cmd_json; fi ;;
+  migrate) shift; cmd_migrate "$@" ;;
   config)  shift
            case "${1:-}" in
              --json) cmd_config_json ;;

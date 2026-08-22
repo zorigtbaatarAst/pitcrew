@@ -204,8 +204,8 @@ diag_view() {
       local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB ))
       human $(( SYS_MEM_USED_KB * 1024 )); local usedh=$HUMAN
       human $(( SYS_MEM_TOTAL_KB * 1024 )); local totalh=$HUMAN
-      pct_color "$mpct"; bar "$mpct" 16; local mbar=$R
-      pct_color "${SYS_CPU_PCT:-0}"; bar "${SYS_CPU_PCT:-0}" 16; local cbar=$R
+      bar "$mpct" 16; local mbar=$R
+      bar "${SYS_CPU_PCT:-0}" 16; local cbar=$R
       printf -v line '  %bRAM%b %s %b%s%b%b/%s%b   %bCPU%b %s %b%s%%%b' \
         "$C_MUTED" "$RESET" "$mbar" "$C_TEXT" "$usedh" "$RESET" "$C_MUTED" "$totalh" "$RESET" \
         "$C_MUTED" "$RESET" "$cbar" "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET"

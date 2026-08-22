@@ -442,6 +442,44 @@ tags, sequences of mappings, nested flow collections.
 Refusing loudly is the point — a config format that half-parses a start command
 is worse than one that does not parse it at all.
 
+### Converting one to YAML
+
+`pitcrew migrate` writes the YAML that means the same thing:
+
+```bash
+pitcrew migrate --print     # see it first
+pitcrew migrate             # write pitcrew.yaml next to the .sh
+```
+
+This works precisely because pitcrew has already **run** the config by the time
+`migrate` starts. A file that builds six apps from a `for` loop over a
+`declare -A` of ports — compact to write, and unreadable to anyone asking what
+port `sales` is on — has by then become six concrete apps in the model, and
+that is what gets written out. Along the way it undoes what the shell format
+made you open-code: a `cd $ROOT/x && …` in front of a command becomes `dir: x`,
+absolute paths become relative or `$ROOT`/`$HOME`, and values are quoted only
+where leaving them bare would change them.
+
+**The result is checked before anything is written.** The generated file is
+loaded in a subshell and its model compared, field by field, against the one in
+memory — every command, port, health path, cap, environment prefix, protection
+flag and exclusion. If they differ, nothing is written and you get the diff. A
+migration that silently changed a port would be worse than no migration.
+
+One difference is expected and reported rather than refused: in YAML a
+component with a `dir:` and no `watch:` of its own watches the directory it
+runs in, which a `.sh` config had no way to say. `migrate` names every
+component that gains a watch dir, because it changes what `pitcrew stale`
+reports.
+
+What YAML cannot carry is named up front — a `pitcrew_doctor_extra()` shell
+function has to be rewritten as `doctor:` label/command pairs by hand.
+
+Your `.sh` is left in place. pitcrew reads YAML in preference to it, so the new
+file is live immediately; delete the old one once you are happy. The desktop
+app offers the same conversion as a **Convert to YAML** button whenever it
+opens a `.sh` config, since that is the one it cannot show you as a form.
+
 ### The older bash format
 
 `pitcrew.config.sh` still loads, unchanged, and nothing about it is deprecated:

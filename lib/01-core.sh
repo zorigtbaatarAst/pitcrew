@@ -102,7 +102,10 @@ theme_apply() {
   BOLD="${ESC}[1m"; DIM="${ESC}[2m"; RESET="${ESC}[0m"
   [ "$PITCREW_COLOR_DEPTH" = none ] && { BOLD=""; DIM=""; RESET=""; }
 
-  _tok C_TEXT    "$T_TEXT"    0
+  # 39, not 0: the 16-colour fallback for "default foreground" is the
+  # default-foreground code. `\e[0m` is a full SGR reset, so on a 16-colour
+  # terminal every `${BOLD}…${C_TEXT}` in the frame silently un-bolded itself.
+  _tok C_TEXT    "$T_TEXT"    39
   _tok C_SUBTLE  "$T_SUBTLE"  37
   _tok C_MUTED   "$T_MUTED"   90
   _tok C_FAINT   "$T_FAINT"   90
@@ -124,6 +127,30 @@ theme_apply() {
   # correctly while the codebase migrates to roles.
   RED=$C_CRIT; GREEN=$C_OK; YELLOW=$C_WARN; BLUE=$C_INFO
   MAGENTA=$C_ACCENT2; CYAN=$C_ACCENT; GREY=$C_MUTED
+  return 0
+}
+
+# fzf paints its own frame — the prompt, the pointer, the header, the selected
+# row, the border — from a palette of its own, and it was never told about
+# ours. So the menu, the theme picker and every other `pick` stayed fzf green
+# whatever the dashboard behind them looked like: the one surface where
+# switching theme visibly changed nothing.
+#
+# The role names below are fzf's, and deliberately only the ones it has
+# understood since 0.19 — an unknown key is a hard "invalid color specification"
+# exit, which would turn a cosmetic feature into a menu that will not open.
+# `bg:-1` keeps the terminal's own background, because the picker is drawn
+# inline under the prompt rather than over a cleared screen.
+fzf_colors() { # → FZF_COLORS, the value for one --color= flag
+  case "$PITCREW_COLOR_DEPTH" in
+    none) FZF_COLORS=bw; return 0 ;;
+    16)   FZF_COLORS=16; return 0 ;;
+  esac
+  FZF_COLORS="fg:#$T_SUBTLE,fg+:#$T_TEXT,bg:-1,bg+:#$T_SURFACE"
+  FZF_COLORS+=",hl:#$T_ACCENT,hl+:#$T_ACCENT,gutter:-1"
+  FZF_COLORS+=",prompt:#$T_ACCENT,pointer:#$T_ACCENT2,marker:#$T_OK"
+  FZF_COLORS+=",info:#$T_MUTED,spinner:#$T_ACCENT2,header:#$T_MUTED"
+  FZF_COLORS+=",border:#$T_FAINT"
   return 0
 }
 
@@ -463,6 +490,16 @@ pick() {
 _pick_fzf() {
   local -a opts=(--height="$_PICK_HEIGHT" --border=rounded --ansi
                  --prompt="$_PICK_PROMPT" --pointer='▶')
+  # Someone who has set --color themselves has said what they want every fzf to
+  # look like, and ours comes after theirs on the command line — it would win.
+  # Explicit beats implicit: leave their picker alone. FZF_DEFAULT_OPTS_FILE
+  # names a file rather than carrying the flags, so it is read, not matched.
+  local _fzfopts="${FZF_DEFAULT_OPTS:-}"
+  [ -r "${FZF_DEFAULT_OPTS_FILE:-}" ] && _fzfopts+=$(<"$FZF_DEFAULT_OPTS_FILE")
+  case "$_fzfopts" in
+    *--color*) ;;
+    *) fzf_colors; opts+=(--color="$FZF_COLORS") ;;
+  esac
   [ "$_PICK_TABBED" = 1 ] && opts+=(--delimiter=$'\t' --with-nth=2..)
   [ "$_PICK_MULTI"  = 1 ] && opts+=(--multi --marker='✔ ')
   [ -n "$_PICK_HEADER" ]  && opts+=(--header="$_PICK_HEADER")

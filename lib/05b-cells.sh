@@ -207,14 +207,14 @@ comp_cell() { # $1 comp, $2 graph width (0 = no graph column) → R: one aligned
     # `scale cap` swaps the height back to absolute-against-the-cap for anyone
     # who wants it, and hands the colour back to the cool-to-hot ramp.
     pct=$(( cur * 100 / ${COMP_MAX_B[$c]:-1} ))
-    pct_color "$pct"
+    pct_color "$pct"; ramp_color "$pct"
     if [ "$gw" -gt 0 ]; then
       case "$PITCREW_GRAPH" in
         bar) bar "$pct" "$gw" ;;
         *)   if [ "$PITCREW_GRAPH_SCALE" = cap ]; then
                spark "${HIST_MEM[$c]:-}" "$gw" "${COMP_MAX_B[$c]:-67108864}" "" abs
              else
-               spark "${HIST_MEM[$c]:-}" "$gw" 67108864 "$PCOL" range
+               spark "${HIST_MEM[$c]:-}" "$gw" 67108864 "$RCOL" range
              fi ;;
       esac
       cell+="$R"

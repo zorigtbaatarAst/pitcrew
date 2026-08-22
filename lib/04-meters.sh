@@ -277,10 +277,41 @@ human() { # bytes → HUMAN as "1.5G" / "820M" (integer math; this used to fork 
   fi
 }
 
+# Two questions, and they are not the same question:
+#
+#   pct_color   "how worried should I be?" — the status triad, for FIGURES.
+#               Green, amber and red are words you read, and the theme's
+#               ok/warn/crit are exactly the roles that carry those words.
+#   ramp_color  "where on the scale is this?" — the theme's own graph ramp,
+#               for anything DRAWN: bar fills, gauge levels, graph glyphs.
+#
+# These used to be one function, and that is why switching theme appeared to
+# leave every bar alone. Every palette's ok/warn/crit is some green, some amber
+# and some red — that is what those roles MEAN — so a bar painted from them
+# came out near enough identical in all five themes while the text around it
+# changed completely, and the bars read as the part the theme had forgotten.
+# The ramp is the part of a palette that is genuinely its own: teal → pine →
+# gold → rose in Rosé Pine, aqua → lime → yellow → red in Gruvbox, four flat
+# greys in mono. A bar drawn from it looks like the theme it belongs to.
+#
+# They still agree about LEVEL — same thresholds, same direction — so the graph
+# and the figure beside it never disagree about how full something is. Only the
+# ink differs, and it differs because one of them is a picture.
 pct_color() { # $1 pct → PCOL
-  if   [ "${1:-0}" -ge 85 ]; then PCOL=$RED
-  elif [ "${1:-0}" -ge 60 ]; then PCOL=$YELLOW
-  else                            PCOL=$GREEN
+  if   [ "${1:-0}" -ge 85 ]; then PCOL=$C_CRIT
+  elif [ "${1:-0}" -ge 60 ]; then PCOL=$C_WARN
+  else                            PCOL=$C_OK
+  fi
+}
+
+# Four steps rather than three: the ramp HAS four, and the extra one buys the
+# distinction between "idle" and "working but fine" that a single green cannot
+# make. GRAMP is bottom-of-the-chart to top, so the order is the scale.
+ramp_color() { # $1 pct → RCOL
+  if   [ "${1:-0}" -ge 85 ]; then RCOL=${GRAMP[3]}
+  elif [ "${1:-0}" -ge 60 ]; then RCOL=${GRAMP[2]}
+  elif [ "${1:-0}" -ge 25 ]; then RCOL=${GRAMP[1]}
+  else                            RCOL=${GRAMP[0]}
   fi
 }
 
@@ -297,11 +328,15 @@ _level() { # $1 value, $2 max, $3 steps → LVL in 0..steps
 
 bar() { # $1 pct, $2 width → R
   local pct=${1:-0} w=$2 filled i
-  pct_color "$pct"
+  # Self-colouring: every caller used to run pct_color first and most of them
+  # then threw PCOL away. The bar knows its own number; it can pick its own ink.
+  ramp_color "$pct"
   filled=$((pct * w / 100)); [ $filled -gt "$w" ] && filled=$w; [ $filled -lt 0 ] && filled=0
-  R="$PCOL"
+  R="$RCOL"
   for ((i = 0; i < filled; i++)); do R+="█"; done
-  R+="$DIM$GREY"
+  # C_FAINT is the role for a baseline or a placeholder, and an empty track is
+  # both. DIM over C_MUTED was the same near-black in every theme.
+  R+="$C_FAINT"
   for ((i = filled; i < w; i++)); do R+="░"; done
   R+="$RESET"
 }
@@ -465,9 +500,10 @@ mem_meter() { # $1 comp → R: one aligned "bar RAM" cell, or a dim "—" if not
   max=${COMP_MAX_B[$c]:-1}
   _level "$cur" "$max" 7
   pct=$(( cur * 100 / max ))
-  pct_color "$pct"
+  pct_color "$pct"; ramp_color "$pct"
   human "$cur"
-  printf -v R '%b%s %5s%b' "$PCOL" "${BARS[$LVL]}" "$HUMAN" "$RESET"
+  # The block is drawn, the figure is read — see pct_color/ramp_color above.
+  printf -v R '%b%s %b%5s%b' "$RCOL" "${BARS[$LVL]}" "$PCOL" "$HUMAN" "$RESET"
   # `render ram cap` names the cap the colour is already measuring against, so
   # the headroom is a number rather than a hue you have to interpret.
   if [ "${PITCREW_RAM_CELL:-value}" = cap ]; then

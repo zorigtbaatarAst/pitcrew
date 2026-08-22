@@ -208,10 +208,10 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       # CPU both came out as a full-width line — every sample sat at the same
       # height, so the shape said nothing and the only real information was
       # the figure printed after it.
-      pct_color "${SYS_CPU_PCT:-0}"
+      ramp_color "${SYS_CPU_PCT:-0}"
       if [ "$sw" -gt 0 ]; then
         if [ "$PITCREW_GAUGE" = bar ]; then bar "${SYS_CPU_PCT:-0}" "$sw"
-        else spark "$HIST_SYS_CPU" "$sw" 100 "$PCOL" abs; fi
+        else spark "$HIST_SYS_CPU" "$sw" 100 "$RCOL" abs; fi
         printf -v cpuline '   %bCPU%b %s %b%3s%b%b%%%b' "$C_MUTED" "$RESET" "$R" \
           "$C_TEXT" "${SYS_CPU_PCT:-0}" "$RESET" "$C_MUTED" "$RESET"
       else
@@ -220,11 +220,11 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
       fi
       if [ "$have_mem" = 1 ]; then
         local mpct=$(( SYS_MEM_USED_KB * 100 / SYS_MEM_TOTAL_KB ))
-        pct_color "$mpct"
+        ramp_color "$mpct"
         R=""
         if [ "$sw" -gt 0 ]; then
           if [ "$PITCREW_GAUGE" = bar ]; then bar "$mpct" "$sw"
-          else spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$PCOL" abs; fi
+          else spark "$HIST_SYS_MEM" "$sw" "$SYS_MEM_TOTAL_KB" "$RCOL" abs; fi
           R="$R "
         fi
         printf -v line '   %bRAM%b %s%b%s%b %b/%b %b%s%b' "$C_MUTED" "$RESET" "$R" \

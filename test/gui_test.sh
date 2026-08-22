@@ -1219,6 +1219,52 @@ print(dialog._output.__class__.__name__ != '')
   rm -f "$SAMPLE_YAML"
 }
 
+test_a_bash_config_is_offered_a_way_out_of_being_bash() {
+  gui_available || return 0
+  # The .sh configs that most need a form are exactly the ones a form cannot
+  # touch: six apps built from a `for` loop over a `declare -A` of ports. The
+  # offer to convert belongs where the problem is, so it sits in that dialog's
+  # header and nowhere else.
+  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+def labels(widget, found):
+    while widget is not None:
+        text = widget.get_label() if hasattr(widget, 'get_label') else None
+        if text:
+            found.add(text)
+        child = widget.get_first_child() if hasattr(widget, 'get_first_child') else None
+        if child is not None:
+            labels(child, found)
+        widget = widget.get_next_sibling()
+found = set()
+labels(dialog._header(True).get_first_child(), found)
+print(sorted(found))
+")
+  assert_match "$out" 'Convert to YAML' "a bash config is offered the conversion"
+
+  # And a YAML one is not — there is nothing to convert.
+  local yaml_out
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  yaml_out=$(_config_form "
+def labels(widget, found):
+    while widget is not None:
+        text = widget.get_label() if hasattr(widget, 'get_label') else None
+        if text:
+            found.add(text)
+        child = widget.get_first_child() if hasattr(widget, 'get_first_child') else None
+        if child is not None:
+            labels(child, found)
+        widget = widget.get_next_sibling()
+found = set()
+labels(dialog._header(True).get_first_child(), found)
+print(sorted(found))
+")
+  assert_not_match "$yaml_out" 'Convert to YAML' "a yaml config is not"
+  rm -f "$SAMPLE_YAML"
+}
+
 test_a_bash_config_is_offered_as_text_and_not_as_a_form() {
   gui_available || return 0
   # A pitcrew.config.sh is a sourced shell script that may branch, loop or

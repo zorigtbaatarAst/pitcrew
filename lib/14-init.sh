@@ -74,6 +74,28 @@ _yq() { # $1 → the value as a double-quoted YAML scalar, always safe to emit
   printf '"%s"' "$v"
 }
 
+# The same value, quoted only where leaving it bare would change what it means.
+# A generated config is one somebody has to READ, and `name: "fixture"`,
+# `max: "2G"`, `port: "8080"` are quotes nobody would have typed.
+_yqb() { # $1 → a YAML scalar, bare where that is safe
+  local v=$1
+  case "$v" in
+    '') printf '""'; return ;;
+    # Leading or trailing space is significant and a bare scalar loses it.
+    ' '*|*' ') _yq "$v"; return ;;
+    # A leading indicator character means something else in YAML.
+    [-?:,\[\]{}\#\&\*\!\|\>\'\"%@\`]*) _yq "$v"; return ;;
+    # ": " makes the tail look like a mapping; " #" makes it look like a
+    # comment; a trailing ":" makes the whole thing look like a key.
+    *': '*|*' #'*|*:) _yq "$v"; return ;;
+  esac
+  case "$v" in
+    true|True|TRUE|false|False|FALSE|null|Null|NULL|yes|Yes|YES|no|No|NO|on|On|ON|'~')
+      _yq "$v"; return ;;
+  esac
+  printf '%s' "$v"
+}
+
 # Detected commands are written as `cd $ROOT/<rel> && <cmd>` because that is
 # what a .sh config needs. YAML has `dir:` for exactly that, so pull it back
 # out — the resulting config says where the app lives instead of open-coding a

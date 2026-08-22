@@ -560,18 +560,18 @@ _diag_machine_block() {
   if [ "$total" -gt 0 ]; then
     human $(( used * 1024 )); local usedh=$HUMAN
     human $(( total * 1024 )); local totalh=$HUMAN
-    pct_color "$pct"; bar "$pct" 24
+    bar "$pct" 24
     printf '    %bRAM%b  %s %b%s%b %b/ %s%b  %b%s%%%b\n' \
       "$C_MUTED" "$RESET" "$R" "$C_TEXT" "$usedh" "$RESET" "$C_MUTED" "$totalh" "$RESET" \
       "$C_SUBTLE" "$pct" "$RESET"
   fi
-  pct_color "${SYS_CPU_PCT:-0}"; bar "${SYS_CPU_PCT:-0}" 24
+  bar "${SYS_CPU_PCT:-0}" 24
   printf '    %bCPU%b  %s %b%s%%%b\n' "$C_MUTED" "$RESET" "$R" "$C_SUBTLE" "${SYS_CPU_PCT:-0}" "$RESET"
   if [ "${SYS_SWAP_TOTAL_KB:-0}" -gt 0 ]; then
     human $(( SYS_SWAP_USED_KB * 1024 )); local sh=$HUMAN
     human $(( SYS_SWAP_TOTAL_KB * 1024 )); local sth=$HUMAN
     local spct=$(( SYS_SWAP_USED_KB * 100 / SYS_SWAP_TOTAL_KB ))
-    pct_color "$spct"; bar "$spct" 24
+    bar "$spct" 24
     printf '    %bSWP%b  %s %b%s%b %b/ %s%b\n' \
       "$C_MUTED" "$RESET" "$R" "$C_TEXT" "$sh" "$RESET" "$C_MUTED" "$sth" "$RESET"
   fi
