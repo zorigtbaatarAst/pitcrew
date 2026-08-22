@@ -1231,17 +1231,103 @@ test_the_share_ring_ranks_and_totals_what_is_running() {
   # is actually drawn.
   local out; out=$(_drive "
 from pitcrewgui.model import share_slices
-rows, total = share_slices([('a', 100), ('b', 300), ('c', 0), ('d', None)])
-print(rows)
+rows, total = share_slices([('a', 100, 0), ('b', 300, 0), ('c', 0, 0), ('d', None, 0)])
+print([(r.name, r.value) for r in rows])
 print(total)
 print(share_slices([]))
-print(round(rows[0][1] / total * 100))
+print(round(rows[0].value / total * 100))
+print(share_slices([('a', 100, 512)])[0][0].limit)
 ")
   assert_eq "$(printf '%s' "$out" | sed -n 1p)" "[('b', 300.0), ('a', 100.0)]" \
     "biggest first, and nothing for a component using nothing"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "400.0" "the total is the sum of the slices"
-  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "([], 0)" "an idle stack draws no ring"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "([], 0.0)" "an idle stack draws no ring"
   assert_eq "$(printf '%s' "$out" | sed -n 4p)" "75" "shares are of the drawn total"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "512.0" "a wedge carries its own RAM cap"
+}
+
+test_the_share_ring_folds_wedges_too_thin_to_point_at() {
+  gui_available || return 0
+  # A wedge under ~1.5% is a sliver: invisible, and — now that the ring is
+  # something you hover and click — impossible to hit. Folding the tail is what
+  # keeps every wedge on the chart a real target.
+  local out; out=$(_drive "
+from pitcrewgui.model import share_slices
+tail = [(f'tiny{i}', 2, 0) for i in range(6)]
+rows, total = share_slices([('big', 1000, 0), ('mid', 400, 0)] + tail)
+print([r.name for r in rows])
+print(rows[-1].value, len(rows[-1].members))
+# one leftover is named, not folded: 'other (1)' says less than the name does
+print([r.name for r in share_slices([('big', 1000, 0), ('lonely', 2, 0)])[0]])
+# nine real components stay nine wedges
+print(len(share_slices([(f'c{i}', 100, 0) for i in range(9)])[0]))
+# ten become nine, the last of them the fold
+print([r.name for r in share_slices([(f'c{i}', 100, 0) for i in range(10)])[0]][-1])
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "['big', 'mid', 'other']" \
+    "the slivers become one wedge"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "12.0 6" "which totals them and says how many"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "['big', 'lonely']" \
+    "a single leftover keeps its name"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "9" "nine equal components are nine wedges"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "other" "the tenth is what starts a fold"
+}
+
+test_every_wedge_on_the_share_ring_can_be_pointed_at() {
+  gui_display || return 0
+  # The ring grew hover, pinning and keyboard selection, and all three run off
+  # ONE hit test against the geometry the last paint left behind. If that
+  # mapping is wrong the chart looks perfect and answers the wrong component —
+  # the failure mode a screenshot cannot catch.
+  local out; out=$(_drive "
+import math, cairo
+from pitcrewgui.widgets import ShareChart
+from pitcrewgui.model import share_slices, SERIES_COLORS
+from gi.repository import Gdk
+
+comps = [('be-shop', 3.1e9, 4e9), ('fe-shop', 1.2e9, 0), ('be-admin', 780e6, 800e6),
+         ('fe-admin', 410e6, 0), ('be-jobs', 260e6, 0), ('worker', 120e6, 0),
+         ('cron', 41e6, 0), ('tiny', 9e6, 0)]
+rows, total = share_slices(comps)
+colors = {n: SERIES_COLORS[i % len(SERIES_COLORS)] for i, (n, _v, _l) in enumerate(comps)}
+opened = []
+chart = ShareChart(on_activate=opened.append)
+chart.set_slices(rows, total, colors, 16 * 1024 ** 3)
+cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 620, 210))
+chart._draw(None, cr, 620, 210)
+g = chart._geom
+mid = (g['inner'] + g['outer']) / 2
+
+hits, angle = [], -math.tau / 4
+for index, row in enumerate(rows):
+    sweep = math.tau * row.value / total
+    a = angle + sweep / 2
+    hits.append(chart._at(g['cx'] + mid * math.cos(a), g['cy'] + mid * math.sin(a)) == index)
+    angle += sweep
+print(all(hits), len(hits))
+print(chart._at(g['cx'], g['cy']), chart._at(g['cx'], g['cy'] - g['outer'] - 40))
+print(all(chart._at(g['legend_x'] + 30, (t + b) / 2) == i
+          for i, (t, b) in enumerate(g['rows'])), len(g['rows']))
+chart._select('be-shop'); chart._on_key(None, Gdk.KEY_Return, 0, 0)
+print(opened)
+chart._select('other'); chart._on_key(None, Gdk.KEY_Return, 0, 0)
+print(opened)
+chart._select('fe-shop')
+chart.set_slices(*share_slices([('be-shop', 1e9, 0)]), colors, 16 * 1024 ** 3)
+print(chart._selected)
+chart.set_slices([], 0.0, {}, 0)
+chart._draw(None, cr, 620, 210)
+print(chart._geom, chart._at(10, 10))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True 7" "the pointer lands on the wedge it is over"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "None None" "the hole and the space around it are not wedges"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "True 7" "and so is every row of the key beside it"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "['be-shop']" "a wedge opens the component it names"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "['be-shop']" \
+    "but 'other' is several at once and opens nothing"
+  assert_eq "$(printf '%s' "$out" | sed -n 6p)" "None" \
+    "a pinned component that stops lets go of the readout"
+  assert_eq "$(printf '%s' "$out" | sed -n 7p)" "None None" "an idle ring has no geometry to hit"
 }
 
 # ── zen mode ────────────────────────────────────────────────────────────────

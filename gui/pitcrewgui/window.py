@@ -305,18 +305,57 @@ class Window(Adw.ApplicationWindow):
         header.pack_start(self._build_project_button())
         header.pack_start(self._build_running_pill())
         header.pack_end(self._build_menu_button())
-        # Zen hides rows, so it has to announce itself: a window that is quietly
-        # not showing you six services is worse than one that never had them.
-        # Clicking it is the way out, because the first thing you do with a mode
-        # you did not mean to enter is click the thing that says you are in it.
-        zen_label = Gtk.Label(label="zen")
-        zen_label.add_css_class("caption")
-        self._zen_pill = Gtk.Button(child=zen_label, visible=False, valign=Gtk.Align.CENTER,
-                                    tooltip_text="Only what needs you. Click or Ctrl+Z to leave.")
+        header.pack_end(self._build_zen_pill())
+        return header
+
+    def _build_zen_pill(self) -> Gtk.Widget:
+        """The mode indicator: what is on, what it costs you, and the way out.
+
+        Zen hides rows, so it has to announce itself — a window that is quietly
+        not showing you six services is worse than one that never had them. A
+        bare lowercase "zen" announced only that SOMETHING was on: it named no
+        count, carried no icon, and in an accent theme near amber it read as a
+        warning badge rather than a state.
+
+        So it is a chip instead. The eye-with-a-slash says what the mode DOES,
+        the count says what it is costing you right now, and the ✕ says the
+        whole thing is a button you can press to leave — which is the first
+        thing anyone does with a mode they did not mean to enter.
+        """
+        icon = Gtk.Image.new_from_icon_name("view-conceal-symbolic")
+        icon.set_pixel_size(14)
+        name = Gtk.Label(label="Zen")
+        name.add_css_class("caption-heading")
+        # The count is the honest part of the chip, so it is styled as content
+        # rather than as chrome — but dimmer than the name, which never changes.
+        self._zen_count = Gtk.Label(visible=False)
+        self._zen_count.add_css_class("caption")
+        self._zen_count.add_css_class("zen-pill-count")
+        close = Gtk.Image.new_from_icon_name("window-close-symbolic")
+        close.set_pixel_size(11)
+        close.add_css_class("zen-pill-close")
+
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        for child in (icon, name, self._zen_count, close):
+            box.append(child)
+        self._zen_pill = Gtk.Button(child=box, visible=False, valign=Gtk.Align.CENTER,
+                                    tooltip_text="Only what needs you. "
+                                                 "Click or Ctrl+Z to leave.")
         self._zen_pill.add_css_class("zen-pill")
         self._zen_pill.connect("clicked", lambda _b: self._toggle_zen())
-        header.pack_end(self._zen_pill)
-        return header
+        return self._zen_pill
+
+    def _update_zen_pill(self, hidden: int) -> None:
+        """How many components zen is holding back, live."""
+        self._zen_count.set_visible(bool(hidden))
+        if hidden:
+            self._zen_count.set_text(f"{hidden} hidden")
+        self._zen_pill.set_tooltip_text(
+            f"Zen is hiding {hidden} component{'s' if hidden != 1 else ''} that are fine.\n"
+            "Click or Ctrl+Z to show everything again."
+            if hidden else
+            "Zen is on, and nothing is being hidden — everything here needs you.\n"
+            "Click or Ctrl+Z to leave.")
 
     def _build_project_button(self) -> Gtk.Widget:
         self._project_button = Gtk.MenuButton(
@@ -857,8 +896,18 @@ class Window(Adw.ApplicationWindow):
             box.append(frame)
         share_label = Gtk.Label(label="Share of memory", halign=Gtk.Align.START)
         share_label.add_css_class("heading")
-        box.append(share_label)
-        self._share = ShareChart()
+        # The ring only became worth pointing at recently, and an affordance
+        # nobody knows about is the same as not having one.
+        share_hint = Gtk.Label(label="Point at a slice for its numbers  ·  "
+                                     "click to pin  ·  double-click to open it",
+                               halign=Gtk.Align.START, xalign=0, wrap=True)
+        share_hint.add_css_class("caption")
+        share_hint.add_css_class("dim-label")
+        share_head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        share_head.append(share_label)
+        share_head.append(share_hint)
+        box.append(share_head)
+        self._share = ShareChart(on_activate=self._show_detail)
         share_frame = Gtk.Frame()
         share_frame.set_child(self._share)
         box.append(share_frame)
@@ -1263,6 +1312,10 @@ class Window(Adw.ApplicationWindow):
         # frame that reported it, and the two machines could disagree.
         self._last_at = state.get("at") or 0
         self._last_log_dir = state.get("logDir")
+        # Set here rather than in _update_machine_summary, which runs after the
+        # graphs: the share ring draws the project against the machine, and a
+        # total that arrives a frame late is a ring that is wrong on the first.
+        self._machine_total = (state.get("machine") or {}).get("memTotal") or 0
         colors = {c["name"]: SERIES_COLORS[i % len(SERIES_COLORS)]
                   for i, c in enumerate(components)}
         self._colors = colors
@@ -1307,7 +1360,9 @@ class Window(Adw.ApplicationWindow):
             components = [c for c in components
                           if c.get("state") in ("up", "starting", "external", "crashed")]
         if self._zen:
-            components = [c for c in components if self._zen_wants(c)]
+            kept = [c for c in components if self._zen_wants(c)]
+            self._update_zen_pill(len(components) - len(kept))
+            components = kept
 
         buckets: dict[tuple[str, str], list[dict]] = {}
         for comp in components:
@@ -1358,7 +1413,15 @@ class Window(Adw.ApplicationWindow):
         for (_sort, heading), comps in ordered:
             for comp in comps:
                 self._rows[comp["name"]].update(comp, now)
-            if heading not in self._pinned:
+            # Never in zen. Auto-collapse asks a DIFFERENT question — "is
+            # anything in this group up?" — and for a list of stopped services
+            # it answers no, which is exactly the list zen just built for you.
+            # Zen also drops the headings, so there is no expander left to undo
+            # the fold with: the page went blank, with 2/12 up in the header and
+            # no way back. A mode you cannot see out of is a trap, not a filter.
+            if self._zen:
+                self._collapsed[heading] = False
+            elif heading not in self._pinned:
                 self._collapsed[heading] = auto and group_is_idle(comps)
             self._apply_collapse(heading)
             group = self._group_widgets.get(heading)
@@ -1581,10 +1644,12 @@ class Window(Adw.ApplicationWindow):
         self._rebuild_legend(listed)
 
         by_name = {c["name"]: c for c in components}
-        colour = {s.name: s.rgb for s in plotted}
-        rows, total = share_slices((s.name, by_name.get(s.name, {}).get("rss") or 0)
+        colour = {s.name: s.color for s in plotted}
+        rows, total = share_slices((s.name,
+                                    by_name.get(s.name, {}).get("rss") or 0,
+                                    by_name.get(s.name, {}).get("limit") or 0)
                                    for s in plotted)
-        self._share.set_slices(((n, v, colour[n]) for n, v in rows), total)
+        self._share.set_slices(rows, total, colour, self._machine_total)
 
     def _update_machine_summary(self, components: list[dict], machine: dict) -> None:
         used = sum(c.get("rss") or 0 for c in components)
@@ -1600,12 +1665,11 @@ class Window(Adw.ApplicationWindow):
             over = " — more than the machine has" if total and capped > total else ""
             parts.append(f"caps commit {human_bytes(capped)}{over}")
         self._machine_label.set_text("   ·   ".join(parts))
-        self._machine_total = total
         self._apply_scale()
 
     def _apply_scale(self) -> None:
         machine = self._scale_toggle.get_active_name() == "machine"
-        self._rss_graph.set_ceiling(getattr(self, "_machine_total", 0) if machine else None)
+        self._rss_graph.set_ceiling(self._machine_total if machine else None)
 
     def _rebuild_legend(self, series: list[Series]) -> None:
         child = self._legend.get_first_child()

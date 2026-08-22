@@ -50,15 +50,34 @@ row.finding-info { border-left-color: alpha(@accent_color, 0.55); }
 
 /* The zen indicator. Accent-tinted rather than `suggested-action`, which is
    for the one button you are meant to press: this is a state you are
-   in, not the button you should hit next. */
+   in, not the button you should hit next.
+
+   A chip, not a badge: the outline is what separates "a mode is on, press this
+   to leave" from "something is wrong here". Tinted fill alone read as a
+   warning on any theme whose accent sits near amber — which is most of the
+   warm ones, and this app spends amber on real warnings elsewhere. */
 .zen-pill {
-  background: alpha(@accent_bg_color, 0.20);
+  background: alpha(@accent_bg_color, 0.14);
+  box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.40);
   color: @accent_color;
   border-radius: 999px;
-  padding: 2px 12px;
-  min-height: 22px;
+  padding: 2px 8px 2px 10px;
+  min-height: 24px;
 }
-.zen-pill:hover { background: alpha(@accent_bg_color, 0.32); }
+.zen-pill:hover {
+  background: alpha(@accent_bg_color, 0.28);
+  box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.70);
+}
+.zen-pill:active { background: alpha(@accent_bg_color, 0.40); }
+
+/* The count is the honest part of the chip — how much is being kept from you —
+   so it stays legible while sitting a step behind the name that never changes. */
+.zen-pill-count { opacity: 0.72; font-feature-settings: "tnum"; }
+
+/* The ✕ is an affordance, not an action of its own: the whole chip is the
+   button. Quiet until the pointer says the chip is about to be pressed. */
+.zen-pill-close { opacity: 0.55; }
+.zen-pill:hover .zen-pill-close { opacity: 1; }
 """
 
 

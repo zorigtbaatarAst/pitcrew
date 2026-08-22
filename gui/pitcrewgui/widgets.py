@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import math
+
 import cairo
-from gi.repository import Adw, Gtk, Pango
+from gi.repository import Adw, Gdk, Gtk, Pango
 
 from .model import (
     RAMP,
     STATE_STYLE,
     UNKNOWN_STYLE,
     Series,
+    ShareSlice,
     fix_action,
     hover_index,
     human_bytes,
@@ -279,88 +282,392 @@ def human_age(seconds: float | None) -> str:
 
 
 class ShareChart(Gtk.DrawingArea):
-    """Who is eating the stack, as a share of it.
+    """Who is eating the stack, as a share of it — and of the machine.
 
     The line graphs answer "is this climbing"; they are bad at "which of these
     twelve is the problem", because a 3 GiB frontend and a 300 MiB cron worker
-    are both just lines. A ring answers that in one look, and the slices reuse
+    are both just lines. A ring answers that in one look, and the wedges reuse
     the series colours so it reads against the legend and the row sparklines
     without a second key.
+
+    Two rings, because "share of memory" is two questions and answering only
+    the first one is what made the old chart a decoration. The thin outer track
+    is the MACHINE, filled to what this project costs it; the donut inside it is
+    how that cost splits between components. A stack that is 4% of the box and a
+    stack that is 80% of it drew the identical picture before.
+
+    Everything here is pointable. A wedge you can see but not interrogate is
+    half an answer — the same reason Graph grew a crosshair — so hovering lifts
+    a wedge and puts its numbers in the hole, clicking pins it, double-click or
+    Enter opens the component, and the whole widget is keyboard-reachable.
     """
 
-    def __init__(self):
+    TRACK_GAP = 13        # between the machine track and the breakdown donut
+    TRACK_W = 4
+    LIFT = 4              # how far the pointed-at wedge pops out — must stay
+                          # inside TRACK_GAP or it paints over the track
+    LEGEND_PITCH = 18
+    LEGEND_MIN_W = 168    # under this there is no room for a key beside the ring
+    DIM = 0.34            # everything that is not the pointed-at wedge
+
+    def __init__(self, on_activate=None):
         super().__init__()
-        self._slices: list[tuple[str, float, tuple[float, float, float]]] = []
+        self._slices: list[ShareSlice] = []
+        self._colors: dict[str, tuple[float, float, float]] = {}
         self._total = 0.0
-        self.set_content_height(190)
+        self._machine = 0.0
+        self._on_activate = on_activate
+        # Geometry from the last paint, so the pointer can be mapped back to a
+        # wedge without re-deriving a layout that depends on the measured width.
+        self._geom: dict | None = None
+        self._hover: int | None = None
+        self._selected: str | None = None      # by NAME: a frame can reorder wedges
+        self.set_content_height(210)
         self.set_hexpand(True)
         self.set_draw_func(self._draw)
+        self.set_focusable(True)
+        self.set_has_tooltip(True)
+        self.connect("query-tooltip", self._on_tooltip)
 
-    def set_slices(self, slices, total: float) -> None:
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _c, x, y: self._set_hover(self._at(x, y)))
+        motion.connect("leave", lambda _c: self._set_hover(None))
+        self.add_controller(motion)
+
+        click = Gtk.GestureClick()
+        click.connect("pressed", self._on_click)
+        self.add_controller(click)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._on_key)
+        self.add_controller(keys)
+
+    # ── state ───────────────────────────────────────────────────────────────
+    def set_slices(self, slices, total: float, colors: dict[str, str],
+                   machine_total: float = 0.0) -> None:
         self._slices = list(slices)
         self._total = total
+        self._machine = machine_total or 0.0
+        self._colors = {name: rgb(value) for name, value in colors.items()}
+        # A pinned wedge that stopped existing (the component was stopped, or
+        # fell into `other`) has to let go, or the hole reads out a component
+        # that is no longer on the chart.
+        if self._selected is not None and self._index_of(self._selected) is None:
+            self._selected = None
         self.queue_draw()
 
+    def _index_of(self, name: str | None) -> int | None:
+        for index, slice_ in enumerate(self._slices):
+            if slice_.name == name:
+                return index
+        return None
+
+    def _active(self) -> int | None:
+        """The wedge being read: what the pointer is on, else what is pinned."""
+        return self._hover if self._hover is not None else self._index_of(self._selected)
+
+    def _colour(self, name: str) -> tuple[float, float, float]:
+        # `other` has no series and must not borrow one's colour: it is the
+        # absence of a distinction, and grey is what that looks like.
+        return self._colors.get(name) or rgb(RAMP["calm"])
+
+    # ── input ───────────────────────────────────────────────────────────────
+    def _set_hover(self, index: int | None) -> None:
+        if index == self._hover:
+            return
+        self._hover = index
+        self.set_cursor_from_name("pointer" if index is not None else None)
+        self.queue_draw()
+
+    def _select(self, name: str | None) -> None:
+        if name != self._selected:
+            self._selected = name
+            self.queue_draw()
+
+    def _at(self, x: float, y: float) -> int | None:
+        """Which wedge is under (x, y) — in the ring or in the key beside it."""
+        geom = self._geom
+        if geom is None:
+            return None
+        for index, (top, bottom) in enumerate(geom["rows"]):
+            if top <= y < bottom and x >= geom["legend_x"] - 10:
+                return index
+        dx, dy = x - geom["cx"], y - geom["cy"]
+        radius = math.hypot(dx, dy)
+        if not geom["inner"] <= radius <= geom["outer"] + self.LIFT:
+            return None
+        # atan2 is zero at three o'clock and grows anticlockwise in maths but
+        # clockwise on screen, where y points down — which is the direction the
+        # wedges are laid out in. The quarter turn moves zero to twelve.
+        angle = (math.atan2(dy, dx) + math.tau / 4) % math.tau
+        swept = 0.0
+        for index, slice_ in enumerate(self._slices):
+            swept += math.tau * slice_.value / self._total
+            if angle < swept:
+                return index
+        return None
+
+    def _on_click(self, _gesture, n_press: int, x: float, y: float) -> None:
+        self.grab_focus()
+        index = self._at(x, y)
+        if index is None:
+            self._select(None)
+            return
+        slice_ = self._slices[index]
+        # A second click OPENS rather than re-pins: pinning is how you read the
+        # numbers, opening is what you do about them, and they should not be
+        # the same gesture.
+        if n_press >= 2:
+            self._activate(slice_)
+            return
+        self._select(None if self._selected == slice_.name else slice_.name)
+
+    def _on_key(self, _controller, keyval, _keycode, _state) -> bool:
+        if not self._slices:
+            return False
+        index = self._index_of(self._selected)
+        if keyval in (Gdk.KEY_Right, Gdk.KEY_Down):
+            self._select(self._slices[0 if index is None else
+                                      (index + 1) % len(self._slices)].name)
+            return True
+        if keyval in (Gdk.KEY_Left, Gdk.KEY_Up):
+            self._select(self._slices[-1 if index is None else
+                                      (index - 1) % len(self._slices)].name)
+            return True
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space):
+            if index is not None:
+                self._activate(self._slices[index])
+            return True
+        if keyval == Gdk.KEY_Escape:
+            self._select(None)
+            return True
+        return False
+
+    def _activate(self, slice_: ShareSlice) -> None:
+        # `other` is several components at once; there is no one detail view to
+        # open for it, and guessing which of them you meant would be worse than
+        # doing nothing.
+        if slice_.members or self._on_activate is None:
+            return
+        self._on_activate(slice_.name)
+
+    def _on_tooltip(self, _widget, x: int, y: int, keyboard: bool, tooltip) -> bool:
+        index = self._index_of(self._selected) if keyboard else self._at(x, y)
+        if index is None:
+            return False
+        slice_ = self._slices[index]
+        lines = [f"<b>{plain_text(slice_.name)}</b>",
+                 f"{human_bytes(slice_.value)}   "
+                 f"{slice_.value / self._total * 100:.1f}% of the project"]
+        if self._machine:
+            lines.append(f"{slice_.value / self._machine * 100:.1f}% of this machine")
+        if slice_.limit:
+            lines.append(f"{human_bytes(slice_.value)} of {human_bytes(slice_.limit)} "
+                         f"cap  ({slice_.value / slice_.limit * 100:.0f}%)")
+        if slice_.members:
+            lines.append(plain_text(", ".join(slice_.members)))
+        tooltip.set_markup("\n".join(lines))
+        return True
+
+    # ── painting ────────────────────────────────────────────────────────────
     def _draw(self, _area, cr, width, height) -> None:
         fg = self.get_color()
         cr.select_font_face("sans-serif")
         cr.set_font_size(11)
 
         if not self._slices or self._total <= 0:
+            self._geom = None
             cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
             text = "nothing running"
             cr.move_to((width - cr.text_extents(text).width) / 2, height / 2)
             cr.show_text(text)
             return
 
-        tau = 6.283185307179586
-        outer = min(height, 150) / 2 - 6
-        inner = outer * 0.58
-        cx, cy = 12 + outer, height / 2
+        size = min(height - 10, 200)
+        # Below this the hole cannot hold a readout and the wedges cannot be
+        # pointed at, so there is nothing to draw that would be worth reading.
+        # Same early return Graph makes when its plot area collapses.
+        if size < 72:
+            self._geom = None
+            return
+        track_r = size / 2 - 1
+        outer = track_r - self.TRACK_GAP
+        inner = outer * 0.60
+        cx, cy = 14 + track_r, height / 2
 
-        angle = -tau / 4                       # start at twelve o'clock
-        for _name, value, rgb_ in self._slices:
-            sweep = tau * value / self._total
-            cr.set_source_rgb(*rgb_)
+        # The key needs a readable width or it is worse than no key. Where the
+        # widget cannot give it one, the ring takes the whole width instead —
+        # the series legend under the graphs still names everything.
+        legend_x = cx + track_r + 24
+        if width - legend_x < self.LEGEND_MIN_W:
+            legend_x = 0.0
+            cx = width / 2
+
+        active = self._active()
+        self._draw_machine_track(cr, fg, cx, cy, track_r)
+        self._draw_wedges(cr, cx, cy, outer, inner, active)
+        self._draw_hole(cr, fg, cx, cy, inner, active)
+        rows = self._draw_legend(cr, fg, legend_x, cy, width, height, active) if legend_x else []
+        self._geom = {"cx": cx, "cy": cy, "inner": inner, "outer": outer,
+                      "legend_x": legend_x, "rows": rows}
+
+    def _draw_machine_track(self, cr, fg, cx: float, cy: float, radius: float) -> None:
+        """The project against the box it is running on, as a thin outer ring.
+
+        Without it the donut is a proportion with no magnitude: the same
+        picture for a stack costing 4% of the machine and one costing 80%.
+        """
+        if not self._machine:
+            return
+        share = min(self._total / self._machine, 1.0)
+        cr.set_line_width(self.TRACK_W)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.13)
+        cr.arc(cx, cy, radius, 0, math.tau)
+        cr.stroke()
+        # Heavier than the empty track it sits in. `calm` is a grey by design,
+        # so hue alone cannot be what separates "used" from "not used" here.
+        cr.set_line_width(self.TRACK_W + 2)
+        # The same ramp as every other meter in the app, so the colour of this
+        # arc means what amber means everywhere else — and `calm` is grey, not
+        # green: a stack using a tenth of the machine has nothing to say.
+        cr.set_source_rgb(*rgb(RAMP[meter_level(share * 100)]))
+        cr.arc(cx, cy, radius, -math.tau / 4, -math.tau / 4 + math.tau * share)
+        cr.stroke()
+
+    def _draw_wedges(self, cr, cx: float, cy: float, outer: float, inner: float,
+                     active: int | None) -> None:
+        angle = -math.tau / 4                  # start at twelve o'clock
+        for index, slice_ in enumerate(self._slices):
+            sweep = math.tau * slice_.value / self._total
+            lift = self.LIFT if index == active else 0
+            red, green, blue = self._colour(slice_.name)
+            alpha = 1.0 if active is None or index == active else self.DIM
+            cr.set_source_rgba(red, green, blue, alpha)
             cr.move_to(cx, cy)
-            cr.arc(cx, cy, outer, angle, angle + sweep)
+            cr.arc(cx, cy, outer + lift, angle, angle + sweep)
             cr.close_path()
             cr.fill()
             angle += sweep
-
-        # Punch the middle out AFTER the slices: a ring reads as proportion,
+        # Punch the middle out AFTER the wedges: a ring reads as proportion,
         # where a full pie invites reading the radius as a magnitude too.
         # CLEAR leaves real transparency, so the hole shows the themed window
         # behind it and stays right in both light and dark.
         cr.set_operator(cairo.OPERATOR_CLEAR)
-        cr.arc(cx, cy, inner, 0, tau)
+        cr.arc(cx, cy, inner, 0, math.tau)
         cr.fill()
         cr.set_operator(cairo.OPERATOR_OVER)
 
-        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.92)
-        cr.set_font_size(13)
-        total = human_bytes(self._total)
-        cr.move_to(cx - cr.text_extents(total).width / 2, cy + 4)
-        cr.show_text(total)
+    def _draw_hole(self, cr, fg, cx: float, cy: float, inner: float,
+                   active: int | None) -> None:
+        """The readout. The total, until you point at something."""
+        if active is None:
+            head, sub = human_bytes(self._total), ""
+            if self._machine:
+                sub = f"{self._total / self._machine * 100:.0f}% of machine"
+        else:
+            slice_ = self._slices[active]
+            head = human_bytes(slice_.value)
+            sub = f"{slice_.value / self._total * 100:.0f}%"
 
-        # A legend beside the ring rather than labels on it: twelve components
-        # means twelve slices, and callouts on thin slices overlap into mush.
+        if active is not None:
+            name = self._fit(cr, self._slices[active].name, inner * 1.7, 11)
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.60)
+            cr.move_to(cx - cr.text_extents(name).width / 2, cy - 14)
+            cr.show_text(name)
+
+        cr.set_font_size(15)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.95)
+        cr.move_to(cx - cr.text_extents(head).width / 2, cy + 4)
+        cr.show_text(head)
+        if sub:
+            cr.set_font_size(10)
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.50)
+            cr.move_to(cx - cr.text_extents(sub).width / 2, cy + 19)
+            cr.show_text(sub)
         cr.set_font_size(11)
-        left = cx + outer + 22
-        top = cy - min(len(self._slices), 8) * 8
-        for row, (name, value, rgb_) in enumerate(self._slices[:8]):
-            y = top + row * 17
-            cr.set_source_rgb(*rgb_)
-            cr.arc(left, y - 4, 4, 0, tau)
+
+    def _draw_legend(self, cr, fg, left: float, cy: float, width: float,
+                     height: float, active: int | None) -> list[tuple[float, float]]:
+        """The key beside the ring, and the hit bands that make it pointable.
+
+        Beside the ring rather than labels on it: twelve components means twelve
+        wedges, and callouts on thin ones overlap into mush.
+        """
+        fits = max(1, int((height - 12) // self.LEGEND_PITCH))
+        shown = self._slices[:fits]
+        top = cy - len(shown) * self.LEGEND_PITCH / 2
+        rows: list[tuple[float, float]] = []
+        for index, slice_ in enumerate(shown):
+            band_top = top + index * self.LEGEND_PITCH
+            baseline = band_top + self.LEGEND_PITCH - 5
+            rows.append((band_top, band_top + self.LEGEND_PITCH))
+
+            if index == active:
+                cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.08)
+                cr.rectangle(left - 8, band_top, width - left + 2, self.LEGEND_PITCH)
+                cr.fill()
+
+            fade = 1.0 if active is None or index == active else 0.55
+            red, green, blue = self._colour(slice_.name)
+            cr.set_source_rgba(red, green, blue, fade)
+            cr.arc(left, baseline - 4, 4, 0, math.tau)
             cr.fill()
-            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85)
-            cr.move_to(left + 12, y)
-            cr.show_text(f"{name}   {human_bytes(value)}   "
-                         f"{value / self._total * 100:.0f}%")
-        if len(self._slices) > 8:
-            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.45)
-            cr.move_to(left + 12, top + 8 * 17)
-            cr.show_text(f"+{len(self._slices) - 8} more")
+
+            # Figures right-aligned against the edge and the name clipped to
+            # what is left: a long component name must not push the number it
+            # is there to carry off the widget.
+            figures = (f"{human_bytes(slice_.value)}   "
+                       f"{slice_.value / self._total * 100:.0f}%")
+            warn = self._cap_level(slice_)
+            right = width - 6
+            if warn:
+                self._cap_mark(cr, right - 8, baseline - 4, RAMP[warn])
+                right -= 16
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85 * fade)
+            figures_w = cr.text_extents(figures).width
+            cr.move_to(right - figures_w, baseline)
+            cr.show_text(figures)
+
+            name = self._fit(cr, slice_.name, right - figures_w - left - 22, 11)
+            cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85 * fade)
+            cr.move_to(left + 12, baseline)
+            cr.show_text(name)
+        return rows
+
+    @staticmethod
+    def _cap_mark(cr, cx: float, cy: float, color: str) -> None:
+        """A small triangle: this component is pressing against its RAM cap.
+
+        Drawn as a path rather than a glyph. Cairo's toy font API has no font
+        fallback, so `▲` is a tofu box on any box whose default sans lacks it —
+        which turned the one warning on this chart into a rendering artefact.
+        """
+        cr.set_source_rgb(*rgb(color))
+        cr.move_to(cx, cy - 4.5)
+        cr.line_to(cx + 4.5, cy + 3.5)
+        cr.line_to(cx - 4.5, cy + 3.5)
+        cr.close_path()
+        cr.fill()
+
+    @staticmethod
+    def _cap_level(slice_: ShareSlice) -> str:
+        """warn/crit when a wedge is pressing against its own RAM cap, else ""."""
+        if not slice_.limit:
+            return ""
+        level = meter_level(slice_.value / slice_.limit * 100)
+        return "" if level == "calm" else level
+
+    @staticmethod
+    def _fit(cr, text: str, room: float, size: float) -> str:
+        """`text`, ellipsised to `room` pixels. Cairo will not do it for us."""
+        cr.set_font_size(size)
+        if room <= 0:
+            return ""
+        if cr.text_extents(text).width <= room:
+            return text
+        while text and cr.text_extents(text + "…").width > room:
+            text = text[:-1]
+        return text + "…" if text else ""
 
 
 class SegmentedControl(Gtk.Box):

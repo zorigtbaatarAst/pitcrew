@@ -6,6 +6,7 @@ component is grouped can be tested without a display."""
 from __future__ import annotations
 
 from collections import deque
+from typing import NamedTuple
 
 from gi.repository import GLib
 
@@ -300,13 +301,57 @@ def group_is_idle(comps: list[dict]) -> bool:
     return not any(c.get("state") in ("up", "starting", "external", "crashed") for c in comps)
 
 
-def share_slices(pairs) -> tuple[list[tuple[str, float]], float]:
-    """(name, bytes) pairs as ring slices: biggest first, with the total.
+class ShareSlice(NamedTuple):
+    """One wedge of the memory ring.
+
+    `limit` is the component's RAM cap (0 when uncapped) and `members` names
+    what an `other` wedge folded up — both are empty for an ordinary wedge, and
+    both are what the wedge can say about itself when it is pointed at.
+    """
+
+    name: str
+    value: float
+    limit: float = 0.0
+    members: tuple[str, ...] = ()
+
+
+OTHER_NAME = "other"
+
+# A wedge thinner than this is a sliver: too thin to see, and — now that the
+# ring is something you point at — too thin to hit. Folding the tail into one
+# `other` wedge is both more honest and more clickable than drawing nine
+# sub-pixel slices nobody can tell apart.
+SHARE_MIN = 0.015
+SHARE_KEEP = 9
+
+
+def share_slices(triples, min_share: float = SHARE_MIN,
+                 keep: int = SHARE_KEEP) -> tuple[list[ShareSlice], float]:
+    """(name, bytes, limit) triples as ring wedges: biggest first, with the total.
 
     Components using nothing are dropped rather than drawn as zero-width
-    slices, which would only add entries to the key for things that are not
+    wedges, which would only add entries to the key for things that are not
     there.
     """
-    rows = [(name, float(value)) for name, value in pairs if value]
-    rows.sort(key=lambda row: row[1], reverse=True)
-    return rows, sum(value for _name, value in rows)
+    rows = [ShareSlice(name, float(value), float(limit or 0))
+            for name, value, limit in triples if value]
+    rows.sort(key=lambda row: row.value, reverse=True)
+    total = sum(row.value for row in rows)
+    if not total:
+        return [], 0.0
+
+    head: list[ShareSlice] = []
+    tail: list[ShareSlice] = []
+    for row in rows:
+        if len(head) < keep - 1 and row.value / total >= min_share:
+            head.append(row)
+        else:
+            tail.append(row)
+    # "other (1)" tells you less than the component's own name, at the same
+    # cost in wedges. Only fold when folding actually buys something.
+    if len(tail) == 1:
+        head.append(tail[0])
+    elif tail:
+        head.append(ShareSlice(OTHER_NAME, sum(row.value for row in tail), 0.0,
+                               tuple(row.name for row in tail)))
+    return head, total
