@@ -121,7 +121,9 @@ Usage:
   pitcrew logs [<component>]        in-place log viewer
   pitcrew stale [--restart]         apps whose code changed since they started
                                      (needs PITCREW_WATCH_DIR set per app in config)
-  pitcrew profile save <name> <targets...> | list | rm <name>
+  pitcrew profile save <name> <targets...> | list | show <name> | rm <name>
+                                    saved sets of targets. `list` says what each
+                                     one resolves to and how much of it is up
   pitcrew shell [<name>]            run a configured quick shell (PITCREW_SHELLS), foreground
   pitcrew doctor                    check the local environment
   pitcrew init [<dir>] [--sh]       look at a project and write a starter

@@ -12,7 +12,7 @@ import re
 
 from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
-from . import ansi
+from . import ansi, theme
 from .runner import LineReader
 from .widgets import SegmentedControl
 
@@ -126,24 +126,12 @@ class LogView(Gtk.Box):
         return bar
 
     # ── colour ──────────────────────────────────────────────────────────────
-    # Two palettes rather than one: a log's own ANSI colours are chosen by an
-    # author who assumed a dark terminal, and rendering #00ff00 on a white
-    # background is not "the colours the app asked for", it is unreadable.
-    # These are the sixteen names, mapped to something that works on each.
-    DARK = {
-        "black": "#6c7086", "red": "#f38ba8", "green": "#a6e3a1", "yellow": "#f9e2af",
-        "blue": "#89b4fa", "magenta": "#cba6f7", "cyan": "#94e2d5", "white": "#cdd6f4",
-        "bright-black": "#7f849c", "bright-red": "#eba0ac", "bright-green": "#b9e6b0",
-        "bright-yellow": "#f5e0b0", "bright-blue": "#a6c8ff", "bright-magenta": "#d7b8f8",
-        "bright-cyan": "#a8e8dd", "bright-white": "#ffffff", "error": "#f38ba8",
-    }
-    LIGHT = {
-        "black": "#4c4f69", "red": "#d20f39", "green": "#40a02b", "yellow": "#df8e1d",
-        "blue": "#1e66f5", "magenta": "#8839ef", "cyan": "#179299", "white": "#5c5f77",
-        "bright-black": "#8c8fa1", "bright-red": "#e64553", "bright-green": "#4c9a2a",
-        "bright-yellow": "#c88a1e", "bright-blue": "#3b7dd8", "bright-magenta": "#9853f0",
-        "bright-cyan": "#2a9d8f", "bright-white": "#2c2f45", "error": "#d20f39",
-    }
+    # The sixteen ANSI names come from the active pitcrew theme, so a log reads
+    # in the same palette the dashboard draws in — see theme.ansi_palette. Two
+    # hand-written tables used to live here, one for dark and one for light,
+    # and the light one is now what theme.legible() derives: a dark palette on
+    # a white background is not "the colours the app asked for", it is
+    # unreadable, and pitcrew ships no light themes to pick from instead.
 
     def _apply_wrap(self) -> None:
         # WORD_CHAR, not WORD: a wrapped log line is usually a stack trace or a
@@ -152,6 +140,10 @@ class LogView(Gtk.Box):
         self._view.set_wrap_mode(
             Gtk.WrapMode.WORD_CHAR if self._wrap.get_active() else Gtk.WrapMode.NONE)
 
+    def refresh_palette(self) -> None:
+        """The pitcrew theme changed. Text already in the buffer re-colours."""
+        self._apply_palette()
+
     def _apply_palette(self) -> None:
         """Point the named colour tags at the palette for the current theme.
 
@@ -159,7 +151,7 @@ class LogView(Gtk.Box):
         rather than needing the view to be rebuilt.
         """
         dark = Adw.StyleManager.get_default().get_dark()
-        palette = self.DARK if dark else self.LIGHT
+        palette = theme.ansi_palette(theme.palette(), dark)
         table = self._buffer.get_tag_table()
         for name, colour in palette.items():
             tag = table.lookup(f"fg:{name}")

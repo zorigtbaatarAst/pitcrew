@@ -92,10 +92,16 @@ for _name in ('platform', 'model', 'registry', 'settings', 'runner', 'widgets',
               'dialogs', 'window', 'app'):
     _mod = importlib.import_module('pitcrewgui.' + _name)
     pgui.__dict__.update({k: v for k, v in vars(_mod).items() if not k.startswith('_')})
-# As a module, not flattened: ansi.plain and model.plain are different functions
-# with the same name, and one of them would silently win.
+# As modules, not flattened: ansi.plain and model.plain are different functions
+# with the same name and one of them would silently win, and theme.apply/save
+# would shadow half a dozen names besides. model is here as a module too so a
+# test can watch the palettes theme.apply MUTATES rather than a copy of them.
 import pitcrewgui.ansi as _ansi_mod
+import pitcrewgui.model as _model_mod
+import pitcrewgui.theme as _theme_mod
 pgui.ansi = _ansi_mod
+pgui.model = _model_mod
+pgui.theme = _theme_mod
 "
 
 _drive() { # $1 = python body, with Stream / Counting / GLib in scope
@@ -1503,21 +1509,38 @@ print(repr(v._buffer.get_text(*v._buffer.get_bounds(), False).strip()))
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "'ERROR three'" "errors-only shows only error lines"
 }
 
-test_a_profile_is_read_from_the_directory_pitcrew_writes() {
+test_profiles_arrive_as_state_not_as_a_directory_listing() {
   gui_available || return 0
-  local dir; dir=$(mktemp -d)
-  printf 'sales\nbe-orders\n' > "$dir/morning"
-  : > "$dir/empty"
-  local out; out=$(_drive "
-from pitcrewgui.profiles import profile_names, profile_targets
-print(' '.join(profile_names('$dir')))
-print(' '.join(profile_targets('$dir', 'morning')))
-print(profile_names(None), profile_targets('$dir', 'nope'))
+  # The GUI used to read pitcrew's profile DIRECTORY and show the saved words
+  # back. That is the one thing it cannot interpret: a profile holds target
+  # words, and only pitcrew can say that "sales" now covers a worker too, or
+  # that "legacy" names nothing at all any more. Every number on a profile row
+  # comes from the stream.
+  local strays
+  strays=$(grep -rln 'profileDir' "$GUI_DIR"/pitcrewgui/*.py || true)
+  assert_empty "$strays" "the GUI still reading pitcrew's profile directory"
+
+  gui_display || return 0
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._render_profiles([
+    {'name': 'core', 'targets': ['sales'], 'components': ['be-sales', 'fe-sales'],
+     'missing': [], 'total': 2, 'up': 1, 'starting': 0, 'rss': 1048576, 'limit': 0},
+    {'name': 'gone', 'targets': ['legacy'], 'components': [],
+     'missing': ['legacy'], 'total': 0, 'up': 0, 'starting': 0, 'rss': 0, 'limit': 0},
+])
+print(len(w._profile_rows))
+for row in w._profile_rows:
+    print(row.get_title() + ' | ' + (row.get_subtitle() or ''))
+print('visible', w._profiles_group.get_visible())
 ")
-  rm -rf "$dir"
-  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "empty morning" "one entry per saved profile"
-  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "sales be-orders" "targets, one per line"
-  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "[] []" "no directory and no file are both empty, not errors"
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "2" "a row per profile"
+  assert_match "$out" '@core \| 1/2 up'   "how much of it is already running"
+  assert_match "$out" 'be-sales, fe-sales' "and what it actually covers, not the word it was saved as"
+  assert_match "$out" 'legacy missing'     "a profile that can no longer start says so"
+  assert_match "$out" 'visible True'       "and the group is on the Overview"
 }
 
 test_every_icon_the_gui_asks_for_actually_exists() {
@@ -1927,7 +1950,7 @@ import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 for name in ('ansi', 'platform', 'model', 'registry', 'settings', 'style', 'runner',
-             'widgets', 'dialogs', 'logview', 'notify', 'profiles', 'bootstrap',
+             'widgets', 'dialogs', 'logview', 'notify', 'yamledit', 'bootstrap',
              'window', 'app'):
     importlib.import_module('pitcrewgui.' + name)
 print('ok')
@@ -2082,6 +2105,170 @@ natural = group.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
 print(natural, W.CLAMP_ZEN, W.CLAMP_ZEN >= natural)
 ")
   assert_match "$out" 'True$' "CLAMP_ZEN ($out) must fit a component row without squeezing its name"
+}
+
+# ── theming ─────────────────────────────────────────────────────────────────
+#
+# The app used to follow the desktop theme and nothing else, so `pitcrew theme`
+# meant nothing here: you picked Gruvbox, the terminal dashboard turned
+# Gruvbox, and the window it belongs to did not move. These are about the two
+# halves agreeing — same files, same roles, same answer.
+
+test_the_app_reads_the_same_theme_files_the_cli_does() {
+  gui_available || return 0
+  local out; out=$(_settings_drive "
+names = pgui.theme.available()
+print(all(n in names for n in ('default', 'gruvbox', 'mono', 'rosepine', 'tokyonight')),
+      pgui.theme.palette('gruvbox')['ok'],
+      pgui.theme.palette('rosepine')['g1'])
+")
+  # The values are out of themes/gruvbox.sh and themes/rosepine.sh verbatim: the
+  # point of this test is that nothing between the file and here reinterprets
+  # them, so a literal is the assertion.
+  assert_eq "$out" "True #b8bb26 #9ccfd8" "the shipped themes parse to their own hex"
+}
+
+test_a_theme_that_cannot_be_read_falls_back_instead_of_failing() {
+  gui_available || return 0
+  local out; out=$(_settings_drive "
+built_in = '#' + pgui.theme.DEFAULT['ok']
+print(pgui.theme.palette('definitely-not-a-theme')['ok'] == built_in,
+      pgui.theme.palette('../../../etc/passwd')['ok'] == built_in,
+      pgui.theme.palette('')['ok'] == built_in)
+")
+  # A name reaches this from $PITCREW_THEME, which is a string a person typed —
+  # so 'not a theme' has to be an answer, not a traceback on a window that has
+  # not been built yet.
+  assert_eq "$out" "True True True" "an unknown, hostile or empty name is the built-in palette"
+}
+
+test_applying_a_theme_reaches_every_palette_the_app_draws_from() {
+  gui_available || return 0
+  local out; out=$(_settings_drive "
+pgui.theme.apply('gruvbox', dark=True)
+m = pgui.model
+# The bars are the ramp; the dots and the verdict are the status roles. That
+# split is the whole fix, in the terminal and here alike.
+print(m.LEVEL['calm'], m.LEVEL['crit'],
+      m.STATE_STYLE['up'][1], m.VERDICT_STYLE['crit'][0],
+      m.SERIES_COLORS[1])
+# And it has to reach what OTHER modules already imported: 'from .model import
+# RAMP' binds the object, so rebinding here would leave widgets.py painting
+# from the old palette — which is exactly what a half-applied theme looks like.
+import pitcrewgui.widgets as w
+print(w.LEVEL is m.LEVEL, w.RAMP is m.RAMP, w.STATE_STYLE is m.STATE_STYLE)
+")
+  assert_match "$out" '#8ec07c #fb4934 #b8bb26 #fb4934 #b8bb26' "every palette turned gruvbox"
+  assert_match "$out" 'True True True' "and widgets.py is looking at the same objects"
+}
+
+test_graph_lines_stay_apart_in_every_theme() {
+  gui_available || return 0
+  # A palette has fewer distinct colours than a graph has lines: gruvbox's info
+  # and g1 are one green, rosepine's accent and info are one teal, and mono is
+  # four greys on purpose. Two services drawn in the same colour is a graph
+  # that lies about which is which.
+  local out; out=$(_settings_drive "
+bad = []
+for name in pgui.theme.available():
+    for dark in (True, False):
+        pgui.theme.apply(name, dark)
+        colors = pgui.model.SERIES_COLORS
+        if len(set(colors)) != len(colors):
+            bad.append(f'{name}/dark={dark}')
+print(' '.join(bad) or 'all-distinct')
+")
+  assert_eq "$out" "all-distinct" "no theme hands two graph lines the same colour"
+}
+
+test_a_dark_palette_is_darkened_for_a_light_desktop() {
+  gui_available || return 0
+  # Every theme pitcrew ships is a dark one, because a terminal is dark. The
+  # window is whatever the desktop says, and #a6e3a1 on white is a green you
+  # cannot read — which is why the log view used to carry a second, hand-picked
+  # light palette. There is no hand-picked light variant of a theme nobody has
+  # written yet, so the lightness comes down and the hue stays.
+  local out; out=$(_settings_drive "
+t = pgui.theme
+green = '#a6e3a1'
+print(t.legible(green, dark=True) == green,
+      t.luminance(t.legible(green, dark=False)) <= t._LIGHT_MAX_LUMINANCE,
+      max(t.luminance(v) for v in t.ansi_palette(t.palette('tokyonight'), False).values())
+          <= t._LIGHT_MAX_LUMINANCE)
+")
+  assert_eq "$out" "True True True" "dark is left alone; light gets a palette it can read"
+}
+
+test_the_app_and_the_cli_share_one_saved_preference() {
+  gui_available || return 0
+  local pref; pref=$(mktemp)
+  local out; out=$(PITCREW_THEME_FILE="$pref" _settings_drive "
+t = pgui.theme
+open(os.environ['PITCREW_THEME_FILE'], 'w').write('gruvbox\n')   # what \`pitcrew theme\` writes
+first = t.active_name()
+t.save('rosepine')                                                # what Preferences writes
+print(first, open(os.environ['PITCREW_THEME_FILE']).read().strip(), t.active_name())
+")
+  rm -f "$pref"
+  assert_eq "$out" "gruvbox rosepine rosepine" "one file, written and read from both sides"
+}
+
+test_the_env_override_beats_the_saved_preference() {
+  gui_available || return 0
+  local pref; pref=$(mktemp); printf 'gruvbox\n' > "$pref"
+  local out; out=$(PITCREW_THEME_FILE="$pref" PITCREW_THEME=mono _settings_drive "
+print(pgui.theme.active_name())
+")
+  rm -f "$pref"
+  # The same precedence the CLI applies: an env var is a deliberate one-off.
+  assert_eq "$out" "mono" "PITCREW_THEME wins for this run"
+}
+
+test_a_theme_picked_elsewhere_reaches_an_open_window() {
+  gui_display || return 0
+  # Two front ends, one preference file. `pitcrew theme rosepine` in a terminal
+  # has to repaint a window that is already open, or the two disagree until it
+  # is restarted.
+  local pref; pref=$(mktemp); printf 'gruvbox\n' > "$pref"
+  local out; out=$(PITCREW_THEME_FILE="$pref" _settings_drive "
+import tempfile
+from gi.repository import Adw, GLib
+Adw.init()
+settings = pgui.Settings(path=pathlib.Path(tempfile.mktemp()))
+win = pgui.Window('/bin/true', None, settings)
+before = win._theme_name
+open(os.environ['PITCREW_THEME_FILE'], 'w').write('rosepine\n')
+loop = GLib.MainLoop()
+GLib.timeout_add(1200, lambda: (loop.quit(), False)[1])
+loop.run()
+print(before, win._theme_name, pgui.model.LEVEL['crit'])
+")
+  rm -f "$pref"
+  assert_eq "$out" "gruvbox rosepine #eb6f92" "the window followed the file it did not write"
+}
+
+test_a_repaint_reaches_the_lists_the_frame_does_not_build() {
+  gui_display || return 0
+  # Repainting replays the last frame, which rebuilds everything the STREAM
+  # feeds. The Projects list is not one of those things — it comes from its own
+  # `pitcrew projects --json` and is refreshed on a project switch or a stream
+  # restart — so its state dots kept the palette they were built with, and a
+  # theme switched from the terminal left them behind until you clicked away.
+  local pref; pref=$(mktemp); printf 'gruvbox\n' > "$pref"
+  local out; out=$(PITCREW_THEME_FILE="$pref" _settings_drive "
+import tempfile
+from gi.repository import Adw
+Adw.init()
+calls = []
+pgui.Window._refresh_projects = lambda self: calls.append(1)
+settings = pgui.Settings(path=pathlib.Path(tempfile.mktemp()))
+win = pgui.Window('/bin/true', None, settings)
+before = len(calls)
+win._apply_theme('rosepine')
+print(len(calls) > before)
+")
+  rm -f "$pref"
+  assert_eq "$out" "True" "a theme change refreshes the Projects list too"
 }
 
 run_tests

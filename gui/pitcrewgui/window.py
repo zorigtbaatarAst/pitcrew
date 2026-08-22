@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from . import ansi
+from . import ansi, theme
 from .dialogs import (
     ConfigDialog,
     DetailDialog,
@@ -37,7 +39,6 @@ from .model import (
 )
 from .notify import CrashWatcher
 from .platform import cli_argv
-from .profiles import profile_names
 from .registry import current_project, known_projects
 from .runner import Runner, Stream
 from .settings import SETTINGS_BY_KEY, Settings
@@ -75,7 +76,17 @@ class Window(Adw.ApplicationWindow):
         self._runner = Runner(pitcrew)
         self._init_state()
 
-        install_css()
+        # Before a single widget is built. The palettes the widgets draw from
+        # are module-level dicts, and a Dot built now keeps the colour it was
+        # handed — so a theme applied afterwards would reach the graphs and
+        # miss every dot in the window.
+        self._apply_theme(repaint=False)
+        # Light/dark stays the desktop's decision, and a dark palette on a
+        # light background is unreadable — so the adaptation has to be redone
+        # when the desktop changes its mind, not only at startup.
+        Adw.StyleManager.get_default().connect(
+            "notify::dark", lambda *_: self._apply_theme())
+        self._watch_theme_file()
         self.set_title("pitcrew")
         # Remembered across runs: reopening at 900x680 on every launch, on the
         # tab you were not using, is a small insult repeated daily.
@@ -165,7 +176,7 @@ class Window(Adw.ApplicationWindow):
         self._live_findings: list[dict] = []
         self._last_components: list[dict] = []
         self._last_log_dir: str | None = None
-        self._last_profile_dir: str | None = None
+        self._last_profiles: list[dict] = []
         self._shells: list[str] = []
         self._detail: object | None = None
         self._machine_total = 0
@@ -210,6 +221,10 @@ class Window(Adw.ApplicationWindow):
         app.set_accels_for_action("win.zen", ["<Primary>z"])
         app.set_accels_for_action("win.up", ["<Primary>Return"])
         app.set_accels_for_action("win.stopall", ["<Primary><Shift>Return"])
+        # Alt, not Primary: Ctrl+1…4 already switch views, and a profile is the
+        # other thing you reach for by number.
+        for slot in range(1, 10):
+            app.set_accels_for_action(f"win.profileat::{slot}", [f"<Alt>{slot}"])
 
     def _toggle_zen(self) -> None:
         self._zen = not self._zen
@@ -242,6 +257,8 @@ class Window(Adw.ApplicationWindow):
         # pinned to the right of a dead gutter a third of the window wide.
         self._left.set_visible(not self._zen)
         self._meters_group.set_visible(not self._zen)
+        self._profiles_group.set_visible(bool(getattr(self, "_last_profiles", []))
+                                         and not self._zen)
         # Zen is a LAYOUT, not the same page with things hidden: the column
         # narrows, and while its content is short enough it sits in the middle
         # of the window rather than clinging to the top of it.
@@ -319,6 +336,7 @@ class Window(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(title="Shortcuts")
         for keys, what in (
             ("Ctrl+1 … Ctrl+5", "Overview / Components / Resources / Logs / Projects"),
+            ("Alt+1 … Alt+9", "Start a saved profile, in the order the Overview lists them"),
             ("/  or  Ctrl+F", "Filter the log"),
             ("Ctrl+Z", "Zen mode — hide everything that is fine"),
             ("Ctrl+M", "RAM caps"),
@@ -511,6 +529,11 @@ class Window(Adw.ApplicationWindow):
             "activate", lambda _a, t: self._run_action("start", f"@{t.get_string()}"))
         self.add_action(profile_action)
 
+        at_action = Gio.SimpleAction.new("profileat", GLib.VariantType.new("s"))
+        at_action.connect("activate",
+                          lambda _a, t: self._profile_at(int(t.get_string()) - 1))
+        self.add_action(at_action)
+
         menu.append("Zen mode", "win.zen")
         menu.append("RAM caps…", "win.limits")
         menu.append("Doctor…", "win.doctor")
@@ -654,11 +677,31 @@ class Window(Adw.ApplicationWindow):
         self._consumers_group = Adw.PreferencesGroup(title="Largest consumers", visible=False)
         self._consumer_rows: list[Adw.ActionRow] = []
 
+        # Profiles, where you land rather than three clicks into a menu.
+        #
+        # They were reachable only from the app menu, as a list of names — no
+        # indication of what a profile covers or whether it is already running,
+        # so choosing one meant remembering what you saved six weeks ago. Every
+        # number on these rows comes from the stream, which is pitcrew
+        # resolving its own target words: "sales" covers whatever sales has
+        # TODAY, including a worker that did not exist when the profile was
+        # saved.
+        self._profiles_group = Adw.PreferencesGroup(
+            title="Profiles",
+            description="Saved sets of components — Alt+1…9", visible=False)
+        manage = Gtk.Button(valign=Gtk.Align.CENTER)
+        manage.set_child(Adw.ButtonContent(icon_name="document-properties-symbolic",
+                                           label="Manage"))
+        manage.connect("clicked", lambda _b: self._show_profiles())
+        self._profiles_group.set_header_suffix(manage)
+        self._profile_rows: list[Adw.ActionRow] = []
+
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=22,
                        margin_top=20, margin_bottom=24, margin_start=18, margin_end=18)
         self._left.append(self._consumers_group)
         body.append(self._verdict_banner)
         body.append(self._columns)
+        body.append(self._profiles_group)
         body.append(self._recover_group)
         body.append(self._protected_group)
 
@@ -1152,13 +1195,18 @@ class Window(Adw.ApplicationWindow):
         self._refresh_project_menu()
         self._refresh_projects()
 
-    def _refresh_profiles(self, profile_dir: str | None) -> None:
-        names = profile_names(profile_dir)
-        if names == getattr(self, "_profile_names", None):
+    def _refresh_profiles(self, profiles: list[dict]) -> None:
+        """The menu submenu, rebuilt only when the names change.
+
+        The labels carry the live count, so the menu answers "is core already
+        up" without opening anything.
+        """
+        labels = [(p["name"], p.get("up", 0), p.get("total", 0)) for p in profiles]
+        if labels == getattr(self, "_profile_labels", None):
             return
-        self._profile_names = names
+        self._profile_labels = labels
         self._profiles_menu.remove_all()
-        if not names:
+        if not labels:
             # An empty submenu looks broken. Say why it is empty instead — and
             # still offer the way to make one.
             item = Gio.MenuItem.new("No saved profiles", None)
@@ -1166,11 +1214,92 @@ class Window(Adw.ApplicationWindow):
             self._profiles_menu.append_item(item)
             self._profiles_menu.append_section(None, self._profiles_menu_end)
             return
-        for name in names:
-            item = Gio.MenuItem.new(f"Start @{name}", None)
+        for name, up, total in labels:
+            item = Gio.MenuItem.new(f"@{name}  —  {up}/{total} up", None)
             item.set_action_and_target_value("win.profile", GLib.Variant.new_string(name))
             self._profiles_menu.append_item(item)
         self._profiles_menu.append_section(None, self._profiles_menu_end)
+
+    def _render_profiles(self, profiles: list[dict]) -> None:
+        """One row per profile: what it covers, and what it is doing."""
+        for row in self._profile_rows:
+            self._profiles_group.remove(row)
+        self._profile_rows.clear()
+        # Hidden in zen, which keeps only what needs you — a saved set that is
+        # already running does not.
+        self._profiles_group.set_visible(bool(profiles) and not self._zen)
+        if not profiles:
+            return
+        for index, profile in enumerate(profiles):
+            row = self._profile_row(index, profile)
+            self._profiles_group.add(row)
+            # Kept, because the next frame has to remove exactly these — an
+            # AdwPreferencesGroup hands back its own scaffolding otherwise.
+            self._profile_rows.append(row)
+
+    def _profile_row(self, index: int, profile: dict) -> Adw.ActionRow:
+        name = profile["name"]
+        up, total = profile.get("up", 0), profile.get("total", 0)
+        missing = profile.get("missing") or []
+
+        bits = [f"{up}/{total} up" if total else "resolves to nothing"]
+        starting = profile.get("starting") or 0
+        if starting:
+            bits.append(f"{starting} starting")
+        rss = profile.get("rss") or 0
+        if rss:
+            bits.append(human_bytes(rss))
+        # What it COVERS, not the words it was saved as: "sales" is not an
+        # answer to "what will this start".
+        comps = profile.get("components") or []
+        if comps:
+            bits.append(", ".join(comps[:4]) + ("…" if len(comps) > 4 else ""))
+
+        row = Adw.ActionRow(title=plain(f"@{name}"), use_markup=False,
+                            subtitle=plain(" · ".join(bits)))
+        if index < 9:
+            row.set_tooltip_text(f"Alt+{index + 1}")
+
+        if missing:
+            # A profile referring to an app that no longer exists cannot start
+            # at all — `pitcrew start @name` dies on the target. Better to say
+            # so on the row than to let the button fail.
+            warn = Gtk.Image(icon_name="dialog-warning-symbolic",
+                             valign=Gtk.Align.CENTER)
+            warn.set_tooltip_text(f"{', '.join(missing)} no longer exists — "
+                                  "this profile will not start")
+            row.add_prefix(warn)
+            row.set_subtitle(plain(" · ".join([*bits, f"⚠ {', '.join(missing)} missing"])))
+
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        start = Gtk.Button(icon_name="media-playback-start-symbolic",
+                           tooltip_text=f"Start @{name}")
+        start.add_css_class("flat")
+        start.set_sensitive(not missing and total > 0)
+        start.connect("clicked", lambda _b, n=name: self._start_profile(n))
+        box.append(start)
+        if up:
+            stop = Gtk.Button(icon_name="media-playback-stop-symbolic",
+                              tooltip_text=f"Stop the {up} component(s) @{name} has running")
+            stop.add_css_class("flat")
+            stop.connect("clicked", lambda _b, n=name: self._stop_profile(n))
+            box.append(stop)
+        row.add_suffix(box)
+        return row
+
+    def _start_profile(self, name: str) -> None:
+        self._run_action("start", f"@{name}")
+
+    def _stop_profile(self, name: str) -> None:
+        self._run_action("stop", f"@{name}")
+
+    def _profile_at(self, index: int) -> None:
+        """Alt+N — the fastest path there is to a saved set."""
+        profiles = getattr(self, "_last_profiles", [])
+        if index >= len(profiles):
+            self._toast(f"no profile {index + 1}")
+            return
+        self._start_profile(profiles[index]["name"])
 
     def _show_detail(self, name: str) -> None:
         comp = next((c for c in self._last_components if c["name"] == name), None)
@@ -1209,8 +1338,8 @@ class Window(Adw.ApplicationWindow):
         running = [c["name"] for c in self._last_components
                    if c.get("state") in ("up", "starting", "external")]
         ProfilesDialog(self._runner, self._project, running,
-                       profile_names(self._last_profile_dir),
-                       lambda: profile_names(self._last_profile_dir),
+                       getattr(self, "_last_profiles", []),
+                       lambda: getattr(self, "_last_profiles", []),
                        self._toast).present(self)
 
     def _show_limits(self) -> None:
@@ -1257,6 +1386,13 @@ class Window(Adw.ApplicationWindow):
             ["Only running components", "Every component"]))
         page.add(sampling)
 
+        appearance = Adw.PreferencesGroup(
+            title="Appearance",
+            description="The palette pitcrew draws with, shared with the terminal "
+                        "dashboard. Light and dark still follow your desktop.")
+        appearance.add(self._theme_row())
+        page.add(appearance)
+
         dialog.add(page)
         dialog.present(self)
 
@@ -1282,6 +1418,80 @@ class Window(Adw.ApplicationWindow):
         row.set_value(self._settings[key])
         row.connect("notify::value", lambda r, _p: self._apply(key, int(r.get_value())))
         return row
+
+    def _theme_row(self) -> Adw.ComboRow:
+        names = theme.available() or ["default"]
+        current = theme.active_name()
+        # A theme named by $PITCREW_THEME need not exist on disk, and a saved
+        # preference can outlive the file it names. Either way the row has to
+        # be able to show what is actually in force.
+        if current not in names:
+            names.insert(0, current)
+        row = Adw.ComboRow(title="Theme", model=Gtk.StringList.new(names))
+        row.set_selected(names.index(current))
+        if os.environ.get("PITCREW_THEME", "").strip():
+            # Saying nothing here means a combo that visibly does not take.
+            row.set_subtitle("$PITCREW_THEME is set for this run and wins")
+        row.connect("notify::selected",
+                    lambda r, _p: self._pick_theme(names[r.get_selected()]))
+        return row
+
+    def _pick_theme(self, name: str) -> None:
+        if name == self._theme_name:
+            return
+        if not theme.save(name):
+            # Still applied: a preference that could not be written is still a
+            # preference you asked for, and this session should honour it.
+            self._toast(f"Could not write {theme.theme_file()} — this session only")
+        self._apply_theme(name)
+
+    # ── theme ───────────────────────────────────────────────────────────────
+    def _apply_theme(self, name: str | None = None, repaint: bool = True) -> None:
+        """Repaint from the pitcrew palette — the one `pitcrew theme` sets.
+
+        Everything the app DRAWS comes from here: meters, graph series, state
+        dots, the verdict tint, the ANSI palette the log view renders with. The
+        chrome around them is still Adwaita's, light/dark included, which is
+        why the palette is adapted to that decision rather than overriding it.
+        """
+        dark = Adw.StyleManager.get_default().get_dark()
+        self._theme_name = name or theme.active_name()
+        theme.apply(self._theme_name, dark)
+        install_css(dark=dark)
+        if repaint:
+            self._logs.refresh_palette()
+            # The Projects list is built from its own `pitcrew projects --json`
+            # and not from the frame, so replaying the frame does not reach it —
+            # its state dots kept the palette they were built with until you
+            # switched project. Rare enough that the extra call costs nothing.
+            self._refresh_projects()
+            # The same idiom zen uses: the frame is already in hand, and every
+            # renderer reads the palettes fresh, so replaying it is a repaint.
+            self._layout_key = None
+            if self._last_state is not None:
+                self._on_state(self._last_state)
+
+    def _watch_theme_file(self) -> None:
+        """`pitcrew theme <name>` in a terminal should reach an open window.
+
+        Two front ends, one preference file: the app writes it from Preferences
+        and the CLI writes it from `pitcrew theme`, and whichever wrote it last
+        is what both of them should be showing.
+        """
+        try:
+            self._theme_monitor = Gio.File.new_for_path(
+                str(theme.theme_file())).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        except GLib.Error:
+            return          # no inotify, or a filesystem that cannot watch: not fatal
+        # Held on the window, not left to the local: a dropped GFileMonitor is
+        # collected and simply stops reporting, with nothing to say it did.
+        self._theme_monitor.connect("changed", self._on_theme_file_changed)
+
+    def _on_theme_file_changed(self, *_args) -> None:
+        # One save fires created + changed + changes-done-hint, and repainting
+        # the whole window three times for one keystroke is visible.
+        if theme.active_name() != self._theme_name:
+            self._apply_theme()
 
     def _apply(self, key: str, value) -> None:
         """Take a preference, persist it, and make it true on screen right now."""
@@ -1386,17 +1596,27 @@ class Window(Adw.ApplicationWindow):
             series = self._series.get(name)
             if series is None:
                 series = self._series[name] = Series(name, colors[name], history)
+            elif series.color != colors[name]:
+                # The palette changed under it, or the component list reordered
+                # and the slot it draws from is now someone else's. Either way
+                # the legend dot beside it has already moved on.
+                series.recolor(colors[name])
             series.push(comp.get("cpu"), comp.get("rss"))
 
         self._logs.update_sources(state.get("logDir"), components, state.get("errorPattern"))
-        self._last_profile_dir = state.get("profileDir")
         self._shells = sorted(state.get("shells") or [])
-        self._refresh_profiles(state.get("profileDir"))
+        # From the stream, not from the directory: a profile holds TARGET
+        # WORDS, and only pitcrew can say what "sales" covers today. Reading
+        # the files here meant the GUI could show the words back and nothing
+        # else — not how many components, not how many were up.
+        self._last_profiles = state.get("profiles") or []
+        self._refresh_profiles(self._last_profiles)
         self._crashes.check(components)
         self._render_components(components, colors)
         self._render_deps(state.get("deps", []))
         self._render_graphs(components, history)
 
+        self._render_profiles(self._last_profiles)
         self._render_overview(state)
         if self._detail is not None:
             live = next((c for c in components if c["name"] == self._detail.comp_name), None)

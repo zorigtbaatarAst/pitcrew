@@ -27,6 +27,7 @@ import os
 import re
 from pathlib import Path
 
+from . import model
 from .platform import find_pitcrew, pitcrew_home
 
 # The built-in palette, role for role with lib/01-core.sh's theme_hex_defaults.
@@ -211,8 +212,117 @@ def legible(color: str, dark: bool) -> str:
     return "#000000"
 
 
-def lighten(color: str, amount: float = 0.28) -> str:
-    """Toward white — how the bright half of an ANSI palette is derived."""
-    channels = (int(color[i:i + 2], 16) for i in (1, 3, 5))
-    return "#{:02x}{:02x}{:02x}".format(
-        *(min(255, int(c + (255 - c) * amount)) for c in channels))
+def shift(color: str, amount: float, dark: bool) -> str:
+    """`amount` further from the background: lighter on dark, darker on light.
+
+    One function rather than a lighten() every caller would have to remember to
+    invert, because every use of it means the same thing — "the same colour,
+    with more contrast" — and which direction that is depends on the desktop,
+    not on the caller.
+    """
+    amount = max(0.0, min(0.85, amount))
+    channels = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    if dark:
+        channels = [min(255, int(c + (255 - c) * amount)) for c in channels]
+    else:
+        channels = [max(0, int(c * (1 - amount))) for c in channels]
+    return "#{:02x}{:02x}{:02x}".format(*channels)
+
+
+# The palette roles a graph line can be, in the order they are handed out.
+# Ordered so neighbours differ in hue as well as in lightness: a legend is read
+# top to bottom, and two adjacent entries are the pair most often confused.
+_SERIES_ROLES = ("accent", "ok", "warn", "crit", "accent2", "info", "g1", "g3")
+
+
+def series_colors(ink: dict[str, str], dark: bool, count: int = 8) -> list[str]:
+    """`count` line colours that stay apart.
+
+    A palette has fewer distinct colours than a graph has lines, and the
+    overlaps are real: Gruvbox's info and g1 are the same green, Rosé Pine's
+    accent and info are the same teal, and mono is four greys on purpose. Two
+    services drawn in one colour is a graph that lies about which is which, so
+    the roles are taken in order without repeats and the remainder is filled by
+    pushing what is already there further from the background.
+    """
+    out: list[str] = []
+    for role in _SERIES_ROLES:
+        if ink[role] not in out:
+            out.append(ink[role])
+    step = 0
+    while len(out) < count and step < 4:
+        step += 1
+        for role in _SERIES_ROLES:
+            candidate = shift(ink[role], 0.22 * step, dark)
+            if candidate not in out:
+                out.append(candidate)
+                if len(out) == count:
+                    break
+    # A theme of one flat colour cannot yield eight of them, and a list short of
+    # `count` here is an IndexError in the legend rather than a duller graph.
+    return (out * count)[:count]
+
+
+# ── making it true everywhere ───────────────────────────────────────────────
+
+def ansi_palette(colors: dict[str, str], dark: bool) -> dict[str, str]:
+    """The sixteen ANSI names a log can ask for, as this theme would draw them.
+
+    A log's own colours were chosen by someone who assumed a dark terminal, so
+    the mapping is onto ROLES rather than onto hues: `\\x1b[32m` in a Spring log
+    means "this line is fine", and the theme already has a colour for that.
+
+    Bright black is a real grey that logs use for timestamps and must not fold
+    into black, so the two are separate roles rather than one lightened twice.
+    """
+    base = {
+        "black": colors["faint"],
+        "red": colors["crit"],
+        "green": colors["ok"],
+        "yellow": colors["warn"],
+        "blue": colors["info"],
+        "magenta": colors["accent2"],
+        "cyan": colors["accent"],
+        "white": colors["subtle"],
+    }
+    palette = {name: legible(value, dark) for name, value in base.items()}
+    palette["bright-black"] = legible(colors["muted"], dark)
+    for name in base:
+        if name != "black":
+            palette[f"bright-{name}"] = shift(palette[name], 0.25, dark)
+    palette["bright-white"] = legible(colors["text"], dark)
+    # The error tag is the log view's own, not an ANSI code: a line the error
+    # pattern matched, whatever colour it painted itself.
+    palette["error"] = palette["red"]
+    return palette
+
+
+def apply(name: str | None = None, dark: bool = True) -> dict[str, str]:
+    """Repaint every palette the app draws from. Returns the resolved colours.
+
+    Mutates in place rather than rebinding, because `from .model import RAMP`
+    in three other modules has already captured these objects — rebinding here
+    would leave every one of them pointing at the old palette, which is exactly
+    the sort of half-applied theme that reads as "it did nothing".
+    """
+    colors = palette(name)
+    ink = {role: legible(value, dark) for role, value in colors.items()}
+
+    # Drawn quantities: the theme's own graph ramp, bottom to top.
+    model.LEVEL.update(calm=ink["g1"], warn=ink["g3"], crit=ink["g4"])
+
+    # Verdicts you read: the status roles, which is what those words mean.
+    model.RAMP.update(calm=ink["muted"], ok=ink["ok"],
+                      warn=ink["warn"], crit=ink["crit"])
+    for level, (_old, css) in list(model.VERDICT_STYLE.items()):
+        model.VERDICT_STYLE[level] = (model.RAMP[level], css)
+
+    dots = {"up": "ok", "starting": "warn", "crashed": "crit",
+            "external": "accent", "down": "muted"}
+    for state, role in dots.items():
+        css = model.STATE_STYLE[state][0]
+        model.STATE_STYLE[state] = (css, ink[role])
+    model.UNKNOWN_STYLE[1] = ink["muted"]
+
+    model.SERIES_COLORS[:] = series_colors(ink, dark, len(model.SERIES_COLORS))
+    return colors

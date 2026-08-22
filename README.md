@@ -287,7 +287,7 @@ pitcrew status                    one-shot dashboard
 pitcrew watch                     same as bare `pitcrew` — live dashboard, no auto-start
 pitcrew logs [<component>]        in-place log viewer
 pitcrew stale [--restart]         apps whose code changed since they started
-pitcrew profile save <name> <targets...> | list | rm <name>
+pitcrew profile save <name> <targets...> | list | show <name> | rm <name>
 pitcrew shell [<name>]            run a configured quick shell (shells:), foreground
 pitcrew doctor                    check the local environment
 pitcrew diagnose [--json] [--watch]
@@ -306,6 +306,41 @@ pitcrew --project <dir> <command> same as -C — <dir> may be the project root o
 
 A "target" is an app name (`sales`), a specific role (`be-sales`, `fe-sales`),
 a group (`all`, `backends`, `frontends`, `deps`), or a saved `@profile`.
+
+### Profiles
+
+A profile is a named set of targets — the three services you actually need on
+a Tuesday, out of the twelve the project has.
+
+```bash
+pitcrew profile save morning sales backoffice     # or save what is running,
+pitcrew start @morning                            #   from the desktop app
+pitcrew profile list
+pitcrew profile show morning
+```
+
+`list` answers the questions you open it to ask, not the words you typed:
+
+```
+  @morning        3/5 up  +1                     1.4 GiB      :8082  :3002  :8091
+  @everything     0/12 up                        —            :8082  :3002  …
+  @legacy         0/2 up
+   └ crm no longer exists — this profile will not start
+```
+
+That last line matters. **A profile stores target WORDS, not components** — on
+purpose, so `sales` keeps covering sales when that app grows a worker. The cost
+is that a profile can rot: rename an app and the file still names the old one,
+and `pitcrew start @legacy` dies on a target that no longer exists. So
+everything reports what a profile resolves to *today*, missing words included,
+rather than echoing the file back. `pitcrew profile show <name>` lists every
+component it covers, what is up, and what it commits if all of it runs.
+
+In the desktop app they are on the **Overview**, one row each with the same
+numbers and a start button — plus **Alt+1…9** to launch one without touching
+the mouse. Everything on those rows arrives over `pitcrew json`, which is
+pitcrew resolving its own target words; the app never reads the profile
+directory, because a directory listing cannot know what `sales` covers now.
 
 `pitcrew` with no arguments and `pitcrew watch` are the same thing — a live
 dashboard that only observes. Nothing gets started unless you explicitly ask
@@ -1048,10 +1083,28 @@ ANSI colours, or to nothing at all depending on what the terminal reports. One
 theme file therefore works everywhere, including an old ssh target. See
 [`themes/default.sh`](themes/default.sh) — five lines.
 
-Graphs are coloured by each cell's **height**, cool at the bottom to hot at
-the top, so a climb is legible before you read a number. Height auto-scales to
-the series; how close a service is to its configured RAM cap moves to the
-colour of the number, which is where you look for it anyway.
+A palette has two kinds of colour in it, and they answer different questions:
+
+* **`T_OK` / `T_WARN` / `T_CRIT`** are a verdict you *read*. Green, amber and
+  red are words here — a state, a badge, a RAM figure beside its cap.
+* **`T_G1`…`T_G4`** are the graph ramp, cool at the bottom to hot at the top,
+  for anything *drawn*: a bar's fill, a gauge, a sparkline cell.
+
+Bars come from the ramp, and that is the part of a palette that is genuinely
+its own — teal → pine → gold → rose in Rosé Pine, aqua → lime → yellow → red in
+Gruvbox, four flat greys in `mono`. Drawn from ok/warn/crit instead they looked
+near enough identical in every theme, because every theme's ok/warn/crit is
+some green, some amber and some red. Both scales still agree about *level*, so
+a graph and the figure beside it never disagree about how full something is.
+
+Graphs are coloured by each cell's **height**, so a climb is legible before you
+read a number. Height auto-scales to the series; how close a service is to its
+configured RAM cap moves to the colour of the number, which is where you look
+for it anyway.
+
+The picker `m` opens is drawn in the theme too — the prompt, the pointer, the
+selected row. If you have set `--color` yourself in `FZF_DEFAULT_OPTS`, that
+wins and pitcrew leaves it alone.
 
 ## Desktop app
 
@@ -1084,15 +1137,27 @@ Everything the CLI does, apart from the things a window genuinely cannot host:
 | Stale code | a finding with a **Restart stale** button |
 | Doctor | rendered as rows, not pasted terminal output |
 | RAM caps | per component, machine-local |
-| Profiles | start, **save what is running**, delete |
+| Profiles | on the Overview with live counts, **Alt+1…9**, save what is running, delete |
 | Projects | add, switch, edit config, forget |
 | Ports · plugins · shells | one **Tools** dialog |
 | Logs | live tail, filter, errors-only |
 
-Terminal-only by nature: `pitcrew theme` and `pitcrew render` (they style the
-terminal dashboard; the app follows your desktop theme), the `menu`, and
-actually *running* a `shell` — a GTK window cannot host an interactive `psql`,
-so Tools hands you the exact command to paste instead of pretending.
+Terminal-only by nature: `pitcrew render` (it styles the terminal dashboard's
+graphs), the `menu`, and actually *running* a `shell` — a GTK window cannot
+host an interactive `psql`, so Tools hands you the exact command to paste
+instead of pretending.
+
+The **theme is shared**. The app draws its meters, graph series, state dots,
+verdict tint and log palette from whichever theme `pitcrew theme` last saved,
+and Preferences (`Ctrl+,`) has a picker that writes the same
+`~/.config/pitcrew/theme`. Change it on either side and the other follows
+without a restart — an open window repaints when the file changes under it.
+
+Light and dark still belong to your desktop. Every theme pitcrew ships is a
+dark one, because a terminal is dark, so on a light desktop the palette is
+darkened to stay legible rather than being replaced by something you did not
+pick. Window chrome — buttons, rows, headers, your accent colour — stays
+Adwaita's throughout.
 
 A finding's suggested command becomes a **button** where pitcrew is willing to
 run it. The `fix` string is never handed to a shell: it is split, checked
@@ -1264,8 +1329,9 @@ GUI is a renderer plus start/stop/restart buttons.
   centres in the window. The view switcher does *not* go: navigation is not
   chrome, and a focus mode you cannot leave is a trap. An accent `zen` pill in
   the header says you are in it, and clicking it gets you out
-- **keyboard**: `Ctrl+1…4` for views, `Ctrl+Z` for zen, `/` to filter the log,
-  `Ctrl+M` for RAM caps, `Ctrl+Enter` to start everything, `?` for the list
+- **keyboard**: `Ctrl+1…4` for views, `Alt+1…9` to start a saved profile,
+  `Ctrl+Z` for zen, `/` to filter the log, `Ctrl+M` for RAM caps,
+  `Ctrl+Enter` to start everything, `?` for the list
 - window size and last view are remembered
 - **Resources** says what the project costs against what the box actually has:
   *"using 1.5 GiB of 31.0 GiB · machine total 11.2 GiB used · 5% cpu · caps

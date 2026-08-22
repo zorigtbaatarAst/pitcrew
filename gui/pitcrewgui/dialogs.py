@@ -874,7 +874,7 @@ class ProfilesDialog(Adw.Dialog):
     """
 
     def __init__(self, runner: Runner, project: str, running: list[str],
-                 profiles: list[str], on_changed, on_toast):
+                 profiles: list[dict], on_changed, on_toast):
         super().__init__(title="Profiles", content_width=520, content_height=460)
         self._runner = runner
         self._project = project
@@ -898,7 +898,7 @@ class ProfilesDialog(Adw.Dialog):
         self._page.add(save)
 
         self._existing = Adw.PreferencesGroup(title="Saved")
-        self._rows: list[Adw.ActionRow] = []
+        self._rows: list[Adw.PreferencesRow] = []
         self._fill(profiles)
         self._page.add(self._existing)
 
@@ -907,7 +907,7 @@ class ProfilesDialog(Adw.Dialog):
         view.set_content(self._page)
         self.set_child(view)
 
-    def _fill(self, profiles: list[str]) -> None:
+    def _fill(self, profiles: list[dict]) -> None:
         for row in self._rows:
             self._existing.remove(row)
         self._rows.clear()
@@ -917,21 +917,63 @@ class ProfilesDialog(Adw.Dialog):
             self._existing.add(row)
             self._rows.append(row)
             return
-        for name in profiles:
-            row = Adw.ActionRow(title=plain(f"@{name}"), use_markup=False)
-            box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-            start = Gtk.Button(icon_name="media-playback-start-symbolic",
-                               tooltip_text=f"Start @{name}")
-            start.add_css_class("flat")
-            start.connect("clicked", lambda _b, n=name: self._start(n))
-            box.append(start)
-            delete = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Delete")
-            delete.add_css_class("flat")
-            delete.connect("clicked", lambda _b, n=name: self._delete(n))
-            box.append(delete)
-            row.add_suffix(box)
+        for profile in profiles:
+            row = self._row_for(profile)
             self._existing.add(row)
             self._rows.append(row)
+
+    def _row_for(self, profile: dict) -> Adw.ExpanderRow:
+        """A profile, with what it covers rather than the word you saved.
+
+        The list used to be names and two buttons, which meant deciding whether
+        to press start on a set you named six weeks ago. Everything here is the
+        stream's — pitcrew resolving its own target words — so it also knows
+        when a profile has rotted and can no longer start at all.
+        """
+        name = profile["name"]
+        up, total = profile.get("up", 0), profile.get("total", 0)
+        missing = profile.get("missing") or []
+        components = profile.get("components") or []
+
+        bits = [f"{up}/{total} up" if total else "resolves to nothing"]
+        if profile.get("rss"):
+            bits.append(human_bytes(profile["rss"]))
+        if profile.get("limit"):
+            bits.append(f"commits {human_bytes(profile['limit'])}")
+
+        row = Adw.ExpanderRow(title=plain(f"@{name}"), use_markup=False,
+                              subtitle=plain(" · ".join(bits)))
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        start = Gtk.Button(icon_name="media-playback-start-symbolic",
+                           tooltip_text=f"Start @{name}")
+        start.add_css_class("flat")
+        start.set_sensitive(not missing and total > 0)
+        start.connect("clicked", lambda _b, n=name: self._start(n))
+        box.append(start)
+        delete = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Delete")
+        delete.add_css_class("flat")
+        delete.connect("clicked", lambda _b, n=name: self._delete(n))
+        box.append(delete)
+        row.add_suffix(box)
+
+        saved = " ".join(profile.get("targets") or [])
+        row.add_row(Adw.ActionRow(title="Saved as", subtitle=plain(saved) or "—",
+                                  use_markup=False, css_classes=["dim-label"]))
+        for component in components:
+            row.add_row(Adw.ActionRow(title=plain(component), use_markup=False,
+                                      css_classes=["dim-label"]))
+        for word in missing:
+            # `pitcrew start @name` dies on a target that no longer exists, so
+            # this is not a cosmetic note — the profile is unusable until it is
+            # saved again.
+            gone = Adw.ActionRow(
+                title=plain(f"{word} no longer exists"), use_markup=False,
+                subtitle="This profile cannot start until it is saved again")
+            gone.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic",
+                                      valign=Gtk.Align.CENTER))
+            row.add_row(gone)
+
+        return row
 
     def _save(self) -> None:
         name = self._name.get_text().strip()

@@ -69,6 +69,20 @@ _json_processes() { # $1 comp
   return 0
 }
 
+# A space-separated list as a JSON array of strings, into JWORDS. A global
+# rather than stdout for the same reason every other encoder here sets one:
+# this runs three times per profile per frame, and a $( ) is a fork.
+_json_words() { # $1 words → JWORDS
+  local w first=1
+  JWORDS='['
+  for w in $1; do
+    [ $first = 1 ] || JWORDS+=','
+    first=0
+    _json_str "$w"; JWORDS+=$JSTR
+  done
+  JWORDS+=']'
+}
+
 cmd_json() {
   snapshot
   err_scan
@@ -179,6 +193,27 @@ cmd_json() {
       "$f_since" "$f_restarts" "$f_idle" "$f_prot" "$f_enabled"
     _json_processes "$c"
     printf '}'
+  done
+  printf '],"profiles":['
+  # Profiles carry their live state here so the desktop app can show what a
+  # profile is DOING without reading pitcrew's directory layout and resolving
+  # target words for itself — which is what it used to do, and which cannot
+  # know that "sales" now covers a worker too.
+  first=1
+  local pname
+  profile_names_arr
+  for pname in "${PROFILE_NAMES[@]}"; do
+    profile_stat "$pname"
+    [ $first = 1 ] || printf ','
+    first=0
+    local p_name p_targets p_comps p_missing
+    _json_str "$pname";              p_name=$JSTR
+    _json_words "$PSTAT_TARGETS";    p_targets=$JWORDS
+    _json_words "${PROFILE_COMPS[*]}"; p_comps=$JWORDS
+    _json_words "$PSTAT_MISSING";    p_missing=$JWORDS
+    printf '{"name":%s,"targets":%s,"components":%s,"missing":%s,"total":%s,"up":%s,"starting":%s,"rss":%s,"limit":%s}' \
+      "$p_name" "$p_targets" "$p_comps" "$p_missing" \
+      "$PSTAT_TOTAL" "$PSTAT_UP" "$PSTAT_STARTING" "$PSTAT_RSS" "$PSTAT_CAP"
   done
   printf '],"deps":['
   first=1

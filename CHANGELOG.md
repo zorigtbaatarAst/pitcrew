@@ -10,7 +10,47 @@ field is removed or changes meaning.
 
 ## [Unreleased]
 
+### Fixed
+- **The theme reaches the bars.** Switching theme changed the text and left
+  every meter, gauge and sparkline looking the same, because they were painted
+  from `T_OK`/`T_WARN`/`T_CRIT` — and every palette's ok/warn/crit is some
+  green, some amber and some red, so there was almost nothing to see. Drawn
+  marks now come from the theme's own graph ramp (`T_G1`…`T_G4`), which is the
+  part of a palette that is genuinely its own; figures keep the status triad,
+  because green/amber/red are words you read. Both still agree about level, so
+  a graph and the number beside it never disagree. `mono` in particular used to
+  draw every bar white; it draws a proper grey ramp now. A bar's empty track
+  moved from `DIM` over `C_MUTED` — the same near-black in every theme — to
+  `C_FAINT`, the role that means "baseline".
+- **The `m` menu is drawn in the theme.** fzf paints its prompt, pointer,
+  header, border and selected row from a palette of its own and had never been
+  told about ours, so the picker stayed fzf green whatever the dashboard looked
+  like. A `--color` built from the active theme is passed now — unless you have
+  set `--color` yourself in `FZF_DEFAULT_OPTS`, in which case yours wins.
+- `C_TEXT` emitted a full SGR reset (`\e[0m`) rather than "default foreground"
+  on a 16-colour terminal, so every `${BOLD}…${C_TEXT}` in the frame silently
+  un-bolded itself there.
+
 ### Added
+- **The desktop app follows `pitcrew theme`.** It used to follow the desktop
+  theme and nothing else, so picking Gruvbox turned the dashboard Gruvbox and
+  left the window it belongs to alone. The app now draws its meters, graph
+  series, state dots, verdict tint and log-view ANSI palette from the same
+  `themes/*.sh` files the terminal reads, with the same role split — ramp for
+  what is drawn, status triad for what is read. Preferences (`Ctrl+,`) has a
+  theme picker that writes the same `~/.config/pitcrew/theme`, and an open
+  window repaints when the CLI writes that file, so the two sides never
+  disagree until a restart.
+
+  Light and dark stay the desktop's decision. Every shipped theme is a dark
+  one, so on a light desktop the palette is darkened to a legible luminance
+  rather than swapped for one you did not pick — which is what the log view's
+  second, hand-written light palette used to be. Window chrome stays Adwaita's.
+
+  Two colours per theme also stopped being a hidden bug: a graph gets eight
+  distinct line colours in every theme now, where Gruvbox's `info` and `g1`
+  (one green) and Rosé Pine's `accent` and `info` (one teal) used to hand two
+  services the same line.
 - **An app is a GROUP of components, and the group is open.** `be` and `fe` are
   two ordinary role names now, not the only two there can be — add a `worker:`,
   a `scheduler:`, a second `admin_web:`, whatever your team calls them. It used
@@ -50,6 +90,25 @@ field is removed or changes meaning.
   from the new `pitcrew config --json`, because `lib/18-yaml.sh` is the one
   definition of what pitcrew accepts and a second parser would eventually
   disagree with it). A bash config still gets the text editor and no form.
+- **Profiles say what they are and what they are doing.** `pitcrew profile
+  list` used to print the file back at you — the words you already typed —
+  which answers none of the questions you open it to ask. It now reports, per
+  profile, how many components it resolves to, how many are up, what they are
+  holding, the ports it claims, and what it commits if all of it runs.
+  `pitcrew profile show <name>` lists every component with its state.
+
+  It also catches the failure the design makes possible. A profile stores
+  target WORDS, not components, so `sales` keeps covering sales when that app
+  grows a worker — and so a profile rots when an app is renamed:
+  `pitcrew start @legacy` dies on a target that no longer exists. Missing words
+  are now named on the row rather than discovered at start time.
+- **Profiles are on the Overview in the desktop app**, one row each with the
+  same numbers and a start button, plus **Alt+1…9** to launch one. They were
+  reachable only from the app menu, as a list of bare names — so choosing one
+  meant remembering what you saved six weeks ago. Every number comes from the
+  new `profiles` array in `pitcrew json`; the GUI no longer reads pitcrew's
+  profile directory, because a directory listing cannot know what a target word
+  covers today. `gui/pitcrewgui/profiles.py` is gone.
 - **`pitcrew migrate`** — a `pitcrew.config.sh` rewritten as the YAML that means
   the same thing, which is possible because pitcrew has already RUN it: a file
   that builds six apps from a `for` loop over a `declare -A` of ports is six
@@ -150,6 +209,11 @@ field is removed or changes meaning.
 - MSYS2's *msys* python reports `MSYS_NT-10.0-…` from `platform.system()`, not
   `Windows`, and under it every Windows special case in the GUI silently
   switched off.
+- **Saved profiles ignored `PITCREW_HOME`.** `PROFILE_DIR` was built from
+  `$HOME` while `LIMITS_FILE`, two files over and in the same directory, used
+  `PITCREW_HOME`. The test harness exports `PITCREW_HOME` precisely so a run
+  never touches the developer's real state — so every profile test wrote into
+  the real `~/.config/pitcrew` and left it there.
 - **A directory holding both `pitcrew.yaml` and `pitcrew.config.sh` broke every
   command.** The "reading one, ignoring the other" warning went to STDOUT — and
   that function's stdout *is* the config path, captured by the caller in a

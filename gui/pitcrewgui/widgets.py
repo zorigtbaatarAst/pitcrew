@@ -8,6 +8,7 @@ import cairo
 from gi.repository import Adw, Gdk, Gtk, Pango
 
 from .model import (
+    LEVEL,
     RAMP,
     STATE_STYLE,
     UNKNOWN_STYLE,
@@ -530,7 +531,7 @@ class ShareChart(Gtk.DrawingArea):
         # The same ramp as every other meter in the app, so the colour of this
         # arc means what amber means everywhere else — and `calm` is grey, not
         # green: a stack using a tenth of the machine has nothing to say.
-        cr.set_source_rgb(*rgb(RAMP[meter_level(share * 100)]))
+        cr.set_source_rgb(*rgb(LEVEL[meter_level(share * 100)]))
         cr.arc(cx, cy, radius, -math.tau / 4, -math.tau / 4 + math.tau * share)
         cr.stroke()
 
@@ -621,7 +622,7 @@ class ShareChart(Gtk.DrawingArea):
             warn = self._cap_level(slice_)
             right = width - 6
             if warn:
-                self._cap_mark(cr, right - 8, baseline - 4, RAMP[warn])
+                self._cap_mark(cr, right - 8, baseline - 4, LEVEL[warn])
                 right -= 16
             cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.85 * fade)
             figures_w = cr.text_extents(figures).width
@@ -803,7 +804,7 @@ class Meter(Gtk.Box):
         self.append(self._value)
 
     def set(self, percent: float, text: str) -> None:
-        self._bar.set(percent / 100.0, RAMP[meter_level(percent)])
+        self._bar.set(percent / 100.0, LEVEL[meter_level(percent)])
         self._value.set_text(text)
 
 
@@ -1097,7 +1098,7 @@ class ComponentRow(Adw.ActionRow):
                            if used and limit else human_bytes(used))
         if used and limit:
             percent = used * 100 / limit
-            self._cap.set(used / limit, RAMP[meter_level(percent)])
+            self._cap.set(used / limit, LEVEL[meter_level(percent)])
             self._cap.set_visible(True)
             self._cap.set_tooltip_text(f"{percent:.0f}% of this component's RAM cap")
         else:

@@ -295,7 +295,12 @@ config_finalize() { # $1 = path to the config file that was just sourced
   [ -n "$PITCREW_PROJECT_NAME" ] || PITCREW_PROJECT_NAME=$(basename "$ROOT")
   SESSION=$(printf '%s' "$PITCREW_PROJECT_NAME" | tr -c 'A-Za-z0-9_-' '-' | tr 'A-Z' 'a-z')
   LOG_DIR="$ROOT/.pitcrew/logs"
-  PROFILE_DIR="$HOME/.config/pitcrew/$SESSION/profiles"
+  # PITCREW_HOME, not $HOME. LIMITS_FILE two files over already honours it and
+  # this did not, so the test harness — which exports PITCREW_HOME precisely so
+  # a run never touches the developer's real state — wrote saved profiles into
+  # ~/.config/pitcrew for real. The guarded form because lib/15-registry.sh,
+  # which sets the default, is sourced after this file.
+  PROFILE_DIR="${PITCREW_HOME:-$HOME/.config/pitcrew}/$SESSION/profiles"
 
   _config_fold_legacy
   _config_collect_roles

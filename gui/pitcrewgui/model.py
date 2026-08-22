@@ -10,10 +10,14 @@ from typing import NamedTuple
 
 from gi.repository import GLib
 
-SERIES_COLORS = (
+# Eight lines that have to stay apart on one graph. A LIST, not a tuple, and
+# every palette below is rebound rather than replaced, because `from .model
+# import SERIES_COLORS` binds the object: switching theme has to change what is
+# already imported, not what a fresh import would see. See theme.apply.
+SERIES_COLORS = [
     "#3584e4", "#33d17a", "#f6d32d", "#ff7800",
     "#e01b24", "#9141ac", "#00b8c4", "#986a44",
-)
+]
 
 # state -> (libadwaita css class for the badge, dot colour)
 # Same ramp again: "up" is the green the verdict uses, "crashed" is its red.
@@ -25,7 +29,7 @@ STATE_STYLE = {
     "external": ("accent",    "#3584e4"),
     "down":     ("dim-label", "#57606a"),
 }
-UNKNOWN_STYLE = ("dim-label", "#57606a")
+UNKNOWN_STYLE = ["dim-label", "#57606a"]
 
 # Worst first. The same order lib/05a-dashboard.sh's _state_rank uses, because
 # the desktop app and the terminal dashboard putting "what needs you" in two
@@ -81,6 +85,11 @@ class Series:
         self.cpu: deque[float] = deque(maxlen=size)
         self.rss: deque[float] = deque(maxlen=size)
 
+    def recolor(self, color: str) -> None:
+        """Take a new colour without losing the history drawn in the old one."""
+        self.color = color
+        self.rgb = rgb(color)
+
     def resize(self, size: int) -> None:
         """Change the window without losing what we already have."""
         if size == self.size:
@@ -103,16 +112,33 @@ def empty_message(total: int) -> str:
     return (f"Nothing is running.\n{total} stopped component{plural} "
             f"hidden by “Show stopped components”.")
 
-# ONE colour ramp, for resource meters and for finding severity alike.
+# Colour always answers the same question — how worried should I be? — and
+# these were two systems that disagreed about it: stock GtkLevelBar orange for
+# the meters, red/amber/green for severity, so orange-at-32%-RAM and amber-
+# warning came out nearly the same hue meaning entirely different things.
 #
-# These were two systems: stock GtkLevelBar orange for the meters, red/amber/
-# green for severity. So orange-at-32%-RAM and amber-warning were nearly the
-# same hue meaning entirely different things, and colour stopped carrying
-# information. With one ramp, colour always answers the same question: how
-# worried should I be?
+# One ramp, then, but split by what the colour is FOR — the same split
+# lib/04-meters.sh draws with, and for the same reason:
+#
+#   RAMP   a verdict you READ: a state dot, a badge, the banner tint. Green,
+#          amber and red are words here, and a palette's ok/warn/crit roles
+#          are exactly the roles that carry those words.
+#   LEVEL  a quantity you LOOK AT: the fill of a meter, the used arc of the
+#          share ring, a cap mark. Drawn from the palette's own graph ramp,
+#          which is the part of a theme that is genuinely its own — every
+#          theme's ok/warn/crit is some green, some amber and some red, so
+#          bars painted from those looked identical in every theme.
+#
+# Both still agree about LEVEL: same thresholds, same direction. Only the ink
+# differs, and it differs because one of them is a picture.
 RAMP = {
     "calm": "#6e7681",     # nothing to say — deliberately grey, not green
     "ok":   "#3fb950",
+    "warn": "#d29922",
+    "crit": "#f85149",
+}
+LEVEL = {
+    "calm": "#6e7681",
     "warn": "#d29922",
     "crit": "#f85149",
 }
