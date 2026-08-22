@@ -11,19 +11,30 @@
 #                  separate screen you switch to. Closes back to the same
 #                  live dashboard, which was never actually left.
 
+# Every component with a port, under its app. `fe` gets the plain URL and
+# every other role gets the app's url_path suffix appended, which is what that
+# key has always meant — it just used to be spelled "the backend".
 print_urls() {
   say ""
   say "  ${BOLD}URLs${RESET}"
-  local app fe be
+  local app role comp port label any
   for app in "${PITCREW_APPS[@]}"; do
-    fe="${PITCREW_FE_PORT[$app]:-}"; be="${PITCREW_BE_PORT[$app]:-}"
-    if [ -n "$fe" ]; then
-      printf '    %b%-12s%b %bhttp://localhost:%s%b' "$CYAN" "$app" "$RESET" "$BLUE" "$fe" "$RESET"
-    else
-      printf '    %b%-12s%b %b(no frontend)%b' "$CYAN" "$app" "$RESET" "$GREY" "$RESET"
-    fi
-    [ -n "$be" ] && printf '   %bapi → http://localhost:%s%s%b' "$GREY" "$be" "${PITCREW_URL_PATH[$app]:-}" "$RESET"
-    printf '\n'
+    label=$app; any=""
+    for role in ${PITCREW_APP_ROLES[$app]:-}; do
+      comp="$role-$app"; port=${PITCREW_PORT[$comp]:-}
+      [ -n "$port" ] || continue
+      any=1
+      if [ "$role" = fe ]; then
+        printf '    %b%-12s%b %b%-6s%b %bhttp://localhost:%s%b\n' \
+          "$CYAN" "$label" "$RESET" "$C_MUTED" "$role" "$RESET" "$BLUE" "$port" "$RESET"
+      else
+        printf '    %b%-12s%b %b%-6s%b %bhttp://localhost:%s%s%b\n' \
+          "$CYAN" "$label" "$RESET" "$C_MUTED" "$role" "$RESET" \
+          "$GREY" "$port" "${PITCREW_URL_PATH[$app]:-}" "$RESET"
+      fi
+      label=""
+    done
+    [ -n "$any" ] || printf '    %b%-12s%b %b(no ports)%b\n' "$CYAN" "$app" "$RESET" "$GREY" "$RESET"
   done
   say ""
 }
@@ -36,7 +47,7 @@ cmd_urls() {
   else return 0; fi
   local app fe
   for app in "${PITCREW_APPS[@]}"; do
-    fe="${PITCREW_FE_PORT[$app]:-}"
+    fe="${PITCREW_PORT[fe-$app]:-}"
     [ -n "$fe" ] && "$opener" "http://localhost:$fe" >/dev/null 2>&1 &
   done
 }

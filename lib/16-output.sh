@@ -122,21 +122,24 @@ cmd_json() {
   printf '"at":%s,' "$m_at"
   printf '"components":['
   for c in "${PITCREW_COMPS[@]}"; do
-    app=${c#??-}; role=${c:0:2}
-    if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+    app=${c#*-}; role=${c%%-*}
+    port=${PITCREW_PORT[$c]:-}
     st=${SNAP_STATE[$c]:-n/a}
     # Built here because pitcrew is what knows --url-path and --be-health. A
     # reader assembling "http://localhost:$port" itself would be right for a
     # frontend and wrong for every backend behind a path prefix.
     local url="" health=""
     if [ -n "$port" ]; then
-      if [ "$role" = be ]; then
-        url="http://localhost:$port${PITCREW_URL_PATH[$app]:-}"
-        [ -n "${PITCREW_BE_HEALTH_PATH[$app]:-}" ] &&
-          health="http://localhost:$port${PITCREW_BE_HEALTH_PATH[$app]}"
-      else
+      # `fe` is the role that serves a page at the root; every other role sits
+      # behind the app's url_path, which is what that key has always meant —
+      # it just used to be spelled "the backend", back when there were only two.
+      if [ "$role" = fe ]; then
         url="http://localhost:$port"
+      else
+        url="http://localhost:$port${PITCREW_URL_PATH[$app]:-}"
       fi
+      [ -n "${PITCREW_HEALTH[$c]:-}" ] &&
+        health="http://localhost:$port${PITCREW_HEALTH[$c]}"
     fi
     case "$st" in up) up=$((up+1));; starting) starting=$((starting+1));;
                   crashed) crashed=$((crashed+1));; external) external=$((external+1));;
@@ -146,7 +149,7 @@ cmd_json() {
     # Eighteen fields, and every one of them used to be a `$( )`. Encoded into
     # locals first so the printf below stays exactly the object it was.
     local f_name f_app f_role f_state f_port f_pid f_rss f_cpu f_err f_exit
-    local f_limit f_limitsrc f_url f_health f_since f_restarts f_idle f_prot
+    local f_limit f_limitsrc f_url f_health f_since f_restarts f_idle f_prot f_enabled
     _json_str "$c";                    f_name=$JSTR
     _json_str "$app";                  f_app=$JSTR
     _json_str "$role";                 f_role=$JSTR
@@ -165,11 +168,15 @@ cmd_json() {
     _json_num "${RESTART_N[$c]:-0}";   f_restarts=$JNUM
     _json_num "${SNAP_IDLE[$c]:-}";    f_idle=$JNUM
     f_prot=false; [ -n "${PITCREW_PROTECTED[$c]:-}" ] && f_prot=true
-    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s,"protected":%s' \
+    # A component the config switched off. Reported rather than omitted: a
+    # reader that never saw it could not tell "excluded" from "deleted", and
+    # the GUI has to draw it greyed out rather than not at all.
+    f_enabled=true; [ -n "${PITCREW_DISABLED[$c]:-}" ] && f_enabled=false
+    printf '{"name":%s,"app":%s,"role":%s,"state":%s,"port":%s,"pid":%s,"rss":%s,"cpu":%s,"errors":%s,"exit":%s,"limit":%s,"limitSource":%s,"url":%s,"health":%s,"since":%s,"restarts":%s,"idle":%s,"protected":%s,"enabled":%s' \
       "$f_name" "$f_app" "$f_role" "$f_state" \
       "$f_port" "$f_pid" "$f_rss" "$f_cpu" "$f_err" "$f_exit" \
       "$f_limit" "$f_limitsrc" "$f_url" "$f_health" \
-      "$f_since" "$f_restarts" "$f_idle" "$f_prot"
+      "$f_since" "$f_restarts" "$f_idle" "$f_prot" "$f_enabled"
     _json_processes "$c"
     printf '}'
   done
@@ -300,4 +307,88 @@ cmd_ps() {
   [ "$any" = 0 ] && say "  ${C_MUTED}nothing running in any registered project${RESET}"
   say ""
   return 0
+}
+
+# ── the config, as the editable model ───────────────────────────────────────
+# `pitcrew config --json` answers "what does this project's config actually
+# say", so an editor never has to parse YAML for itself.
+#
+# That matters more than it sounds. lib/18-yaml.sh is the ONE definition of the
+# subset pitcrew accepts, and a GUI carrying a second parser would sooner or
+# later accept a file the tool rejects — or, worse, save one it silently
+# misread. The desktop app's form reads this object and writes targeted edits
+# back into the text; it never interprets the file itself.
+#
+# Both halves are reported: `cmd`/`dir`/`root`/`watch` are what the FILE says,
+# and `runCmd`/`runDir` are what they resolved to. An editor shows the first
+# and a diagnostic wants the second.
+cmd_config_json() {
+  local app role c first=1 rfirst=1
+  printf '{'
+  printf '"schema":%s,' "$PITCREW_JSON_SCHEMA"
+  _json_str "${CONFIG_FILE:-}";             printf '"file":%s,' "$JSTR"
+  _json_str "$ROOT";                        printf '"root":%s,' "$JSTR"
+  _json_str "${PITCREW_PROJECT_NAME:-}";    printf '"name":%s,' "$JSTR"
+  _json_str "${PITCREW_EMOJI:-}";           printf '"emoji":%s,' "$JSTR"
+  printf '"format":%s,' "$(config_is_yaml "${CONFIG_FILE:-}" && echo '"yaml"' || echo '"sh"')"
+
+  printf '"roles":['
+  for role in "${PITCREW_ROLES[@]:-}"; do
+    [ -n "$role" ] || continue
+    [ $rfirst = 1 ] || printf ','
+    rfirst=0
+    local r_name r_env r_max
+    _json_str "$role";                       r_name=$JSTR
+    _json_str "${PITCREW_ROLE_ENV[$role]:-}"; r_env=$JSTR
+    _json_str "${PITCREW_ROLE_MAX[$role]:-}"; r_max=$JSTR
+    printf '{"name":%s,"env":%s,"max":%s}' "$r_name" "$r_env" "$r_max"
+  done
+  printf '],'
+
+  printf '"apps":['
+  for app in "${PITCREW_APPS[@]}"; do
+    [ $first = 1 ] || printf ','
+    first=0
+    local a_name a_url a_root
+    _json_str "$app";                          a_name=$JSTR
+    _json_str "${PITCREW_URL_PATH[$app]:-}";   a_url=$JSTR
+    _json_str "${PITCREW_SRC_ROOT[$app]:-}";   a_root=$JSTR
+    printf '{"name":%s,"urlPath":%s,"root":%s,"components":[' "$a_name" "$a_url" "$a_root"
+    local cfirst=1
+    for role in ${PITCREW_APP_ROLES[$app]:-}; do
+      c="$role-$app"
+      [ $cfirst = 1 ] || printf ','
+      cfirst=0
+      local k_name k_role k_cmd k_dir k_root k_watch k_port k_health k_max k_run k_en k_pr
+      _json_str "$c";                          k_name=$JSTR
+      _json_str "$role";                       k_role=$JSTR
+      _json_str "${PITCREW_SRC_CMD[$c]:-}";    k_cmd=$JSTR
+      _json_str "${PITCREW_SRC_DIR[$c]:-}";    k_dir=$JSTR
+      _json_str "${PITCREW_SRC_ROOT[$c]:-}";   k_root=$JSTR
+      _json_str "${PITCREW_SRC_WATCH[$c]:-}";  k_watch=$JSTR
+      _json_num "${PITCREW_PORT[$c]:-}";       k_port=$JNUM
+      _json_str "${PITCREW_HEALTH[$c]:-}";     k_health=$JSTR
+      _json_str "${PITCREW_MAX_COMP[$c]:-}";   k_max=$JSTR
+      _json_str "${PITCREW_CMD[$c]:-}";        k_run=$JSTR
+      k_en=true;  comp_disabled "$c" && k_en=false
+      k_pr=false; [ -n "${PITCREW_PROTECTED[$c]:-}" ] && k_pr=true
+      printf '{"name":%s,"role":%s,"cmd":%s,"dir":%s,"root":%s,"watch":%s,"port":%s,"health":%s,"max":%s,"runCmd":%s,"enabled":%s,"protected":%s}' \
+        "$k_name" "$k_role" "$k_cmd" "$k_dir" "$k_root" "$k_watch" \
+        "$k_port" "$k_health" "$k_max" "$k_run" "$k_en" "$k_pr"
+    done
+    printf ']}'
+  done
+  printf '],'
+
+  printf '"deps":['
+  first=1
+  local dep
+  for dep in "${PITCREW_DEPS[@]:-}"; do
+    [ -n "$dep" ] || continue
+    [ $first = 1 ] || printf ','
+    first=0
+    _json_str "$dep"; printf '%s' "$JSTR"
+  done
+  printf ']}'
+  printf '\n'
 }

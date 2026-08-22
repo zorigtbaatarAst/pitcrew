@@ -7,10 +7,15 @@
 #
 # Everything is optional except `apps:` and at least one `cmd:` per app.
 #
-# This models a small monorepo: "storefront" (Rails API + React frontend),
-# "worker" (backend-only queue processor, no frontend) and "admin" (a Next.js
-# app with no separate backend process) — the asymmetric-role model pitcrew is
-# built around. A role exists for an app if, and only if, it has a `cmd:`.
+# An app is a GROUP of components, and the group is open: `be` and `fe` are two
+# ordinary role names, not the only two there can be. Add `worker:`, add a
+# second `admin_web:`, name them what your team calls them. A role exists for
+# an app if, and only if, it has a `cmd:`.
+#
+# This models a small monorepo: "storefront" (Rails API + React frontend +
+# a Sidekiq worker, with the frontend in its own checkout), "reports"
+# (backend-only, switched off by default) and "admin" (a Next.js app with no
+# separate backend process).
 #
 # The older bash format (examples/pitcrew.config.example.sh) still loads
 # unchanged, and still wins nothing: if a directory holds both, the YAML is
@@ -24,17 +29,18 @@ emoji: "🛒"             # defaults to 🏁
 # The order they appear in here is the order they appear in the dashboard.
 apps:
   storefront:
-    url_path: /api      # cosmetic suffix after the backend URL in `pitcrew urls`
+    url_path: /api      # cosmetic suffix after non-frontend URLs in `pitcrew urls`
     be:
-      # `dir` is relative to the project root and becomes a `cd` in front of
-      # the command — so commands stay short and quoting stays correct.
+      # `dir` is relative to the component's root (below), or to the project
+      # root when there is none, and becomes a `cd` in front of the command —
+      # so commands stay short and quoting stays correct.
       dir: storefront
       cmd: bundle exec rails s -p 4000
       port: 4000        # used for health checks, URLs, and "is it up yet"
       # When set, pitcrew curls http://127.0.0.1:<port><health> and requires
       # the body to contain "UP" (Spring Boot Actuator convention) before
       # calling the component up rather than starting. Omit it and an open
-      # port is enough.
+      # port is enough. Works on any role, not just this one.
       health: /health
       max: 2G           # this component's RAM cap, overriding max.be below
       # `pitcrew diagnose` will never PROPOSE stopping this to free memory,
@@ -44,26 +50,44 @@ apps:
       # missing candidate is never a mystery.
       protected: true
       # Source directories for `pitcrew stale [--restart]`, which flags
-      # components whose code changed since they started. Relative to the root;
-      # defaults to `dir` when that is set.
+      # components whose code changed since they started. Relative to the same
+      # root as `dir`; defaults to `dir` when that is set.
       watch: [storefront/app, storefront/lib]
+
     fe:
-      dir: storefront/frontend
+      # `root` is this component's OWN checkout. A backend and a frontend are
+      # frequently two repositories, and this is how you say so once instead of
+      # repeating an absolute path in front of every command and every watch
+      # dir. Absolute, ~/… and ../… all work. Put `root:` directly under the
+      # app instead to give the whole group one.
+      root: ~/work/storefront-web
       cmd: "{ [ -d node_modules ] || npm install; } && npm run dev"
       port: 3000
 
-  worker:
-    be:
-      dir: worker
+    # A third component in the same group. Nothing special about the name —
+    # `pitcrew restart worker` restarts every app's worker, and
+    # `pitcrew restart worker-storefront` restarts just this one.
+    worker:
+      dir: storefront
       cmd: bundle exec sidekiq
-  # worker has no `fe:` — its frontend slot is simply absent. It shows as "n/a"
-  # in the dashboard, is never started, and is never counted as "down".
 
+  # A whole group can be switched off. It stays on the dashboard, greyed out,
+  # keeping its ports and its caps — an excluded service that VANISHED is one
+  # you spend an afternoon looking for. `pitcrew start all` skips it; naming it
+  # outright still starts it, because a switch you cannot override is a trap.
+  reports:
+    enabled: false
+    be:
+      dir: reports
+      cmd: bundle exec rails s -p 4100
+      port: 4100
+
+  # Short components read better on one line. A flow mapping is the same thing
+  # as an indented block, and a group with four roles is four lines this way.
   admin:
-    fe:
-      dir: admin
-      cmd: npm run dev
-      port: 3001
+    fe: { dir: admin, cmd: npm run dev, port: 3001 }
+  # admin has no `be:` — that slot is simply absent, not disabled. It shows as
+  # "n/a" in the dashboard, is never started, and is never counted as "down".
 
 # ── docker dependencies ────────────────────────────────────────────────────
 deps: [postgres, redis]
@@ -75,17 +99,22 @@ deps_ready: docker exec postgres pg_isready >/dev/null 2>&1
 
 # ── extra environment for every start command of that role ─────────────────
 # Prepended verbatim in front of the command — JAVA_HOME, credentials for local
-# S3-alikes, whatever your processes need.
+# S3-alikes, whatever your processes need. Keyed by ROLE, so a role you
+# invented gets one the same way `be` does.
 env:
   be: RAILS_ENV=development
   fe: ""
+  worker: RAILS_ENV=development QUEUE=default
 
 # ── RAM caps and boot timeout ──────────────────────────────────────────────
-# Role defaults; a per-app `max:` above overrides them, and `pitcrew limit`
-# overrides both with a machine-local value that is not shared through git.
+# Role defaults; a per-component `max:` above overrides them, and
+# `pitcrew limit` overrides both with a machine-local value that is not shared
+# through git. A role nobody budgets for falls back to the `be` number — a
+# meter with no scale can draw nothing at all.
 max:
   be: 4G
   fe: 6G
+  worker: 1G
 wait: 180               # seconds `pitcrew start` waits for a component to come up
 
 # ── quick shells ───────────────────────────────────────────────────────────

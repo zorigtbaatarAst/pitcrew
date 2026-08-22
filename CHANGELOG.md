@@ -11,6 +11,50 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **An app is a GROUP of components, and the group is open.** `be` and `fe` are
+  two ordinary role names now, not the only two there can be — add a `worker:`,
+  a `scheduler:`, a second `admin_web:`, whatever your team calls them. It used
+  to be two fixed slots all the way down (`PITCREW_BE_CMD[app]`, `${c:0:2}` to
+  read a role, `${c#??-}` to read an app, right through to the JSON writer), so
+  a monorepo with a worker had nowhere to put it. Every role is a target of its
+  own: `pitcrew restart worker` restarts every app's worker,
+  `pitcrew restart worker-shop` restarts one. `env:` and `max:` are keyed by
+  role, so a new one gets its own budget and environment the same way `be`
+  does. The two-role shorthand a hand-written `pitcrew.config.sh` uses is now
+  an INPUT that is folded into the component model at load; nothing reads it
+  afterwards, and every existing config keeps working unchanged.
+- **A backend and a frontend can live in two different checkouts.** `root:` is
+  a component's own repository and `dir:` is relative to it — under the app for
+  a whole group, under a component to override it. Absolute paths, `~/…` and
+  `../…` all work, and `watch:` resolves against the same root as the command
+  it belongs to. This was possible before only by repeating one absolute path
+  in front of every command and every watch dir.
+- **`enabled: false`** on a component, or on a whole app: excluded from
+  `start all`, from `backends`/`frontends` and from its group, but still listed
+  on the dashboard and in the JSON, marked `off` and keeping its port and cap.
+  An excluded service that *vanished* is one you spend an afternoon looking
+  for. Naming it outright still starts it — a switch you cannot override is a
+  trap, the same call pitcrew already made for `protected:`.
+- **One-line components.** The YAML parser accepts flow mappings of scalars now
+  (`fe: { dir: admin, cmd: npm run dev, port: 3001 }`). A group with four roles
+  reads far better as four lines than as twenty. Commas separate the pairs, so
+  a comma inside a value has to be quoted — which is what YAML requires there
+  anyway, and the split honours quotes rather than truncating a command.
+- **The desktop app edits the config as a form.** One group per app, one
+  expander per component — command, checkout, directory, port, health path, RAM
+  cap, and the `enabled` switch on the row itself. **+** adds a role, **Add an
+  app** adds a group, and a **YAML** tab sits next to it for anything the form
+  does not cover. Two deliberate limits: it never regenerates the file (each
+  field becomes the smallest possible edit to the text, so comments, key order
+  and block-vs-flow style survive), and it never parses YAML (every value comes
+  from the new `pitcrew config --json`, because `lib/18-yaml.sh` is the one
+  definition of what pitcrew accepts and a second parser would eventually
+  disagree with it). A bash config still gets the text editor and no form.
+- **`pitcrew config --json`** — the config as the editable model: every app,
+  its components, and what the FILE says for each (`cmd`, `dir`, `root`,
+  `watch`) alongside what it resolved to (`runCmd`). Added so an editor never
+  has to parse the YAML itself.
+- `"enabled"` on every component in `pitcrew json`.
 - **Windows in CI, twice.** One job runs the lint, the whole suite and the CLI
   smoke commands on `windows-latest` under Git Bash — the environment a user
   actually has. A second installs the desktop app end to end on a real MSYS2
@@ -87,6 +131,18 @@ field is removed or changes meaning.
 - MSYS2's *msys* python reports `MSYS_NT-10.0-…` from `platform.system()`, not
   `Windows`, and under it every Windows special case in the GUI silently
   switched off.
+- **`~` did not expand in a config path.** `$HOME` did and `~` did not, so
+  `dir: ~/work/api` resolved to `$ROOT/~/work/api` — a directory that cannot
+  exist. `pitcrew check` called it clean and it failed at start time with a
+  path nobody could parse.
+- **A value aligned with extra spaces was read as text.** `deps:   [a, b]` kept
+  the padding on the front of the value, so it did not look like a flow
+  sequence and quietly did nothing. Aligning your values is not a syntax error
+  in any other YAML.
+- A health path was refused on anything but `be`, on the grounds that an open
+  port is what makes a frontend up. True of a frontend, false of everything
+  else a group can now contain — a worker with an actuator asks exactly the
+  same question. Health is per component now.
 - **The machine gauges were dead on any current Windows.** `wmic` is deprecated
   and gone from Windows 11; the process table already had a PowerShell
   fallback and the MEMORY numbers did not, so the gauge read *"RAM unavailable

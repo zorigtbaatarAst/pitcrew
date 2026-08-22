@@ -101,6 +101,10 @@ Usage:
   pitcrew json [--watch [--interval N]]
                                      one state object, or an NDJSON stream
                                      (--watch is the only mode with real cpu%)
+  pitcrew config --json             the config as the editable model: every app,
+                                     its components, and what the file says for
+                                     each — what an editor needs, so nothing has
+                                     to parse the YAML for itself
   pitcrew wait [<target>...] [--timeout N] [--strict]
                                      block until they are up
                                      exit 0 up · 1 timed out · 2 crashed
@@ -224,6 +228,11 @@ case "${1:-watch}" in
   restart) shift;  [ $# -ge 1 ] || die "restart needs app names"; cmd_stop "$@"; cmd_start "$@" ;;
   status)  shift; if [ "${1:-}" = --json ]; then cmd_json; else cmd_status; fi ;;
   json)    shift; if [ "${1:-}" = --watch ]; then shift; cmd_json_watch "$@"; else cmd_json; fi ;;
+  config)  shift
+           case "${1:-}" in
+             --json) cmd_config_json ;;
+             *) die "usage: pitcrew config --json" ;;
+           esac ;;
   limit)   shift; cmd_limit "$@"; exit $? ;;
   wait)    shift;  cmd_wait "$@"; exit $? ;;
   watch)           cmd_watch ;;

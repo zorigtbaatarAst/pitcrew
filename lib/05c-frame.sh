@@ -392,7 +392,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
           zen_row "$_c" "$_zs"
           frame+="$R"$'\e[K\n'; ln=$((ln + 1)); avail=$((avail - 1)); _shown=$((_shown + 1))
           [ "${_c:0:4}" = dep- ] && continue
-          ROW_COMP[$ln]="${_c#??-}"
+          ROW_COMP[$ln]="${_c#*-}"
           _tree_rows "$_c"
         done
         SCROLL_BELOW=$(( ${#ZEN_KEYS[@]} - _off - _shown ))
@@ -429,7 +429,7 @@ build_frame() { # → FRAME, and ROW_COMP for mouse hit-testing
           rsel=0; rnm=$C_SUBTLE
           [ "${VIEW[$SEL]:-}" = "$rc" ] && { rsel=1; rnm="$C_TEXT$BOLD"; }
           rail_color "$app"
-          _row_label "$label" "${rc:0:2}" "$nw"
+          _row_label "$label" "${rc%%-*}" "$nw"
           printf -v nrow '%b▐%b%b %b%s%b ' "$RAILC" "$RESET" "$mark" "$rnm" "$R" "$RESET"
           comp_cell "$rc" "$bw"; nrow+="$R"
           [ $rsel = 1 ] && { _band_row "$nrow" $(( PREFIX_W + CELL_FIXED_W + bw )) "$W"; nrow=$R; }

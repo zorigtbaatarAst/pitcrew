@@ -157,10 +157,15 @@ project_ports() { # $1 name
     # shellcheck source=/dev/null
     if config_is_yaml "$f"; then yaml_config_load "$f" 2>/dev/null
     else source "$f" 2>/dev/null; fi
-    local a
+    # The two-role shorthand has to be folded in here too: this loads a config
+    # without config_finalize, and a hand-written pitcrew.config.sh puts its
+    # ports in PITCREW_BE_PORT rather than in the component map.
+    _config_fold_legacy 2>/dev/null
+    local a _r
     for a in "${PITCREW_APPS[@]:-}"; do
-      [ -n "${PITCREW_BE_PORT[$a]:-}" ] && printf '%s be-%s\n' "${PITCREW_BE_PORT[$a]}" "$a"
-      [ -n "${PITCREW_FE_PORT[$a]:-}" ] && printf '%s fe-%s\n' "${PITCREW_FE_PORT[$a]}" "$a"
+      for _r in ${PITCREW_APP_ROLES[$a]:-}; do
+        [ -n "${PITCREW_PORT[$_r-$a]:-}" ] && printf '%s %s-%s\n' "${PITCREW_PORT[$_r-$a]}" "$_r" "$a"
+      done
     done ) 2>/dev/null
   return 0
 }

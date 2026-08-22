@@ -40,8 +40,8 @@ declare -gA SNAP_PIDS=()               # comp          -> "pid pid pid" (tree, r
 declare -gA SNAP_PROC_RSS=()           # pid           -> bytes
 declare -gA SNAP_PROC_CPU=()           # pid           -> integer %
 declare -gA SNAP_PROC_CMD=()           # pid           -> comm
-declare -gA SNAP_HEALTH=()             # app           -> UP|DOWN
-declare -gA SNAP_HEALTH_AT=()          # app           -> epoch secs of last probe
+declare -gA SNAP_HEALTH=()             # component     -> UP|DOWN
+declare -gA SNAP_HEALTH_AT=()          # component     -> epoch secs of last probe
 declare -gA SNAP_DEP=()                # dep container -> up|down
 declare -gA SNAP_SINCE=()              # comp -> epoch seconds its root process started
 declare -gA SNAP_EXIT=()               # comp -> exit status of the last run
@@ -447,30 +447,34 @@ _walk_ps_tree() {
 
 # ── health probes, off the frame's critical path ────────────────────────────
 # A booting Spring Boot actuator can take seconds to answer. Probing inline
-# once per frame (what be_health used to do) would stall every repaint, so
+# once per frame (what an inline probe used to do) would stall every repaint, so
 # probes run in the background and each frame just reads the last result.
+# Per COMPONENT, not per app: a health path used to be a backend-only idea
+# because there were only two roles and one of them was "the backend". A
+# worker with an actuator, or a second API in the same group, has exactly the
+# same question to answer.
 _health_poll() {
-  local app path port f r iv
-  for app in "${PITCREW_APPS[@]}"; do
-    path=${PITCREW_BE_HEALTH_PATH[$app]:-}
-    port=${PITCREW_BE_PORT[$app]:-}
+  local c path port f r iv
+  for c in "${PITCREW_COMPS[@]}"; do
+    path=${PITCREW_HEALTH[$c]:-}
+    port=${PITCREW_PORT[$c]:-}
     if [ -z "$path" ] || [ -z "$port" ]; then
-      SNAP_HEALTH[$app]=UP                      # nothing configured → open port is enough
+      SNAP_HEALTH[$c]=UP                        # nothing configured → open port is enough
       continue
     fi
-    f="$LOG_DIR/.health-$app"
+    f="$LOG_DIR/.health-$c"
     if [ -r "$f" ]; then
       r=""; read -r r < "$f" 2>/dev/null
-      SNAP_HEALTH[$app]=${r:-DOWN}
+      SNAP_HEALTH[$c]=${r:-DOWN}
     else
-      SNAP_HEALTH[$app]=DOWN
+      SNAP_HEALTH[$c]=DOWN
     fi
     # No point probing a port nothing is listening on.
     [ -n "${SNAP_PORT_OPEN[$port]:-}" ] || continue
     iv=$PITCREW_HEALTH_INTERVAL
-    [ "${SNAP_HEALTH[$app]}" = UP ] && iv=$(( iv * 3 ))   # only interesting while booting
-    if [ $(( SNAP_NOW_S - ${SNAP_HEALTH_AT[$app]:-0} )) -ge "$iv" ]; then
-      SNAP_HEALTH_AT[$app]=$SNAP_NOW_S
+    [ "${SNAP_HEALTH[$c]}" = UP ] && iv=$(( iv * 3 ))   # only interesting while booting
+    if [ $(( SNAP_NOW_S - ${SNAP_HEALTH_AT[$c]:-0} )) -ge "$iv" ]; then
+      SNAP_HEALTH_AT[$c]=$SNAP_NOW_S
       { curl -sf -m 2 "http://127.0.0.1:${port}${path}" 2>/dev/null | grep -q '"UP"' \
           && echo UP > "$f" || echo DOWN > "$f"; } >/dev/null 2>&1 &
       disown 2>/dev/null || true
@@ -598,12 +602,12 @@ _swap_poll() {
 _snapshot_states() {
   local c app role port pid st
   for c in "${PITCREW_COMPS[@]}"; do
-    app=${c#??-}; role=${c:0:2}
-    if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+    app=${c#*-}; role=${c%%-*}
+    port=${PITCREW_PORT[$c]:-}
     pid=${SNAP_PID[$c]:-}
     if [ -n "$port" ] && [ -n "${SNAP_PORT_OPEN[$port]:-}" ]; then
       if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        if [ "$role" = be ] && [ "${SNAP_HEALTH[$app]:-UP}" != UP ]; then st=starting; else st=up; fi
+        if [ "${SNAP_HEALTH[$c]:-UP}" != UP ]; then st=starting; else st=up; fi
       else
         # Something is listening, but it is not ours. Reporting that as "up"
         # is how a project can appear to be running when it is not: two

@@ -1095,6 +1095,147 @@ print(candidates[-1])
   assert_not_match "$(printf '%s' "$out" | sed -n 3p)" '[/\\]' "and it still ends with a bare name"
 }
 
+# ── the config form ─────────────────────────────────────────────────────────
+#
+# An app is an open group of components now, and hand-indenting a fourth role
+# into a YAML file is exactly the friction the form exists to remove. What it
+# must NOT do is rewrite the file: a config is something people annotate, and
+# an editor that regenerates it hands back a version with every comment gone.
+
+_config_form() { # $1 = python body, with `dialog` bound to a built ConfigDialog
+  _py "
+import json, pathlib, subprocess, sys
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Adw
+$_PRELUDE
+Adw.init()
+import pitcrewgui.dialogs as dialogs
+
+SAMPLE = pathlib.Path('$SAMPLE_YAML')
+dialogs.project_config_path = lambda name: SAMPLE
+dialog = dialogs.ConfigDialog(pgui.Runner('$PITCREW_DIR/bin/pitcrew'), 'demo', lambda: None)
+state = json.loads(subprocess.run(
+    ['$PITCREW_DIR/bin/pitcrew', '-C', '$PITCREW_DIR/test/fixture-yaml', 'config', '--json'],
+    capture_output=True, text=True).stdout)
+dialog._form_ready(state, '')
+
+def text():
+    start, end = dialog._buffer.get_bounds()
+    return dialog._buffer.get_text(start, end, False)
+$1
+"
+}
+
+test_the_form_is_built_from_what_pitcrew_reads_not_from_a_second_parser() {
+  gui_available || return 0
+  # lib/18-yaml.sh is the one definition of the subset pitcrew accepts. A YAML
+  # parser in the GUI would sooner or later accept a file the tool rejects, or
+  # silently misread one and save it back — so every value on the form arrives
+  # over `pitcrew config --json`.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  cp "$PITCREW_DIR/test/fixture-yaml/pitcrew.yaml" "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+paths = sorted('.'.join(p) for p in dialog._rows)
+print(len(paths))
+print('apps.both.be.cmd' in paths, 'apps.both.be.root' in paths, 'apps.both.fe.port' in paths)
+")
+  assert_ne "$(printf '%s' "$out" | sed -n 1p)" "0" "the form has fields"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True True True" \
+    "a component's command, its own checkout, and its port"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_editing_a_field_changes_one_line_and_leaves_the_comments() {
+  gui_available || return 0
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' '# a note somebody left' 'apps:' '  a:' '    be:' \
+    '      cmd: "true"    # and another' '      port: 1' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+before = text()
+dialog._apply(('apps','a','be','port'), '2')
+after = text()
+print(sum(1 for x, y in zip(before.splitlines(), after.splitlines()) if x != y))
+print(after.count('#'))
+print([l for l in after.splitlines() if 'port' in l][0].strip())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1" "exactly one line differs"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "2" "and both comments are still there"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "port: 2" "with the new value"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_the_form_never_writes_a_config_the_tool_cannot_load() {
+  gui_available || return 0
+  # Saving a config pitcrew cannot parse breaks every command for that project,
+  # including the one that would tell you why.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+dialog._buffer.set_text('apps:\n  a:\n   \tbroken indent\n')
+dialog._save()
+print(SAMPLE.read_text().strip().replace(chr(10), ' | '))
+")
+  assert_match "$out" 'cmd: "true"' "the file on disk is untouched"
+  assert_not_match "$out" 'broken indent' "the unloadable text was refused"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_switching_a_component_off_writes_the_exclusion_and_switching_it_on_removes_it() {
+  gui_available || return 0
+  # `enabled: true` is the default, so turning it back on should leave the file
+  # as it was rather than adding a line that says nothing.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+class Fake:
+    def __init__(self, on): self._on = on
+    def get_active(self): return self._on
+dialog._enabled_changed(Fake(False), None, ('apps','a','be'))
+print('enabled: false' in text())
+dialog._enabled_changed(Fake(True), None, ('apps','a','be'))
+print('enabled' in text())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True"  "off writes the exclusion"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "False" "on takes the line away again"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_a_new_role_can_be_added_to_a_group_from_the_form() {
+  gui_available || return 0
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+dialog._do_add_component('a', 'worker')
+print('worker:' in text())
+dialog._do_add_component('a', 'my-worker')
+print('my-worker' in text())
+print(dialog._output.__class__.__name__ != '')
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True"  "a role the config never had"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "False" \
+    "and a name that cannot be half of a component id is refused, not written"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_a_bash_config_is_offered_as_text_and_not_as_a_form() {
+  gui_available || return 0
+  # A pitcrew.config.sh is a sourced shell script that may branch, loop or
+  # source something else. There is no form for that, and one that could not
+  # round-trip it would quietly drop what it did not understand.
+  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+print(dialog._is_yaml)
+print(dialog._stack.get_child_by_name('form') is None)
+print(dialog._stack.get_child_by_name('yaml') is not None)
+")
+  assert_eq "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ *$//')" "False True True" \
+    "no form tab, and the text is still there"
+  rm -f "$SAMPLE_YAML"
+}
+
 # ── the dependency installer ────────────────────────────────────────────────
 #
 # Only the Fedora path can actually be run here, so these check the tables and,

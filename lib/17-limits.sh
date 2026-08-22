@@ -121,10 +121,8 @@ comp_max_source() { # $1 comp → MAXSRC: override | app | role
   # Sets a global rather than echoing, so the JSON writer can ask without a
   # subshell — it asks once per component per frame. Same convention as
   # `human` → HUMAN in the render path.
-  local app=${1#??-}
   [ -n "${COMP_MAX_OVERRIDE[$1]:-}" ] && { MAXSRC=override; return; }
-  if [ "${1:0:2}" = be ]; then [ -n "${PITCREW_BE_MAX_APP[$app]:-}" ] && { MAXSRC=app; return; }
-  else [ -n "${PITCREW_FE_MAX_APP[$app]:-}" ] && { MAXSRC=app; return; }; fi
+  [ -n "${PITCREW_MAX_COMP[$1]:-}" ]    && { MAXSRC=app;      return; }
   MAXSRC=role
 }
 
@@ -166,7 +164,7 @@ cmd_limit() { # [] | [<comp> <size|default>]
   # The cap is applied when a component STARTS, so changing it under a running
   # one changes nothing until it is restarted. Saying so beats being asked why.
   case "$(comp_state "$comp")" in
-    up|starting) say "    ${C_MUTED}restart it for the new cap to apply: pitcrew restart ${comp#??-}${RESET}" ;;
+    up|starting) say "    ${C_MUTED}restart it for the new cap to apply: pitcrew restart $comp${RESET}" ;;
   esac
   return 0
 }

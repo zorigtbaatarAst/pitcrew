@@ -55,9 +55,9 @@ test_a_role_exists_only_when_it_has_a_command() {
 
 test_ports_health_and_url_path_land_where_the_model_wants_them() {
   _load_fixture
-  assert_eq "${PITCREW_BE_PORT[both]}"        19801     "backend port"
-  assert_eq "${PITCREW_FE_PORT[both]}"        19802     "frontend port"
-  assert_eq "${PITCREW_BE_HEALTH_PATH[both]}" "/health" "health path"
+  assert_eq "${PITCREW_PORT[be-both]}"        19801     "backend port"
+  assert_eq "${PITCREW_PORT[fe-both]}"        19802     "frontend port"
+  assert_eq "${PITCREW_HEALTH[be-both]}" "/health" "health path"
   assert_eq "${PITCREW_URL_PATH[both]}"       "/api"    "url path"
 }
 
@@ -66,8 +66,8 @@ test_dir_becomes_a_cd_in_front_of_the_command() {
   # "cd there && run this" and got the quoting subtly wrong on paths with
   # spaces in them.
   _load_fixture
-  assert_match "${PITCREW_BE_CMD[beonly]}" "^cd '.*/services/beonly' && true$" "dir folded in, quoted"
-  assert_eq    "${PITCREW_BE_CMD[both]}"   "true" "no dir means no cd"
+  assert_match "${PITCREW_CMD[be-beonly]}" "^cd '.*/services/beonly' && true$" "dir folded in, quoted"
+  assert_eq    "${PITCREW_CMD[be-both]}"   "true" "no dir means no cd"
 }
 
 test_a_role_with_a_dir_and_no_watch_watches_where_it_runs() {
@@ -90,7 +90,7 @@ test_lists_work_in_both_block_and_flow_style() {
 
 test_a_folded_block_scalar_becomes_one_line() {
   _load_fixture
-  assert_eq "${PITCREW_FE_CMD[feonly]}" "true --folded" ">- folds newlines into spaces"
+  assert_eq "${PITCREW_CMD[fe-feonly]}" "true --folded" ">- folds newlines into spaces"
 }
 
 test_an_inline_comment_after_a_quoted_value_is_not_part_of_it() {
@@ -166,9 +166,9 @@ test_root_and_home_expand_and_nothing_else_does() {
     be:
       cmd: cd $ROOT/x && JAVA=$JAVA_HOME ${NOT_ME} run
       port: 1' >/dev/null
-  assert_match "${PITCREW_BE_CMD[a]}" "^cd $ROOT/x && " "\$ROOT expands at load time"
-  assert_match "${PITCREW_BE_CMD[a]}" 'JAVA=\$JAVA_HOME' "other variables reach the shell untouched"
-  assert_match "${PITCREW_BE_CMD[a]}" '\$\{NOT_ME\}' "including braced ones"
+  assert_match "${PITCREW_CMD[be-a]}" "^cd $ROOT/x && " "\$ROOT expands at load time"
+  assert_match "${PITCREW_CMD[be-a]}" 'JAVA=\$JAVA_HOME' "other variables reach the shell untouched"
+  assert_match "${PITCREW_CMD[be-a]}" '\$\{NOT_ME\}' "including braced ones"
 }
 
 test_a_variable_that_merely_starts_with_root_is_left_alone() {
@@ -177,7 +177,7 @@ test_a_variable_that_merely_starts_with_root_is_left_alone() {
     be:
       cmd: echo $ROOTLESS
       port: 1' >/dev/null
-  assert_eq "${PITCREW_BE_CMD[a]}" 'echo $ROOTLESS' "prefix match is not a match"
+  assert_eq "${PITCREW_CMD[be-a]}" 'echo $ROOTLESS' "prefix match is not a match"
 }
 
 # ── typos warn, they do not die ────────────────────────────────────────────
@@ -199,12 +199,16 @@ test_an_unknown_dashboard_setting_is_reported() {
   thmee: mono')" "unknown dashboard setting 'thmee'" "allowlisted, so a typo is visible"
 }
 
-test_a_frontend_health_path_says_why_it_is_ignored() {
-  assert_match "$(_warnings 'apps:
+test_a_health_path_works_on_any_role() {
+  # It used to be refused anywhere but `be`, on the grounds that an open port
+  # is what makes a frontend up. That was true of a frontend and false of
+  # everything else a group can now contain — a worker with an actuator asks
+  # exactly the same question.
+  assert_empty "$(_warnings 'apps:
   a:
-    fe:
+    worker:
       cmd: "true"
-      health: /health')" 'backend-only' "explains rather than silently dropping it"
+      health: /health')" "no complaint about a health path on a worker"
 }
 
 test_a_key_written_twice_says_which_one_wins() {
@@ -217,10 +221,46 @@ test_tabs_for_indentation_are_rejected() {
   assert_fails _rejects "$(printf 'apps:\n\ta:\n\t  be:\n\t    cmd: x\n')"
 }
 
-test_flow_mappings_are_rejected_rather_than_half_parsed() {
+test_a_flow_mapping_is_one_line_for_one_component() {
+  # This used to be rejected outright. An app is a group of components now, and
+  # a group with four roles reads far better as four lines than as twenty.
+  _load 'apps:
+  a:
+    be: {cmd: "true", port: 8080}
+    worker: { cmd: "sleep 1" }' >/dev/null
+  assert_eq "${PITCREW_CMD[be-a]}"     "true"    "the command"
+  assert_eq "${PITCREW_PORT[be-a]}"    8080      "the port"
+  assert_eq "${PITCREW_CMD[worker-a]}" "sleep 1" "and a second component on its own line"
+}
+
+test_a_comma_inside_a_flow_value_has_to_be_quoted() {
+  # Commas separate the pairs, so an unquoted one would truncate a command in
+  # the middle. Quoting works; not quoting is an error rather than a silent cut.
+  _load 'apps:
+  a:
+    be: { cmd: "npm run build, npm start" }' >/dev/null
+  assert_eq "${PITCREW_CMD[be-a]}" "npm run build, npm start" "a quoted comma survives"
   assert_fails _rejects 'apps:
   a:
-    be: {cmd: "true", port: 8080}'
+    be: { cmd: npm run build, npm start }'
+}
+
+test_a_nested_collection_inside_a_flow_mapping_is_still_refused() {
+  assert_fails _rejects 'apps:
+  a:
+    be: { cmd: "true", watch: [x, y] }'
+}
+
+test_aligning_values_does_not_change_what_they_mean() {
+  # `key:` followed by more than one space left the whitespace on the front of
+  # the value, so an aligned flow mapping did not look like one and was read as
+  # an ordinary scalar that quietly did nothing.
+  _load 'apps:
+  a:
+    be:      { cmd: "true", port: 1 }
+deps:      [x, y]' >/dev/null
+  assert_eq "${PITCREW_CMD[be-a]}" "true" "an aligned flow mapping still parses"
+  assert_eq "${PITCREW_DEPS[*]}"   "x y"  "and so does an aligned flow sequence"
 }
 
 test_a_list_of_mappings_is_rejected() {
@@ -260,7 +300,7 @@ test_include_pulls_in_another_config_and_later_keys_override_it() {
   ROOT=$dir
   yaml_config_load "$dir/pitcrew.yaml" >/dev/null 2>&1
   assert_eq "${PITCREW_APPS[*]}"        "a"        "the included app is there"
-  assert_eq "${PITCREW_BE_PORT[a]}"     "1"        "with its values"
+  assert_eq "${PITCREW_PORT[be-a]}"     "1"        "with its values"
   assert_eq "$PITCREW_PROJECT_NAME"     "override" "and the includer wins on conflicts"
   rm -rf "$dir"
 }

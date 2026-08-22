@@ -237,7 +237,7 @@ test_the_selection_cannot_scroll_off_the_screen() {
   SEL=3; ROW_OFF=0
   _render_at 160 6
   local body; body=$(plain "$FRAME")
-  local selapp=${VIEW[3]#??-}
+  local selapp=${VIEW[3]#*-}
   assert_match "$body" "$selapp" "the selected app is on screen"
   assert_match "$body" 'above'   "and the frame says what it scrolled past"
   SEL=0; ROW_OFF=0

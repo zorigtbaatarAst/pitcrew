@@ -129,8 +129,8 @@ test_the_generated_config_actually_loads() {
   assert_match "$comps" 'be-sales'      "backend component"
   assert_match "$comps" 'fe-sales'      "frontend component"
   assert_match "$comps" 'be-report-api' "grouped service"
-  assert_eq "${PITCREW_BE_PORT[sales]}" 8111 "detected port survived into the model"
-  assert_eq "${PITCREW_BE_HEALTH_PATH[sales]}" "/actuator/health" "spring health path"
+  assert_eq "${PITCREW_PORT[be-sales]}" 8111 "detected port survived into the model"
+  assert_eq "${PITCREW_HEALTH[be-sales]}" "/actuator/health" "spring health path"
 }
 
 test_generated_commands_reference_the_checkout_not_the_config_dir() {
@@ -138,8 +138,8 @@ test_generated_commands_reference_the_checkout_not_the_config_dir() {
   # sourced — if ROOT were the config's own directory they would all point at
   # ~/.config/pitcrew and silently run in the wrong place
   _init_repo; _load_generated
-  assert_match "${PITCREW_FE_CMD[sales]}" "$ROOTFIX" "frontend command targets the checkout"
-  assert_not_match "${PITCREW_FE_CMD[sales]}" 'projects' "not the config directory"
+  assert_match "${PITCREW_CMD[fe-sales]}" "$ROOTFIX" "frontend command targets the checkout"
+  assert_not_match "${PITCREW_CMD[fe-sales]}" 'projects' "not the config directory"
 }
 
 test_generated_ports_never_collide() {
@@ -149,8 +149,8 @@ test_generated_ports_never_collide() {
   _init_repo; _load_generated
   local c port seen=" " dupes=""
   for c in "${PITCREW_COMPS[@]}"; do
-    local app=${c#??-} role=${c:0:2}
-    if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+    local app=${c#*-} role=${c%%-*}
+    port=${PITCREW_PORT[$c]:-}
     [ -n "$port" ] || continue
     case "$seen" in *" $port "*) dupes+="$port " ;; *) seen+="$port " ;; esac
   done
@@ -175,7 +175,7 @@ pitcrew_app only --be-cmd "true" --be-port 19999'
   # and resolving through the registry entry yields the repo's model
   _load_generated_from "$gen"
   assert_eq "$PITCREW_PROJECT_NAME" "handwritten" "the repo's config is what loads"
-  assert_eq "${PITCREW_BE_PORT[only]}" 19999 "with its own values"
+  assert_eq "${PITCREW_PORT[be-only]}" 19999 "with its own values"
 
   # --detect overrides, for when you do want a fresh look. It writes the
   # current format, and replaces the pointer entry rather than sitting next to
@@ -205,7 +205,7 @@ apps:
   assert_match "$gen" '\.yaml$' "a yaml repo gets a yaml entry"
   _load_generated_from "$gen"
   assert_eq "$PITCREW_PROJECT_NAME" "shipped" "and it resolves into the repo's own config"
-  assert_eq "${PITCREW_BE_PORT[only]}" 19998 "with its values"
+  assert_eq "${PITCREW_PORT[be-only]}" 19998 "with its values"
   assert_eq "$ROOT" "$ROOTFIX" "and the right root"
   rm -f "$ROOTFIX/pitcrew.yaml"
   cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
@@ -366,7 +366,7 @@ test_init_writes_yaml_by_default_and_bash_when_asked() {
   assert_match "$gen" '\.sh$' "--sh still writes the bash format"
   assert_match "$(cat "$gen")" 'pitcrew_app' "and it is bash"
   _load_generated_from "$gen"
-  assert_eq "${PITCREW_BE_PORT[sales]}" 8111 "which still loads"
+  assert_eq "${PITCREW_PORT[be-sales]}" 8111 "which still loads"
   cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1   # back to the default
 }
 
@@ -374,13 +374,13 @@ test_the_two_formats_describe_the_same_project() {
   # The YAML front end is not a second model, it is a second way of writing the
   # one model. If the two ever disagree, everything downstream is a coin-flip.
   _init_repo; _load_generated
-  local yaml_comps="${PITCREW_COMPS[*]}" yaml_port="${PITCREW_BE_PORT[sales]}"
-  local yaml_health="${PITCREW_BE_HEALTH_PATH[sales]}"
+  local yaml_comps="${PITCREW_COMPS[*]}" yaml_port="${PITCREW_PORT[be-sales]}"
+  local yaml_health="${PITCREW_HEALTH[be-sales]}"
   cmd_init --force --sh --name fixrepo "$ROOTFIX" >/dev/null 2>&1
   _load_generated_from "$(project_file fixrepo)"
   assert_eq "${PITCREW_COMPS[*]}"              "$yaml_comps"  "same components"
-  assert_eq "${PITCREW_BE_PORT[sales]}"        "$yaml_port"   "same ports"
-  assert_eq "${PITCREW_BE_HEALTH_PATH[sales]}" "$yaml_health" "same health path"
+  assert_eq "${PITCREW_PORT[be-sales]}"        "$yaml_port"   "same ports"
+  assert_eq "${PITCREW_HEALTH[be-sales]}" "$yaml_health" "same health path"
   cmd_init --force --name fixrepo "$ROOTFIX" >/dev/null 2>&1
 }
 

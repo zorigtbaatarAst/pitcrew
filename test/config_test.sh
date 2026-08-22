@@ -10,8 +10,8 @@ config_finalize "$PITCREW_CFG"
 config_validate 2>/dev/null
 
 test_shorthand_populates_the_same_arrays_as_raw_assignment() {
-  assert_eq "${PITCREW_BE_PORT[both]}"        "19801" "be port"
-  assert_eq "${PITCREW_BE_HEALTH_PATH[both]}" "/health" "health path"
+  assert_eq "${PITCREW_PORT[be-both]}"        "19801" "be port"
+  assert_eq "${PITCREW_HEALTH[be-both]}" "/health" "health path"
   assert_eq "${PITCREW_URL_PATH[both]}"       "/api"  "url path"
   assert_eq "${PITCREW_WATCH_DIR[be-both]}"   "src/be" "watch dir is keyed by component"
 }

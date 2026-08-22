@@ -99,13 +99,9 @@ PITCREW_SLOW_START_MULT="${PITCREW_SLOW_START_MULT:-1}"  # × PITCREW_WAIT_SECS 
 # once and look it up.
 declare -gA DIAG_PORT=()
 diag_ports_init() {
-  local c app
+  local c
   DIAG_PORT=()
-  for c in "${PITCREW_COMPS[@]}"; do
-    app=${c#??-}
-    if [ "${c:0:2}" = be ]; then DIAG_PORT[$c]=${PITCREW_BE_PORT[$app]:-}
-    else DIAG_PORT[$c]=${PITCREW_FE_PORT[$app]:-}; fi
-  done
+  for c in "${PITCREW_COMPS[@]}"; do DIAG_PORT[$c]=${PITCREW_PORT[$c]:-}; done
 }
 
 # ── largest consumers, sorted, fork-free ────────────────────────────────────
@@ -155,7 +151,7 @@ diag_check_crashed() {
 # timeout is not booting, it is stuck — and the dashboard's amber dot looks
 # identical at ten seconds and at ten minutes.
 diag_check_stuck() {
-  local c age limit app
+  local c age limit
   limit=$(( ${PITCREW_WAIT_SECS:-240} * PITCREW_SLOW_START_MULT ))
   for c in "${PITCREW_COMPS[@]}"; do
     [ "${SNAP_STATE[$c]:-}" = starting ] || continue
@@ -163,9 +159,8 @@ diag_check_stuck() {
     [ -n "$age" ] || continue
     age=$(( SNAP_NOW_S - age ))
     [ "$age" -gt "$limit" ] || continue
-    app=${c#??-}
     dur_human "$age"
-    if [ "${c:0:2}" = be ] && [ -n "${PITCREW_BE_HEALTH_PATH[$app]:-}" ]; then
+    if [ -n "${PITCREW_HEALTH[$c]:-}" ]; then
       diag_add warn stuck "$c has been starting for $DUR" \
         "its health endpoint has not reported UP yet" "pitcrew logs $c" "$c"
     else

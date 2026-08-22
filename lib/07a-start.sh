@@ -33,7 +33,7 @@ rotate_log() { # $1 comp — keep the previous run's output instead of erasing i
   # name=value in one `local ...` command against the PRE-statement scope, so
   # `f="$LOG_DIR/$c.log"` on the same line reads the CALLER's $c. It happened
   # to work only because launch_process has a variable of the same name — see
-  # the identical note in be_health (lib/03b-state.sh).
+  # the identical note in comp_healthy (lib/03b-state.sh).
   local c=$1
   local f="$LOG_DIR/$c.log" i
   [ -s "$f" ] || { : > "$f"; return 0; }
@@ -50,7 +50,7 @@ launch_process() { # $1 comp $2 full command (env prefix already folded in)
   local c=$1 full_cmd=$2
   mkdir -p "$LOG_DIR"
   rotate_log "$c"
-  rm -f "$LOG_DIR/$c.pid" "$LOG_DIR/$c.exit" "$LOG_DIR/.health-${c#??-}"
+  rm -f "$LOG_DIR/$c.pid" "$LOG_DIR/$c.exit" "$LOG_DIR/.health-$c"
 
   # The command is wrapped rather than exec'd so that something outlives it and
   # can record HOW it ended. Without this a dead service is just an absence:

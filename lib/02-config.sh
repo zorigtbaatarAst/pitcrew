@@ -114,23 +114,82 @@ find_config() {
 # would silently shadow-and-discard the real global. bin/pitcrew sources it at
 # the script's top level instead — see there for the load sequence.
 
+# ── the component model ─────────────────────────────────────────────────────
+# An app is a GROUP of components, and the group is open: `be` and `fe` are two
+# ordinary role names, not the only two there can be. A component id is
+# "<role>-<app>", split on the FIRST dash — which is why a role name may not
+# contain one and an app name may (`report-api` is a real app in the wild).
+#
+# This used to be two fixed roles all the way down: PITCREW_BE_CMD[app],
+# PITCREW_FE_PORT[app], `${c:0:2}` to read a role and `${c#??-}` to read an
+# app. A monorepo with a worker, a scheduler or a second frontend had nowhere
+# to put them. The maps below are keyed by COMPONENT instead, so adding a role
+# is data rather than code.
+#
+# The old arrays are still an input: a hand-written pitcrew.config.sh assigning
+# PITCREW_BE_CMD[sales] directly is documented and must keep working, so
+# config_finalize folds them in. Nothing READS them after that point.
 config_defaults() {
   # defaults — a config file only needs to set what it wants to change
   PITCREW_APPS=()
-  declare -gA PITCREW_BE_CMD=() PITCREW_FE_CMD=()
-  declare -gA PITCREW_BE_MAX_APP=() PITCREW_FE_MAX_APP=()   # per-app caps, if the config sets any
-  declare -gA PITCREW_BE_PORT=() PITCREW_FE_PORT=()
-  declare -gA PITCREW_BE_HEALTH_PATH=() PITCREW_URL_PATH=() PITCREW_WATCH_DIR=() PITCREW_SHELLS=()
+  PITCREW_ROLES=()                                # every role in use, be/fe first
+  declare -gA PITCREW_APP_ROLES=()                # app  -> "be fe worker", in order
+  declare -gA PITCREW_CMD=()                      # comp -> start command
+  declare -gA PITCREW_PORT=()                     # comp -> port
+  declare -gA PITCREW_HEALTH=()                   # comp -> health path
+  declare -gA PITCREW_MAX_COMP=()                 # comp -> cap from the config
+  declare -gA PITCREW_ROLE_ENV=()                 # role -> env prefix
+  declare -gA PITCREW_ROLE_MAX=()                 # role -> default cap
+  # A component the config switched off. Still listed — an excluded service
+  # that vanishes from the dashboard is one you spend an afternoon looking for
+  # — but never started by `all`, a role or an app. Naming it still starts it:
+  # this is a default, not a lock.
+  declare -gA PITCREW_DISABLED=()
+  declare -gA PITCREW_URL_PATH=() PITCREW_WATCH_DIR=() PITCREW_SHELLS=()
+  # What the FILE says, before any of it is resolved: `dir: services/orders`
+  # rather than the absolute path it became, and a command without the `cd`
+  # that gets folded in front of it. `pitcrew config --json` reports these so
+  # an editor shows you what you wrote — showing back a resolved path you never
+  # typed is how an editor turns a two-line config into a twenty-line one.
+  declare -gA PITCREW_SRC_CMD=() PITCREW_SRC_DIR=() PITCREW_SRC_ROOT=() PITCREW_SRC_WATCH=()
   # Components pitcrew will never PROPOSE stopping (lib/19-diag.sh). Not a lock:
   # `pitcrew stop` still stops them, because a tool that refuses to do what you
   # explicitly asked is worse than one that never suggested it. Keyed by
   # component, so a project can protect a backend and not its frontend.
   declare -gA PITCREW_PROTECTED=()
+
+  # ── the legacy shorthand, still supported ──
+  declare -gA PITCREW_BE_CMD=() PITCREW_FE_CMD=()
+  declare -gA PITCREW_BE_MAX_APP=() PITCREW_FE_MAX_APP=()   # per-app caps, if the config sets any
+  declare -gA PITCREW_BE_PORT=() PITCREW_FE_PORT=()
+  declare -gA PITCREW_BE_HEALTH_PATH=()
+
   PITCREW_DEPS=(); PITCREW_PROTECTED_DEPS=(); PITCREW_DEPS_READY_CMD=""
   PITCREW_BE_ENV=""; PITCREW_FE_ENV=""
   PITCREW_BE_MAX="${PITCREW_BE_MAX:-8G}"; PITCREW_FE_MAX="${PITCREW_FE_MAX:-10G}"
   PITCREW_WAIT_SECS="${PITCREW_WAIT:-240}"
   PITCREW_PROJECT_NAME=""; PITCREW_EMOJI=""
+}
+
+# Register a role on an app, keeping the order the config declared it in. The
+# only place PITCREW_APP_ROLES grows, so "does this app have this role" and
+# "in what order" have one answer.
+config_add_role() { # $1 app, $2 role
+  local app=$1 role=$2
+  case " ${PITCREW_APP_ROLES[$app]:-} " in
+    *" $role "*) return 0 ;;
+  esac
+  PITCREW_APP_ROLES[$app]="${PITCREW_APP_ROLES[$app]:+${PITCREW_APP_ROLES[$app]} }$role"
+}
+
+# A role name becomes half of a component id, a log filename and a CLI target,
+# so it has to be a plain word. A dash would make "<role>-<app>" ambiguous —
+# the one thing the whole id scheme rests on.
+config_role_ok() { # $1 role
+  case "$1" in
+    ''|*[!A-Za-z0-9_]*) return 1 ;;
+    *) return 0 ;;
+  esac
 }
 
 pitcrew_app() { # pitcrew_app <name> [--be-cmd CMD] [--fe-cmd CMD] [--be-port N] [--fe-port N]
@@ -159,6 +218,65 @@ pitcrew_app() { # pitcrew_app <name> [--be-cmd CMD] [--fe-cmd CMD] [--be-port N]
   done
 }
 
+# Fold the two-role shorthand into the component maps. Runs once, before
+# anything reads them, so the rest of the tool never has to know a config was
+# written the old way.
+_config_fold_legacy() {
+  local app
+  for app in "${PITCREW_APPS[@]}"; do
+    _config_fold_role "$app" be BE
+    _config_fold_role "$app" fe FE
+  done
+}
+
+_config_fold_role() { # $1 app, $2 role, $3 legacy prefix (BE|FE)
+  local app=$1 role=$2 p=$3 comp="$2-$1" cmd port health max
+  eval "cmd=\${PITCREW_${p}_CMD[\$app]:-}"
+  eval "port=\${PITCREW_${p}_PORT[\$app]:-}"
+  eval "max=\${PITCREW_${p}_MAX_APP[\$app]:-}"
+  health=""
+  [ "$role" = be ] && health=${PITCREW_BE_HEALTH_PATH[$app]:-}
+  # The YAML loader has already written these when a project uses it; the
+  # shorthand only fills what is still empty, so neither format can silently
+  # overwrite the other.
+  [ -n "$cmd" ]    && [ -z "${PITCREW_CMD[$comp]:-}" ]      && PITCREW_CMD[$comp]=$cmd
+  [ -n "$port" ]   && [ -z "${PITCREW_PORT[$comp]:-}" ]     && PITCREW_PORT[$comp]=$port
+  [ -n "$health" ] && [ -z "${PITCREW_HEALTH[$comp]:-}" ]   && PITCREW_HEALTH[$comp]=$health
+  [ -n "$max" ]    && [ -z "${PITCREW_MAX_COMP[$comp]:-}" ] && PITCREW_MAX_COMP[$comp]=$max
+  [ -n "${PITCREW_CMD[$comp]:-}" ] && config_add_role "$app" "$role"
+  return 0
+}
+
+# Every role in use, be and fe first so the dashboard's role grouping and the
+# `backends` / `frontends` targets keep the order people already read.
+_config_collect_roles() {
+  local app role
+  PITCREW_ROLES=()
+  for role in be fe; do
+    for app in "${PITCREW_APPS[@]}"; do
+      case " ${PITCREW_APP_ROLES[$app]:-} " in
+        *" $role "*) PITCREW_ROLES+=("$role"); break ;;
+      esac
+    done
+  done
+  for app in "${PITCREW_APPS[@]}"; do
+    for role in ${PITCREW_APP_ROLES[$app]:-}; do
+      case " ${PITCREW_ROLES[*]} " in *" $role "*) ;; *) PITCREW_ROLES+=("$role") ;; esac
+    done
+  done
+  # The two documented env vars are the be/fe entries of the role tables; a
+  # config's own `env:` / `max:` blocks have already filled the rest.
+  [ -n "${PITCREW_ROLE_ENV[be]:-}" ] || PITCREW_ROLE_ENV[be]=$PITCREW_BE_ENV
+  [ -n "${PITCREW_ROLE_ENV[fe]:-}" ] || PITCREW_ROLE_ENV[fe]=$PITCREW_FE_ENV
+  [ -n "${PITCREW_ROLE_MAX[be]:-}" ] || PITCREW_ROLE_MAX[be]=$PITCREW_BE_MAX
+  [ -n "${PITCREW_ROLE_MAX[fe]:-}" ] || PITCREW_ROLE_MAX[fe]=$PITCREW_FE_MAX
+  for role in "${PITCREW_ROLES[@]}"; do
+    # A role nobody gave a budget gets the backend one. Better a cap that is
+    # probably too generous than a meter with no scale to draw against.
+    [ -n "${PITCREW_ROLE_MAX[$role]:-}" ] || PITCREW_ROLE_MAX[$role]=$PITCREW_BE_MAX
+  done
+}
+
 config_finalize() { # $1 = path to the config file that was just sourced
   CONFIG_FILE=$1
   [ -n "${PITCREW_ROOT:-}" ] && ROOT="$PITCREW_ROOT"
@@ -174,6 +292,9 @@ config_finalize() { # $1 = path to the config file that was just sourced
   LOG_DIR="$ROOT/.pitcrew/logs"
   PROFILE_DIR="$HOME/.config/pitcrew/$SESSION/profiles"
 
+  _config_fold_legacy
+  _config_collect_roles
+
   # The component list can't change while we're running, so resolve it once
   # here instead of re-running all_components (a fork) inside every frame loop.
   mapfile -t PITCREW_COMPS < <(all_components)
@@ -188,9 +309,11 @@ config_finalize() { # $1 = path to the config file that was just sourced
 
   # what each app is written in, guessed once from its start command
   declare -gA APP_ICON=()
-  local _a
+  local _a _r _cmds
   for _a in "${PITCREW_APPS[@]}"; do
-    app_icon_for "${PITCREW_BE_CMD[$_a]:-}${PITCREW_FE_CMD[$_a]:-}"
+    _cmds=""
+    for _r in ${PITCREW_APP_ROLES[$_a]:-}; do _cmds+="${PITCREW_CMD[$_r-$_a]:-}"; done
+    app_icon_for "$_cmds"
     APP_ICON[$_a]=$ICON
   done
 
@@ -210,35 +333,40 @@ config_finalize() { # $1 = path to the config file that was just sourced
   for _c in "${PITCREW_COMPS[@]}"; do cap_cache_set "$_c"; done
 }
 
-app_has_role() { # $1 app $2 role(be|fe)
-  local app=$1 role=$2
-  if [ "$role" = be ]; then [ -n "${PITCREW_BE_CMD[$app]:-}" ]
-  else [ -n "${PITCREW_FE_CMD[$app]:-}" ]; fi
+# A component id is "<role>-<app>", split on the FIRST dash. Both halves are
+# read with plain parameter expansion everywhere, including inside the frame
+# loop, because a fork per component per frame is the one thing the dashboard
+# may not do:  role=${c%%-*}   app=${c#*-}
+app_has_role() { # $1 app $2 role
+  case " ${PITCREW_APP_ROLES[$1]:-} " in *" $2 "*) return 0 ;; esac
+  return 1
 }
 
-app_roles() { # $1 app → "be", "fe", "be fe", or "" (config error — caught elsewhere)
-  local app=$1 out=()
-  app_has_role "$app" be && out+=(be)
-  app_has_role "$app" fe && out+=(fe)
-  [ ${#out[@]} -eq 0 ] && return 0      # an app with no roles must yield nothing,
-  printf '%s\n' "${out[@]}"            # not a blank line that becomes "-app"
+app_roles() { # $1 app → its roles, one per line, in the order the config wrote them
+  local role
+  for role in ${PITCREW_APP_ROLES[$1]:-}; do echo "$role"; done
+  return 0
 }
 
-comp_port() { local app=${1#??-}; [ "${1:0:2}" = be ] && echo "${PITCREW_BE_PORT[$app]:-}" || echo "${PITCREW_FE_PORT[$app]:-}"; }
-comp_cmd()  { local app=${1#??-}; [ "${1:0:2}" = be ] && echo "${PITCREW_BE_CMD[$app]:-}" || echo "${PITCREW_FE_CMD[$app]:-}"; }
-comp_env()  { [ "${1:0:2}" = be ] && echo "$PITCREW_BE_ENV" || echo "$PITCREW_FE_ENV"; }
-comp_max()  { # machine-local override → per-app cap → role default (lib/17-limits.sh)
-  local app=${1#??-} v=${COMP_MAX_OVERRIDE[$1]:-}
+comp_port() { echo "${PITCREW_PORT[$1]:-}"; }
+comp_cmd()  { echo "${PITCREW_CMD[$1]:-}"; }
+comp_env()  { echo "${PITCREW_ROLE_ENV[${1%%-*}]:-}"; }
+comp_health() { echo "${PITCREW_HEALTH[$1]:-}"; }
+comp_disabled() { [ -n "${PITCREW_DISABLED[$1]:-}" ]; }
+comp_max()  { # machine-local override → per-component cap → role default (lib/17-limits.sh)
+  local v=${COMP_MAX_OVERRIDE[$1]:-}
   [ -n "$v" ] && { echo "$v"; return; }
-  if [ "${1:0:2}" = be ]; then echo "${PITCREW_BE_MAX_APP[$app]:-$PITCREW_BE_MAX}"
-  else echo "${PITCREW_FE_MAX_APP[$app]:-$PITCREW_FE_MAX}"; fi
+  echo "${PITCREW_MAX_COMP[$1]:-${PITCREW_ROLE_MAX[${1%%-*}]:-$PITCREW_BE_MAX}}"
 }
 
-# every configured component, stable order: be then fe per app, only roles that exist
+# every configured component, stable order: each app's roles in config order.
+# Disabled components ARE here — they are listed everywhere, just never started
+# by a group target. Leaving them out would make an excluded service look like
+# one somebody deleted.
 all_components() {
   local app role
   for app in "${PITCREW_APPS[@]}"; do
-    for role in $(app_roles "$app"); do echo "$role-$app"; done
+    for role in ${PITCREW_APP_ROLES[$app]:-}; do echo "$role-$app"; done
   done
 }
 
@@ -259,11 +387,23 @@ config_validate() {
   done
 
   for app in "${PITCREW_APPS[@]}"; do
-    if ! app_has_role "$app" be && ! app_has_role "$app" fe; then
+    if [ -z "${PITCREW_APP_ROLES[$app]:-}" ]; then
       config_is_yaml "$CONFIG_FILE" \
-        && warn "config: app '$app' has no be.cmd or fe.cmd — nothing will ever start for it" \
+        && warn "config: app '$app' has no component with a cmd: — nothing will ever start for it" \
         || warn "config: app '$app' has no PITCREW_BE_CMD or PITCREW_FE_CMD — nothing will ever start for it"
     fi
+  done
+
+  # A role and an app that share a name make `pitcrew start worker` mean two
+  # things. Targets resolve the app first, so the role becomes unreachable —
+  # silently, which is the part worth a warning.
+  local role
+  for role in "${PITCREW_ROLES[@]}"; do
+    [ -n "${known_app[$role]:-}" ] && \
+      warn "config: '$role' is both a role and an app name — 'pitcrew start $role' will mean the app"
+    case "$role" in
+      all|deps|backends|frontends) warn "config: role '$role' is also a target keyword — name it something else" ;;
+    esac
   done
 
   local -A port_owner=()

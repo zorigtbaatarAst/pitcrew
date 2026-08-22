@@ -276,7 +276,7 @@ _app_rows() { # $1 app → APP_ROWS: screen rows this app costs in the current l
 # invisible row. Scroll the window to the selection instead of clipping it.
 scroll_to_selection() { # $1 = rows available → ROW_OFF
   local budget=$1 si=0 i sum=0 selapp=${VIEW[$SEL]:-}
-  selapp=${selapp#??-}
+  selapp=${selapp#*-}
   for i in "${!VIEW_APPS[@]}"; do
     [ "${VIEW_APPS[i]}" = "$selapp" ] && { si=$i; break; }
   done
@@ -311,13 +311,11 @@ summary_line() { # → R, and SUM_UP / SUM_STARTING for the empty state
 # screen, so auto-wrap is ON here and an over-long row wraps instead of being
 # eaten — but a wrapped row is still a mangled row, and the legend was 96
 # columns wide on an 80-column terminal. Same rule as the dashboard: fit it.
-STATUS_ROW_W=78          # the two-column row, measured
 status_table() {
   snapshot
   err_scan
-  local dep st app bs fs bx fx line W twocol=1
+  local dep st app line W
   term_size; W=$TERM_W
-  [ "$W" -lt "$STATUS_ROW_W" ] && twocol=0
   if [ ${#PITCREW_DEPS[@]} -gt 0 ]; then
     say "  ${BOLD}deps${RESET}"
     for dep in "${PITCREW_DEPS[@]}"; do
@@ -331,41 +329,38 @@ status_table() {
   say ""
   # These are hand-aligned to the columns printf builds below, so they have to
   # widen with mem_meter when the cap is spelled out.
-  local _ram_hdr="ram" _ram_pad=34
-  if [ "${PITCREW_RAM_CELL:-value}" = cap ]; then _ram_hdr="ram / cap"; _ram_pad=39; fi
-  if [ "$twocol" = 1 ]; then
-    printf '  %b%-12s %-*s %s%b\n' "$BOLD" "app" "$_ram_pad" \
-      "backend              $_ram_hdr" "frontend             $_ram_hdr" "$RESET"
-  else
-    printf '  %b%-12s %s%b\n' "$BOLD" "app" "role  state       port      $_ram_hdr" "$RESET"
-  fi
+  local _ram_hdr="ram"
+  [ "${PITCREW_RAM_CELL:-value}" = cap ] && _ram_hdr="ram / cap"
+
+  # One row per COMPONENT, grouped under its app. This used to be a fixed
+  # backend/frontend pair of columns — which is exactly the shape that made a
+  # worker or a second frontend unrepresentable. A group is now however many
+  # roles it has, so the table has to be a list rather than two slots.
+  # The role column is as wide as the widest role, measured — a group may hold
+  # a `be` and a `scheduler`, and a fixed width picked for two-letter names
+  # shifted every column after it on the row that did not fit.
+  local rw=4 role comp st ext mem err label
+  for role in "${PITCREW_ROLES[@]:-}"; do
+    [ "${#role}" -gt "$rw" ] && rw=${#role}
+  done
+  printf '  %b%-12s %-*s %s%b\n' "$BOLD" "app" "$rw" "role" \
+    "state       port      $_ram_hdr" "$RESET"
   for app in "${PITCREW_APPS[@]}"; do
-    bs=${SNAP_STATE[be-$app]:-n/a}; fs=${SNAP_STATE[fe-$app]:-n/a}
-    bx=""; fx=""
-    is_external "be-$app" && bx=" ${DIM}ext${RESET}"
-    is_external "fe-$app" && fx=" ${DIM}ext${RESET}"
-    line=""
-    state_icon "$bs"; line+="$R"
-    mem_meter "be-$app"; local bmem=$R
-    state_icon "$fs"; local ficon=$R
-    mem_meter "fe-$app"; local fmem=$R
-    local berr="" ferr=""
-    [ "${ERR_COUNT[be-$app]:-0}" -gt 0 ] && berr=" ${RED}⚡${ERR_COUNT[be-$app]}${RESET}"
-    [ "${ERR_COUNT[fe-$app]:-0}" -gt 0 ] && ferr=" ${RED}⚡${ERR_COUNT[fe-$app]}${RESET}"
-    if [ "$twocol" = 1 ]; then
-      printf '    %b%-12s%b %b %-8s %b:%-5s%b %b%b%b   %b %-8s %b:%-5s%b %b%b%b\n' \
-        "$CYAN" "$app" "$RESET" \
-        "$line" "$bs" "$GREY" "${PITCREW_BE_PORT[$app]:--}" "$RESET" "$bmem" "$berr" "$bx" \
-        "$ficon" "$fs" "$GREY" "${PITCREW_FE_PORT[$app]:--}" "$RESET" "$fmem" "$ferr" "$fx"
-      continue
-    fi
-    # one role per line: two squeezed columns wrap into an unreadable mess
-    printf '    %b%-12s%b %bbe%b %b %-8s %b:%-5s%b %b%b%b\n' \
-      "$CYAN" "$app" "$RESET" "$C_MUTED" "$RESET" \
-      "$line" "$bs" "$GREY" "${PITCREW_BE_PORT[$app]:--}" "$RESET" "$bmem" "$berr" "$bx"
-    printf '    %b%-12s%b %bfe%b %b %-8s %b:%-5s%b %b%b%b\n' \
-      "$CYAN" "" "$RESET" "$C_MUTED" "$RESET" \
-      "$ficon" "$fs" "$GREY" "${PITCREW_FE_PORT[$app]:--}" "$RESET" "$fmem" "$ferr" "$fx"
+    label=$app
+    for role in ${PITCREW_APP_ROLES[$app]:-}; do
+      comp="$role-$app"
+      st=${SNAP_STATE[$comp]:-n/a}
+      comp_disabled "$comp" && st=off
+      ext=""; is_external "$comp" && ext=" ${DIM}ext${RESET}"
+      state_icon "$st"; line=$R
+      mem_meter "$comp"; mem=$R
+      err=""
+      [ "${ERR_COUNT[$comp]:-0}" -gt 0 ] && err=" ${RED}⚡${ERR_COUNT[$comp]}${RESET}"
+      printf '    %b%-12s%b %b%-*s%b %b %-8s %b:%-5s%b %b%b%b\n' \
+        "$CYAN" "$label" "$RESET" "$C_MUTED" "$rw" "$role" "$RESET" \
+        "$line" "$st" "$GREY" "${PITCREW_PORT[$comp]:--}" "$RESET" "$mem" "$err" "$ext"
+      label=""                       # the app name belongs on its first row only
+    done
   done
   say ""
   # drop the entries that will not fit rather than wrapping the line

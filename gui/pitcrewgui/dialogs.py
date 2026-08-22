@@ -10,6 +10,7 @@ from .model import human_bytes, plain
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error, yaml_config_error
 from .widgets import OutputView, ProcessTree, human_age
+from .yamledit import add_block, set_value
 
 
 class InitDialog(Adw.Dialog):
@@ -107,22 +108,55 @@ class InitDialog(Adw.Dialog):
         self._run_button.set_label("Done")
         self._on_created()
 
-class ConfigDialog(Adw.Dialog):
-    """The project's config, as the file it actually is — YAML or bash.
+# The fields a component has, in the order they are worth reading: what it
+# runs, then where, then how it is reached, then the switches. Each is one
+# dotted path under `apps.<app>.<role>`.
+_COMPONENT_FIELDS = (
+    ("cmd",    "Command",    "what starts this component"),
+    ("root",   "Checkout",   "its own repository — leave empty to use the project root"),
+    ("dir",    "Directory",  "relative to the checkout above"),
+    ("port",   "Port",       "how pitcrew tells whether it is up"),
+    ("health", "Health path", "must answer UP before the component counts as up"),
+    ("max",    "RAM cap",    "overrides the role default, e.g. 2G"),
+)
 
-    A form would be nicer to look at and wrong for the bash format: that config
-    is a sourced shell script that may branch, loop or source something else,
-    and a structured editor that cannot round-trip it would quietly drop what
-    it did not understand. So: edit the text, and refuse to save something the
-    tool itself cannot load — `bash -n` for a .sh, `pitcrew check` for a .yaml.
+
+class ConfigDialog(Adw.Dialog):
+    """The project's config: as a form, and as the file it actually is.
+
+    The form is the point — an app is an open GROUP of components now, and
+    hand-indenting a fourth role into a YAML file is exactly the friction this
+    is here to remove. But it edits FIELDS, and every save is a targeted line
+    edit through yamledit.py rather than a regenerated file. A config is
+    something people write and annotate, and an editor that rewrites it
+    wholesale hands back a file with every comment gone.
+
+    Two things the form cannot be, and both have the same answer — the YAML tab:
+
+      * complete. A config may hold keys this form knows nothing about, and a
+        form that could not round-trip them would quietly drop them.
+      * the bash format. A pitcrew.config.sh is a sourced shell script that may
+        branch, loop or source something else. There is no form for that, so
+        a .sh config opens on the text and the form tab is not offered.
+
+    Either way, nothing is saved that the tool itself cannot load: `pitcrew
+    check` for a .yaml, `bash -n` for a .sh.
     """
 
     def __init__(self, runner: Runner, name: str, on_saved):
-        super().__init__(title=f"{name} · config", content_width=760, content_height=620)
+        super().__init__(title=f"{name} · config", content_width=820, content_height=680)
         self._runner = runner
         self._name = name
         self._on_saved = on_saved
         self._path = project_config_path(name)
+        self._is_yaml = self._path.suffix in (".yaml", ".yml")
+        self._config: dict | None = None
+        self._rows: dict[tuple[str, ...], Gtk.Widget] = {}
+        # The groups THIS dialog added. Adw.PreferencesPage.observe_children()
+        # hands back its own scaffolding as well, so rebuilding the form from
+        # that list removes the wrong widgets.
+        self._groups: list[Adw.PreferencesGroup] = []
+        self._loading = False
 
         self._buffer = Gtk.TextBuffer()
         try:
@@ -131,6 +165,7 @@ class ConfigDialog(Adw.Dialog):
         except OSError as error:
             self._buffer.set_text(f"# cannot read {self._path}: {error}")
             editable = False
+        self._editable = editable
 
         view = Gtk.TextView(buffer=self._buffer, monospace=True, editable=editable,
                             top_margin=10, bottom_margin=10, left_margin=10, right_margin=10)
@@ -139,6 +174,14 @@ class ConfigDialog(Adw.Dialog):
 
         self._output = OutputView(height=120)
         self._output.show_text(str(self._path))
+
+        self._form = Adw.PreferencesPage()
+        self._stack = Adw.ViewStack()
+        if self._is_yaml:
+            self._stack.add_titled_with_icon(self._form, "form", "Apps",
+                                             "view-list-symbolic")
+        self._stack.add_titled_with_icon(scroller, "yaml", "YAML",
+                                         "text-x-generic-symbolic")
 
         save = Gtk.Button(label="Save", sensitive=editable)
         save.add_css_class("suggested-action")
@@ -149,16 +192,249 @@ class ConfigDialog(Adw.Dialog):
         header = Adw.HeaderBar()
         header.pack_end(save)
         header.pack_start(check)
+        if self._is_yaml:
+            header.set_title_widget(Adw.ViewSwitcher(stack=self._stack,
+                                                     policy=Adw.ViewSwitcherPolicy.WIDE))
 
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
                        margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
-        body.append(scroller)
+        body.append(self._stack)
+        self._stack.set_vexpand(True)
         body.append(self._output)
 
         wrapper = Adw.ToolbarView()
         wrapper.add_top_bar(header)
         wrapper.set_content(body)
         self.set_child(wrapper)
+
+        if self._is_yaml:
+            self._reload_form()
+
+    # ── the form ────────────────────────────────────────────────────────────
+    #
+    # Every value on it comes from `pitcrew config --json`, which is pitcrew
+    # reading its own config. The GUI carrying a second YAML parser is how it
+    # would come to accept a file the tool rejects.
+
+    def _reload_form(self) -> None:
+        self._runner.run_json(["-p", self._name, "config", "--json"], self._form_ready)
+
+    def _form_ready(self, config: dict | None, problem: str) -> None:
+        if config is None:
+            self._output.show_text(
+                f"could not read the config as a form — edit it as YAML instead\n\n{problem}")
+            self._stack.set_visible_child_name("yaml")
+            return
+        self._config = config
+        self._build_form(config)
+
+    def _build_form(self, config: dict) -> None:
+        self._loading = True
+        for group in self._groups:
+            self._form.remove(group)
+        self._groups = []
+        self._rows = {}
+
+        project = Adw.PreferencesGroup(title="Project",
+                                       description=str(self._path))
+        project.add(self._entry(("name",), "Name", config.get("name") or "",
+                                "shown in the header and the dashboard title"))
+        project.add(self._entry(("emoji",), "Emoji", config.get("emoji") or "", ""))
+        self._add_group(project)
+
+        for app in config.get("apps") or []:
+            self._add_group(self._app_group(app))
+
+        add = Adw.PreferencesGroup()
+        button = Gtk.Button(label="Add an app", halign=Gtk.Align.CENTER)
+        button.connect("clicked", lambda _b: self._add_app())
+        add.add(button)
+        self._add_group(add)
+        self._loading = False
+
+    def _add_group(self, group: Adw.PreferencesGroup) -> None:
+        self._form.add(group)
+        self._groups.append(group)
+
+    def _app_group(self, app: dict) -> Adw.PreferencesGroup:
+        name = app["name"]
+        components = app.get("components") or []
+        roles = ", ".join(c["role"] for c in components) or "no components yet"
+        group = Adw.PreferencesGroup(title=name, description=roles)
+
+        add = Gtk.Button(icon_name="list-add-symbolic",
+                         tooltip_text="add a component to this group")
+        add.add_css_class("flat")
+        add.connect("clicked", lambda _b, a=name: self._add_component(a))
+        group.set_header_suffix(add)
+
+        group.add(self._entry(("apps", name, "url_path"), "URL path",
+                              app.get("urlPath") or "",
+                              "appended to every non-frontend URL for this app"))
+        group.add(self._entry(("apps", name, "root"), "Checkout",
+                              app.get("root") or "",
+                              "one repository for the whole group; a component can still differ"))
+        for comp in components:
+            group.add(self._component_row(name, comp))
+        return group
+
+    def _component_row(self, app: str, comp: dict) -> Adw.ExpanderRow:
+        role = comp["role"]
+        base = ("apps", app, role)
+        row = Adw.ExpanderRow(title=role, subtitle=comp.get("cmd") or "no command")
+
+        # The exclusion switch, on the row rather than buried inside it: it is
+        # the one field you flip without wanting to read anything else.
+        toggle = Gtk.Switch(active=bool(comp.get("enabled", True)),
+                            valign=Gtk.Align.CENTER,
+                            tooltip_text="off: skipped by `start all`, still listed")
+        toggle.connect("notify::active", self._enabled_changed, base)
+        row.add_suffix(toggle)
+
+        for key, title, blurb in _COMPONENT_FIELDS:
+            value = comp.get(key)
+            row.add_row(self._entry((*base, key), title,
+                                    "" if value in (None, "") else str(value), blurb))
+        row.add_row(self._switch((*base, "protected"), "Protected",
+                                 bool(comp.get("protected")),
+                                 "never proposed for stopping to free memory"))
+
+        remove = Adw.ActionRow(title="Remove this component")
+        button = Gtk.Button(label="Remove", valign=Gtk.Align.CENTER)
+        button.add_css_class("destructive-action")
+        button.connect("clicked", lambda _b, a=app, r=role: self._remove_component(a, r))
+        remove.add_suffix(button)
+        row.add_row(remove)
+        return row
+
+    def _entry(self, path: tuple[str, ...], title: str, value: str,
+               blurb: str) -> Adw.EntryRow:
+        row = Adw.EntryRow(title=title, text=value)
+        if blurb:
+            row.set_tooltip_text(blurb)
+        row.connect("apply", self._entry_applied, path)
+        # `apply` fires on Enter; leaving the field has to count too, or a value
+        # typed and then clicked away from is silently discarded.
+        controller = Gtk.EventControllerFocus()
+        controller.connect("leave", lambda _c, r=row, p=path: self._entry_applied(r, p))
+        row.add_controller(controller)
+        row.set_show_apply_button(True)
+        self._rows[path] = row
+        return row
+
+    def _switch(self, path: tuple[str, ...], title: str, value: bool,
+                blurb: str) -> Adw.SwitchRow:
+        row = Adw.SwitchRow(title=title, subtitle=blurb, active=value)
+        row.connect("notify::active", self._switch_changed, path)
+        self._rows[path] = row
+        return row
+
+    # ── turning a changed field into an edit ────────────────────────────────
+
+    def _entry_applied(self, row: Adw.EntryRow, path: tuple[str, ...]) -> None:
+        if self._loading:
+            return
+        text = row.get_text().strip()
+        self._apply(path, text or None)
+
+    def _switch_changed(self, row: Adw.SwitchRow, _param,
+                        path: tuple[str, ...]) -> None:
+        if self._loading:
+            return
+        self._apply(path, "true" if row.get_active() else None)
+
+    def _enabled_changed(self, switch: Gtk.Switch, _param,
+                         base: tuple[str, ...]) -> None:
+        if self._loading:
+            return
+        # `enabled: true` is the default, so switching it back ON removes the
+        # key rather than writing a line that says nothing.
+        self._apply((*base, "enabled"), None if switch.get_active() else "false")
+
+    # The two fields the form writes itself rather than taking from a text box.
+    # They go in unquoted, because `enabled: "false"` is correct YAML and not
+    # something anybody would have typed.
+    _BOOLEAN_KEYS = ("enabled", "protected")
+
+    def _apply(self, path: tuple[str, ...], value: str | None) -> None:
+        """One field → one line edit, checked before it is written."""
+        current = self._text()
+        try:
+            updated = set_value(current, path, value,
+                                literal=path[-1] in self._BOOLEAN_KEYS)
+        except LookupError as missing:
+            self._output.show_text(
+                f"cannot edit {'.'.join(path)} from the form — {missing} is not "
+                f"somewhere this can safely change.\nEdit it on the YAML tab.")
+            return
+        if updated == current:
+            return
+        self._set_text(updated)
+        self._output.show_text(f"{'.'.join(path)} → {value if value is not None else '(removed)'}"
+                               "   ·   not written yet — press Save")
+
+    def _add_component(self, app: str) -> None:
+        self._ask("Role name", "worker",
+                  "letters, digits and _ — it becomes half of a component id",
+                  lambda role: self._do_add_component(app, role))
+
+    def _do_add_component(self, app: str, role: str) -> None:
+        if not role.replace("_", "").isalnum():
+            self._output.show_text(
+                f"'{role}' cannot be a role: a component is named <role>-<app>, "
+                "split on the first dash, so a role is letters, digits or _.")
+            return
+        try:
+            updated = add_block(self._text(), ("apps", app, role),
+                                [("cmd", "true")])
+        except LookupError as error:
+            self._output.show_text(f"could not add it: {error} — edit the YAML tab")
+            return
+        self._set_text(updated)
+        self._output.show_text(f"added {role}-{app} with a placeholder command "
+                               "— set it below, then Save")
+        self._save(reload_form=True)
+
+    def _remove_component(self, app: str, role: str) -> None:
+        try:
+            updated = set_value(self._text(), ("apps", app, role), None)
+        except LookupError as error:
+            self._output.show_text(f"could not remove it: {error}")
+            return
+        self._set_text(updated)
+        self._save(reload_form=True)
+
+    def _add_app(self) -> None:
+        self._ask("App name", "shop", "the group these components belong to",
+                  self._do_add_app)
+
+    def _do_add_app(self, name: str) -> None:
+        if not name or "." in name or " " in name:
+            self._output.show_text("an app name cannot be empty or contain a dot or a space")
+            return
+        try:
+            updated = add_block(self._text(), ("apps", name), [])
+            updated = add_block(updated, ("apps", name, "be"), [("cmd", "true")])
+        except LookupError as error:
+            self._output.show_text(f"could not add it: {error} — edit the YAML tab")
+            return
+        self._set_text(updated)
+        self._save(reload_form=True)
+
+    def _ask(self, title: str, placeholder: str, blurb: str, on_ok) -> None:
+        dialog = Adw.AlertDialog(heading=title, body=blurb)
+        entry = Gtk.Entry(placeholder_text=placeholder, activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("ok", "Add")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("ok")
+        dialog.connect("response",
+                       lambda _d, r: r == "ok" and on_ok(entry.get_text().strip()))
+        dialog.present(self)
+
+    def _set_text(self, text: str) -> None:
+        self._buffer.set_text(text)
 
     def _text(self) -> str:
         start, end = self._buffer.get_bounds()
@@ -170,12 +446,12 @@ class ConfigDialog(Adw.Dialog):
             return yaml_config_error(self._runner.pitcrew, text)
         return bash_syntax_error(text)
 
-    def _save(self) -> None:
+    def _save(self, reload_form: bool = False) -> None:
         text = self._text()
         problem = self._problem(text)
         if problem:
-            # Saving a config bash cannot parse breaks every pitcrew command for
-            # this project, including the one that would tell you why.
+            # Saving a config the tool cannot parse breaks every pitcrew command
+            # for this project, including the one that would tell you why.
             self._output.show_text(f"not saved — pitcrew could not load this:\n\n{problem}")
             return
         try:
@@ -185,6 +461,11 @@ class ConfigDialog(Adw.Dialog):
             return
         self._output.show_text(f"saved {self._path}")
         self._on_saved()
+        # Adding or removing a component changes the SHAPE of the form, so it
+        # is rebuilt from what pitcrew now reads back — not from what this
+        # dialog believes it just wrote.
+        if reload_form and self._is_yaml:
+            self._reload_form()
 
     def _check(self) -> None:
         problem = self._problem(self._text())

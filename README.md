@@ -339,18 +339,24 @@ apps:
       health: /health
       watch: [storefront/app]               # for `pitcrew stale`
     fe:
-      dir: storefront/frontend
+      root: ~/work/storefront-web           # its own checkout, not this repo
       cmd: npm run dev
       port: 3000
-  worker:                                   # backend only — no `fe:` at all
-    be:
-      dir: worker
+    worker:                                 # any name you like — see below
+      dir: storefront
       cmd: bundle exec sidekiq
+
+  reports:
+    enabled: false                          # listed, never started by `all`
+    be: { dir: reports, cmd: bundle exec rails s -p 4100, port: 4100 }
+
+  admin:
+    fe: { dir: admin, cmd: npm run dev, port: 3001 }   # one line is fine
 
 deps: [postgres, redis]
 protected_deps: [postgres]                  # never stopped by `stop --deps`
 
-max: {be: 4G, fe: 6G}
+max: {be: 4G, fe: 6G, worker: 1G}
 wait: 180
 
 shells:
@@ -360,27 +366,57 @@ doctor:                                     # your own `pitcrew doctor` checks
   bundler present: command -v bundle
 ```
 
-A role exists for an app **only if it has a `cmd:`** — that is the whole of
-the asymmetric-role model. A missing role shows as `n/a`, is never started, and
-is never counted as down.
+### An app is a group, and the group is open
 
-`dir:` is the one piece of sugar: it is relative to the project root and
-becomes a correctly-quoted `cd` in front of the command, and it is what `watch:`
-defaults to. Paths in `watch:` are likewise relative to the root, so a config
-does not have to be full of one laptop's absolute paths. `$ROOT` and `$HOME` do
-expand if you write them; every other `$VAR` is left alone and reaches the
-shell that runs the command.
+`be` and `fe` are two ordinary **role names**, not the only two there can be.
+Add a `worker:`, a `scheduler:`, a second `admin_web:` — whatever your team
+calls them. A role exists for an app **only if it has a `cmd:`**; a missing one
+shows as `n/a`, is never started, and is never counted as down.
+
+A component is named `<role>-<app>` and the two are split on the **first** dash,
+so a role name is letters, digits and `_` (an app name may contain dashes —
+`be-report-api` is one component, not two). Every role is a target of its own:
+
+```bash
+pitcrew restart worker              # every app's worker
+pitcrew restart worker-storefront   # just that one
+pitcrew start shop                  # the whole group
+```
+
+### Where a component lives
+
+`root:` is a component's own checkout, `dir:` is relative to it, and the
+command becomes a correctly-quoted `cd` in front of whatever you wrote. Put
+`root:` under the app to give a whole group one, and under a component to
+override it — a backend and a frontend in two different repositories is two
+lines, not an absolute path repeated in front of every command.
+
+Absolute paths, `~/…` and `../…` all work, and `watch:` resolves against the
+same root as its component (defaulting to `dir:` when you do not set it).
+`$ROOT` and `$HOME` expand if you write them; every other `$VAR` is left alone
+and reaches the shell that runs the command.
+
+### Excluding something without deleting it
+
+`enabled: false` on a component — or on a whole app — takes it out of
+`pitcrew start all`, out of `backends`/`frontends`, and out of its group. It
+stays on the dashboard, greyed out and marked `off`, keeping its port and its
+cap: an excluded service that *vanished* is one you spend an afternoon looking
+for. Naming it outright still starts it, because a switch you cannot override
+is a trap.
 
 The keys, all optional except `apps:` and one `cmd:`:
 
 | Key | Purpose |
 |---|---|
-| `apps.<name>.be` / `.fe` | a role: `cmd`, `port`, `dir`, `health`, `watch`, `max`, `protected` |
+| `apps.<name>.<role>` | a component: `cmd`, `port`, `root`, `dir`, `health`, `watch`, `max`, `protected`, `enabled` |
+| `apps.<name>.root` | a checkout for the whole group; a component's own `root:` wins |
+| `apps.<name>.enabled` | `false` excludes every component in the group |
 | `apps.<name>.url_path` | cosmetic API path suffix for `pitcrew urls` |
 | `deps` / `protected_deps` | docker containers to start; ones never auto-stopped |
 | `deps_ready` | best-effort command run once after deps start |
-| `env.be` / `env.fe` | env vars prepended to every start command for that role |
-| `max.be` / `max.fe` / `wait` | role RAM caps and boot timeout |
+| `env.<role>` | env vars prepended to every start command for that role |
+| `max.<role>` / `wait` | role RAM caps and boot timeout |
 | `name` / `emoji` | banner display |
 | `shells.<name>` | named quick shells for `pitcrew shell <name>` |
 | `doctor.<label>` | a command per line — exit 0 is a tick in `pitcrew doctor` |
@@ -398,9 +434,11 @@ that is not a dep.
 The parser is ~200 lines of bash, because a config format that needs a package
 installed is a config format that fails on the box you actually have to work
 on. It handles block mappings, block and flow sequences of scalars, quoted
-scalars, `|` and `>` block scalars, comments and `include:`. It **rejects**,
-with a file and line number, everything it does not implement: tabs for
-indentation, anchors and aliases, flow mappings, tags, sequences of mappings.
+scalars, `|` and `>` block scalars, flow mappings of scalars (`be: { cmd: x,
+port: 1 }` — a group with four roles reads far better as four lines than as
+twenty), comments and `include:`. It **rejects**, with a file and line number,
+everything it does not implement: tabs for indentation, anchors and aliases,
+tags, sequences of mappings, nested flow collections.
 Refusing loudly is the point — a config format that half-parses a start command
 is worse than one that does not parse it at all.
 
@@ -428,6 +466,7 @@ The dashboard is for looking at. For everything else:
 ```bash
 pitcrew status --json     # the whole state, for a status line or a CI gate
 pitcrew json --watch      # the same object once per interval, as NDJSON
+pitcrew config --json     # the CONFIG as the editable model, not the state
 pitcrew wait sales --timeout 90   # block until it is up
 pitcrew ps                # everything running, across every registered project
 pitcrew projects --json   # the registry as data: running counts, ports, clashes
@@ -1215,13 +1254,39 @@ to get started:
 - **Watch** makes a project current; **Forget** drops it from the registry after
   a confirmation, leaving the checkout alone.
 
-The config is edited **as bash**, not as a form. A pitcrew config is a sourced
-shell script — the autoland one builds its apps from a `for` loop over a
-`declare -A` of ports — and a structured editor that could not round-trip that
-would quietly drop it. Instead the editor refuses to save anything `bash -n`
-rejects (a config that will not parse breaks every pitcrew command for that
-project, including the one that would tell you why), and **Check** runs
-`pitcrew doctor` against it.
+#### Editing the config
+
+A YAML config opens on a **form**: one group per app, one expander per
+component, with its command, its checkout, its directory, port, health path and
+RAM cap — plus a switch for `enabled:` on the row itself, because that is the
+one field you flip without wanting to read anything else. **+** on a group adds
+a role; **Add an app** adds a group. A **YAML** tab sits next to it for
+anything the form does not cover.
+
+Two things it deliberately does not do.
+
+**It does not regenerate the file.** Every field you change becomes the
+smallest possible edit to the text — one line replaced, or one pair inside a
+`{ … }` — so comments, blank lines, key order and the block-vs-flow style each
+component happens to be written in all survive untouched. A config is something
+people write and annotate, and an editor that rewrites it wholesale hands back
+a version with every comment gone. That is not a save, it is a replacement.
+
+**It does not parse YAML.** `lib/18-yaml.sh` is the one definition of the
+subset pitcrew accepts, and a second parser here would sooner or later accept a
+file the tool rejects — or, worse, silently misread one and save it back. Every
+value on the form arrives over `pitcrew config --json`, which is pitcrew
+reading its own config; the GUI only ever finds the *line* a field lives on.
+
+A **bash** config gets the text editor and no form: a `pitcrew.config.sh` is a
+sourced shell script that may branch, loop or source something else — the
+autoland one builds its apps from a `for` loop over a `declare -A` of ports —
+and a structured editor that could not round-trip that would quietly drop it.
+
+Either way nothing is written that the tool cannot load: `pitcrew check` for a
+`.yaml`, `bash -n` for a `.sh` (a config that will not parse breaks every
+pitcrew command for that project, including the one that would tell you why).
+**Check** runs `pitcrew doctor` against it.
 
 ### Preferences
 

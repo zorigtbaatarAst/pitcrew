@@ -28,14 +28,15 @@
 #   block mappings, nested by indentation (spaces only)
 #   block sequences of scalars, `- item`, at or below the parent's indent
 #   flow sequences of scalars, `[a, b, c]`
+#   flow mappings of scalars, `{a: b, c: d}` — one line per component
 #   quoted scalars ('single' with '' escapes, "double" with \" \\ \n \t)
 #   block scalars: | and > (with the -/+ chomping indicators accepted)
 #   `#` comments, on their own line or after a value
 #   `include: <file>`, which pulls in another config the way `source` did
 #
 # Deliberately NOT supported, each rejected with a message: tabs for indent,
-# anchors/aliases/merge keys, flow mappings, tags, sequences of mappings,
-# multiple documents.
+# anchors/aliases/merge keys, tags, sequences of mappings, nested flow
+# collections, multiple documents.
 
 # ── parser ────────────────────────────────────────────────────────────────
 
@@ -92,7 +93,7 @@ _yaml_scalar() { # $1 raw text after "key:" → YV, quotes resolved, comment str
       return 0 ;;
     '&'*|'*'*) _yaml_die "$YAML_LINE" "anchors and aliases are not supported — write the value out" ;;
     '!'*)      _yaml_die "$YAML_LINE" "tags are not supported" ;;
-    '{'*)      _yaml_die "$YAML_LINE" "flow mappings ({a: b}) are not supported — use an indented block" ;;
+    '{'*)      _yaml_die "$YAML_LINE" "a flow mapping cannot be nested inside another value" ;;
   esac
   # unquoted: an inline comment starts at " #"
   case "$v" in *' #'*) v=${v%% #*}; v=${v%"${v##*[![:space:]]}"} ;; esac
@@ -111,6 +112,60 @@ _yaml_flow_seq() { # $1 path, $2 "[a, b]" — emits path.0, path.1, ...
     item=${item#"${item%%[![:space:]]*}"}
     _yaml_scalar "$item"
     YAML_KEYS+=("$path.$n"); YAML_VALS+=("$YV"); n=$((n + 1))
+  done
+  return 0
+}
+
+# A one-line component: `be: { dir: api, cmd: npm run dev, port: 3000 }` says
+# the same thing as five indented lines. An app is a group of components now,
+# and a group with four roles reads far better as four lines than as twenty —
+# which is the whole reason this stopped being a rejection.
+#
+# Scalars only; a collection inside one is refused exactly as it is inside a
+# flow sequence. Commas separate the pairs, so a comma INSIDE a value has to be
+# quoted — YAML itself requires that in flow context, and the split below
+# honours quotes rather than truncating a command at the first comma.
+_yaml_flow_map() { # $1 path, $2 "{a: b, c: d}" — emits path.a, path.c
+  local path=$1 body=$2 item k v ch q="" cur="" i=0 n
+  body=${body#\{}
+  case "$body" in *\}) body=${body%\}} ;;
+    *) _yaml_die "$YAML_LINE" "unterminated flow mapping — no closing }" ;;
+  esac
+  case "$body" in *'['*|*']'*|*'{'*|*'}'*) _yaml_die "$YAML_LINE" "nested flow collections are not supported" ;; esac
+  case "$body" in *[![:space:]]*) ;; *) return 0 ;; esac
+
+  local -a pairs=()
+  n=${#body}
+  while [ "$i" -lt "$n" ]; do
+    ch=${body:i:1}
+    if [ -n "$q" ]; then
+      cur+=$ch; [ "$ch" = "$q" ] && q=""
+    else
+      case "$ch" in
+        \'|\") q=$ch; cur+=$ch ;;
+        ,)       pairs+=("$cur"); cur="" ;;
+        *)       cur+=$ch ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  [ -n "$q" ] && _yaml_die "$YAML_LINE" "unterminated quote inside a flow mapping"
+  pairs+=("$cur")
+
+  for item in "${pairs[@]}"; do
+    item=${item#"${item%%[![:space:]]*}"}
+    item=${item%"${item##*[![:space:]]}"}
+    [ -n "$item" ] || continue
+    case "$item" in
+      *:*) ;;
+      *) _yaml_die "$YAML_LINE" "'$item' is not a 'key: value' pair — a comma inside a value needs quoting" ;;
+    esac
+    k=${item%%:*}; v=${item#*:}
+    k=${k%"${k##*[![:space:]]}"}
+    v=${v#"${v%%[![:space:]]*}"}
+    [ -n "$k" ] || _yaml_die "$YAML_LINE" "a flow mapping entry has no key"
+    _yaml_scalar "$v"
+    _yaml_emit "$path.$k" "$YV"
   done
   return 0
 }
@@ -189,6 +244,12 @@ yaml_parse() { # $1 file
         esac ;;
     esac
     [ -n "$key" ] || _yaml_die "$YAML_LINE" "empty key"
+    # `key:` followed by more than one space left the extra whitespace on the
+    # front of the value, so `be:      { … }` did not look like a flow mapping
+    # and `deps:   [a, b]` did not look like a flow sequence — both were read
+    # as ordinary scalars and quietly did nothing. Aligning your values is not
+    # a syntax error in any other YAML.
+    val=${val#"${val%%[![:space:]]*}"}
 
     while [ $depth -gt 0 ] && [ "$indent" -le "${st_ind[depth-1]}" ]; do depth=$((depth - 1)); done
     if [ $depth -gt 0 ]; then parent=${st_path[depth-1]}; path="$parent.$key"; else parent=""; path=$key; fi
@@ -223,6 +284,7 @@ yaml_parse() { # $1 file
         _yaml_emit "$path" "$body"
         continue ;;
       '['*) _yaml_flow_seq "$path" "$val"; continue ;;
+      '{'*) _yaml_flow_map "$path" "$val"; continue ;;
     esac
 
     if [ -z "$val" ]; then
@@ -271,10 +333,25 @@ _yaml_bool() { # $1 key path, $2 value → YV (1 or "")
   esac
 }
 
-_yaml_path() { # $1 → YV: absolute as-is, relative resolved against $ROOT
+# $1 → YV. Absolute stays as it is; `~` is the home directory; anything else
+# is relative to $2, defaulting to the project root.
+#
+# `~` used to be the one path spelling that did NOT work here. `$HOME` expanded
+# and `~` did not, so `dir: ~/work/api` resolved to "$ROOT/~/work/api" — a
+# directory that cannot exist, which `pitcrew check` reported as loading clean
+# and which then failed at start time with a path nobody could parse.
+# A variable, not a literal, purely so shellcheck can tell a `~` being MATCHED
+# from a `~` someone forgot to let the shell expand.
+_YAML_TILDE='~'
+
+_yaml_path() { # $1 path, $2 base (default $ROOT) → YV
+  local base=${2:-$ROOT}
   case "$1" in
-    /*|'') YV=$1 ;;
-    *)     YV="$ROOT/$1" ;;
+    '')    YV=$1 ;;
+    /*)    YV=$1 ;;
+    "$_YAML_TILDE")    YV=$HOME ;;
+    "$_YAML_TILDE"/*)  YV="$HOME/${1#*/}" ;;
+    *)     YV="$base/$1" ;;
   esac
 }
 
@@ -289,30 +366,43 @@ _YAML_DASHBOARD_KEYS=" theme color icons refresh graph graph_scale gauge ram_cel
 declare -ga YAML_DOCTOR_NAME=() YAML_DOCTOR_CMD=()
 YAML_DEPTH=0
 
-_yaml_role_key() { # $1 app, $2 role(be|fe), $3 key, $4 value
-  local app=$1 role=$2 key=$3 v=$4
-  case "$role.$key" in
-    be.cmd)    PITCREW_BE_CMD[$app]=$v ;;
-    fe.cmd)    PITCREW_FE_CMD[$app]=$v ;;
-    be.port)   PITCREW_BE_PORT[$app]=$v ;;
-    fe.port)   PITCREW_FE_PORT[$app]=$v ;;
-    be.health) PITCREW_BE_HEALTH_PATH[$app]=$v ;;
-    be.max)    PITCREW_BE_MAX_APP[$app]=$v ;;
-    fe.max)    PITCREW_FE_MAX_APP[$app]=$v ;;
-    be.protected|fe.protected)
+# One component of one app. The role is whatever the config called it — `be`
+# and `fe` are two ordinary names with no special handling left in here, which
+# is what makes `worker:` or a second `web:` cost nothing to add.
+_yaml_role_key() { # $1 app, $2 role, $3 key, $4 value
+  local app=$1 role=$2 key=$3 v=$4 comp="$2-$1"
+  case "$key" in
+    # PITCREW_SRC_CMD keeps what the FILE says. PITCREW_CMD gains a `cd` in
+    # front of it below, and an editor showing that back to you would be
+    # showing you something you never wrote.
+    cmd)    PITCREW_CMD[$comp]=$v; PITCREW_SRC_CMD[$comp]=$v; config_add_role "$app" "$role" ;;
+    port)   PITCREW_PORT[$comp]=$v ;;
+    health) PITCREW_HEALTH[$comp]=$v ;;
+    max)    PITCREW_MAX_COMP[$comp]=$v ;;
+    protected)
       _yaml_bool "apps.$app.$role.protected" "$v"
-      if [ -n "$YV" ]; then PITCREW_PROTECTED[$role-$app]=1
-      else unset "PITCREW_PROTECTED[$role-$app]"; fi ;;
-    be.dir|fe.dir)
+      if [ -n "$YV" ]; then PITCREW_PROTECTED[$comp]=1
+      else unset "PITCREW_PROTECTED[$comp]"; fi ;;
+    enabled)
+      # The exclusion switch. Recorded as DISABLED rather than as "absent", so
+      # the component keeps its row, its port and its cap and simply says off.
+      _yaml_bool "apps.$app.$role.enabled" "$v"
+      if [ -n "$YV" ]; then unset "PITCREW_DISABLED[$comp]"
+      else PITCREW_DISABLED[$comp]=1; fi ;;
+    root)
+      # This component's own checkout. A backend and a frontend are frequently
+      # two repositories, and before this the only way to say so was to repeat
+      # an absolute path in front of every `dir:` and every `watch:`.
+      _yaml_path "$v"; YAML_ROOT[$comp]=$YV; PITCREW_SRC_ROOT[$comp]=$v ;;
+    dir)
       # `dir` is the boilerplate every hand-written config repeats: the command
       # is almost always "go to this directory, then run this". Recorded here
       # and folded into the command once the whole app has been read, because
-      # cmd and dir can appear in either order.
-      _yaml_path "$v"; YAML_DIR[$role-$app]=$YV ;;
-    be.watch|fe.watch)
-      _yaml_path "$v"
-      PITCREW_WATCH_DIR[$role-$app]="${PITCREW_WATCH_DIR[$role-$app]:+${PITCREW_WATCH_DIR[$role-$app]} }$YV" ;;
-    fe.health) warn "config: apps.$app.fe.health: health checks are backend-only — an open port is what makes a frontend 'up'" ;;
+      # cmd, dir and root can appear in any order.
+      YAML_DIR_RAW[$comp]=$v; PITCREW_SRC_DIR[$comp]=$v ;;
+    watch)
+      YAML_WATCH_RAW[$comp]="${YAML_WATCH_RAW[$comp]:+${YAML_WATCH_RAW[$comp]}$'\n'}$v"
+      PITCREW_SRC_WATCH[$comp]="${PITCREW_SRC_WATCH[$comp]:+${PITCREW_SRC_WATCH[$comp]} }$v" ;;
     *) warn "config: ${YAML_FILE##*/}: unknown key 'apps.$app.$role.$key'" ;;
   esac
 }
@@ -327,15 +417,35 @@ _yaml_app_key() { # $1 = path under "apps.", $2 value
   case " ${PITCREW_APPS[*]:-} " in *" $app "*) ;; *) PITCREW_APPS+=("$app") ;; esac
 
   case "$key" in
-    be.*|fe.*)
+    url_path) PITCREW_URL_PATH[$app]=$v ;;
+    enabled)
+      # Switching off a whole group: every role it has, and every role it
+      # gains later in the file, which is why it is remembered per app rather
+      # than applied to the components that happen to exist right now.
+      _yaml_bool "apps.$app.enabled" "$v"
+      if [ -n "$YV" ]; then unset "YAML_APP_OFF[$app]"; else YAML_APP_OFF[$app]=1; fi ;;
+    root)
+      # A default checkout for every role in the group. A per-role `root:`
+      # still wins — one repo for the app and one component living elsewhere is
+      # the common shape, not the exception.
+      _yaml_path "$v"; YAML_ROOT[$app]=$YV; PITCREW_SRC_ROOT[$app]=$v ;;
+    *.*)
+      # Anything else with a dot under it is a COMPONENT: `be.cmd`, `fe.port`,
+      # `worker.dir`. No allowlist of role names, which is the whole point.
       role=${key%%.*}; sub=${key#*.}
       case "$sub" in
         watch.[0-9]*) sub=watch ;;      # a list of watch dirs, one path per index
       esac
-      _yaml_role_key "$app" "$role" "$sub" "$v" ;;
-    url_path) PITCREW_URL_PATH[$app]=$v ;;
-    be|fe)    warn "config: apps.$app.$key must be a block of settings, not a value" ;;
-    *)        warn "config: ${YAML_FILE##*/}: unknown key 'apps.$app.$key'" ;;
+      if config_role_ok "$role"; then _yaml_role_key "$app" "$role" "$sub" "$v"
+      else warn "config: apps.$app.$role: a role name must be letters, digits or _ — it becomes half of a component id"; fi ;;
+    *)
+      # A bare key with a scalar under it that is not one of ours. If it looks
+      # like a role someone forgot to indent, say so in those words.
+      if config_role_ok "$key"; then
+        warn "config: apps.$app.$key must be a block of settings (cmd:, port:, …), not a value"
+      else
+        warn "config: ${YAML_FILE##*/}: unknown key 'apps.$app.$key'"
+      fi ;;
   esac
 }
 
@@ -349,7 +459,7 @@ yaml_config_load() { # $1 file
   # An included file adds to what its includer has read, so only the outermost
   # load starts from empty.
   if [ "$YAML_DEPTH" -eq 0 ]; then
-    declare -gA YAML_DIR=()
+    declare -gA YAML_DIR_RAW=() YAML_WATCH_RAW=() YAML_ROOT=() YAML_APP_OFF=()
     YAML_DOCTOR_NAME=(); YAML_DOCTOR_CMD=()
   fi
 
@@ -380,10 +490,8 @@ yaml_config_load() { # $1 file
       deps.[0-9]*)          PITCREW_DEPS+=("$v") ;;
       protected_deps.[0-9]*) PITCREW_PROTECTED_DEPS+=("$v") ;;
       deps_ready)      PITCREW_DEPS_READY_CMD=$v ;;
-      env.be)          PITCREW_BE_ENV=$v ;;
-      env.fe)          PITCREW_FE_ENV=$v ;;
-      max.be)          PITCREW_BE_MAX=$v ;;
-      max.fe)          PITCREW_FE_MAX=$v ;;
+      env.*)           PITCREW_ROLE_ENV[${path#env.}]=$v ;;
+      max.*)           PITCREW_ROLE_MAX[${path#max.}]=$v ;;
       shells.*)        PITCREW_SHELLS[${path#shells.}]=$v ;;
       doctor.*)        YAML_DOCTOR_NAME+=("${path#doctor.}"); YAML_DOCTOR_CMD+=("$v") ;;
       dashboard.*)
@@ -399,19 +507,46 @@ yaml_config_load() { # $1 file
     esac
   done
 
-  # ── fold `dir:` into the start commands ──
-  local c app role
-  for c in "${!YAML_DIR[@]}"; do
-    role=${c%%-*}; app=${c#*-}
-    if [ "$role" = be ]; then
-      [ -n "${PITCREW_BE_CMD[$app]:-}" ] && PITCREW_BE_CMD[$app]="cd ${YAML_DIR[$c]@Q} && ${PITCREW_BE_CMD[$app]}"
-    else
-      [ -n "${PITCREW_FE_CMD[$app]:-}" ] && PITCREW_FE_CMD[$app]="cd ${YAML_DIR[$c]@Q} && ${PITCREW_FE_CMD[$app]}"
+  # ── resolve where each component lives, then fold it into the command ──
+  #
+  # Deferred to here because `root:`, `dir:`, `cmd:` and `watch:` may appear in
+  # any order, and a path resolved before its root has been read would be
+  # resolved against the wrong thing. Three layers, most specific first:
+  # the component's own root, the app's root, the project root.
+  local c app role base w dir
+  local -a wlist
+  for c in "${!PITCREW_CMD[@]}"; do
+    app=${c#*-}
+    base=${YAML_ROOT[$c]:-${YAML_ROOT[$app]:-$ROOT}}
+    dir=$base
+    if [ -n "${YAML_DIR_RAW[$c]:-}" ]; then
+      _yaml_path "${YAML_DIR_RAW[$c]}" "$base"; dir=$YV
     fi
-    # a role with a dir and no watch dir watches the dir it runs in
-    [ -n "${PITCREW_WATCH_DIR[$c]:-}" ] || PITCREW_WATCH_DIR[$c]=${YAML_DIR[$c]}
+    # `cd` into it only when the config actually said where — an app with no
+    # dir and no root has always run from wherever pitcrew was invoked.
+    if [ -n "${YAML_DIR_RAW[$c]:-}" ] || [ -n "${YAML_ROOT[$c]:-}" ] || [ -n "${YAML_ROOT[$app]:-}" ]; then
+      PITCREW_CMD[$c]="cd ${dir@Q} && ${PITCREW_CMD[$c]}"
+      # a component with a dir and no watch dir watches the dir it runs in
+      [ -n "${YAML_WATCH_RAW[$c]:-}" ] || PITCREW_WATCH_DIR[$c]=$dir
+    fi
   done
-  YAML_DIR=()          # folded in — an outer file after `include:` starts clean
+  # Watch dirs resolve against the same base, and only now is that base known.
+  for c in "${!YAML_WATCH_RAW[@]}"; do
+    app=${c#*-}
+    base=${YAML_ROOT[$c]:-${YAML_ROOT[$app]:-$ROOT}}
+    wlist=(); PITCREW_WATCH_DIR[$c]=""
+    while IFS= read -r w; do
+      [ -n "$w" ] || continue
+      _yaml_path "$w" "$base"; wlist+=("$YV")
+    done <<< "${YAML_WATCH_RAW[$c]}"
+    PITCREW_WATCH_DIR[$c]="${wlist[*]}"
+  done
+  # An app switched off switches off everything in the group — including roles
+  # declared after the `enabled: false` line.
+  for app in "${!YAML_APP_OFF[@]}"; do
+    for role in ${PITCREW_APP_ROLES[$app]:-}; do PITCREW_DISABLED[$role-$app]=1; done
+  done
+  YAML_DIR_RAW=(); YAML_WATCH_RAW=(); YAML_ROOT=(); YAML_APP_OFF=()
 
   # ── the doctor checks, as the function the rest of the tool already calls ──
   if [ ${#YAML_DOCTOR_CMD[@]} -gt 0 ]; then

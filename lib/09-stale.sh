@@ -8,7 +8,7 @@
 
 watch_dirs_for() { # $1 comp → newline-separated dirs to check, or nothing
   local c=$1
-  local app=${c#??-}
+  local app=${c#*-}
   local d="${PITCREW_WATCH_DIR[$c]:-${PITCREW_WATCH_DIR[$app]:-}}"
   [ -n "$d" ] && printf '%s\n' $d
 }

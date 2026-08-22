@@ -181,8 +181,8 @@ comp_cell() { # $1 comp, $2 graph width (0 = no graph column) → R: one aligned
   # layout that shift lands in the middle of the neighbouring service.
   local c=$1 gw=$2 st port cur app role cell pct i
   st=${SNAP_STATE[$c]:-n/a}
-  app=${c#??-}; role=${c:0:2}
-  if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+  app=${c#*-}; role=${c%%-*}
+  port=${PITCREW_PORT[$c]:-}
   cur=${SNAP_RSS[$c]:-}
 
   state_icon "$st"; cell="$R "

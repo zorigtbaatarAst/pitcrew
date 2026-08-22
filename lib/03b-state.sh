@@ -17,7 +17,7 @@ read_pid() { local p=""; [ -r "$LOG_DIR/$1.pid" ] && read -r p < "$LOG_DIR/$1.pi
 
 pid_alive() { local pid=$1; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
 
-be_health() { # $1 app → UP or DOWN, from the cached probe result
+comp_healthy() { # $1 component → UP or DOWN, from the cached probe result
   printf '%s' "${SNAP_HEALTH[$1]:-UP}"
 }
 
@@ -29,8 +29,7 @@ comp_state() { # pure lookup — call snapshot() before any loop over components
 }
 
 is_external() { # $1 comp → true if something's on its port that pitcrew isn't tracking
-  local c=$1 app=${1#??-} role=${1:0:2} port
-  if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+  local c=$1 port=${PITCREW_PORT[$1]:-}
   [ -n "$port" ] && [ -n "${SNAP_PORT_OPEN[$port]:-}" ] && ! pid_alive "${SNAP_PID[$c]:-}"
 }
 

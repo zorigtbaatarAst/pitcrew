@@ -82,11 +82,12 @@ test_pidfile_from_a_previous_boot_is_not_trusted() {
 # ── the state machine, driven from a fabricated snapshot ────────────────────
 _state_of() { # $1 comp, $2 port-open?, $3 pid, $4 health
   SNAP_PORT_OPEN=(); SNAP_PID=(); SNAP_HEALTH=(); SNAP_STATE=()
-  local app=${1#??-} role=${1:0:2} port
-  if [ "$role" = be ]; then port=${PITCREW_BE_PORT[$app]:-}; else port=${PITCREW_FE_PORT[$app]:-}; fi
+  local port=${PITCREW_PORT[$1]:-}
   [ "$2" = open ] && SNAP_PORT_OPEN[$port]=1
   SNAP_PID[$1]=$3
-  SNAP_HEALTH[$app]=$4
+  # Health is per COMPONENT now: it was a backend-only idea only because there
+  # used to be exactly one backend per app.
+  SNAP_HEALTH[$1]=$4
   _snapshot_states
   printf '%s' "${SNAP_STATE[$1]}"
 }
@@ -97,8 +98,12 @@ test_state_machine() {
   assert_eq "$(_state_of be-both closed $$      UP)"   starting "alive but not listening yet"
   assert_eq "$(_state_of be-both closed 999999  UP)"   crashed  "pidfile recorded, process gone"
   assert_eq "$(_state_of be-both closed ''      UP)"   down     "never started"
-  # the frontend has no health path, so an open port alone is enough
-  assert_eq "$(_state_of fe-both open   $$      DOWN)" up       "no health path means port-open is up"
+  # A health path is a per-COMPONENT question now, not a backend one: a worker
+  # with an actuator asks it and a frontend without one does not. _health_poll
+  # records UP for anything with no path configured, which is what makes an
+  # open port enough on its own.
+  assert_eq "$(_state_of fe-both open   $$      UP)"   up       "no health path means port-open is up"
+  assert_eq "$(_state_of fe-both open   $$      DOWN)" starting "and any role with one is believed"
 }
 
 test_a_port_held_by_something_else_is_not_reported_as_ours() {
