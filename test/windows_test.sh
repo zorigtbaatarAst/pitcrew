@@ -290,4 +290,118 @@ test_the_windows_install_asks_windows_where_its_own_folders_are() {
   assert_not_match "$code" 'APPDATA' "no path assembled out of \$APPDATA"
 }
 
+# ── the machine gauges ──────────────────────────────────────────────────────
+#
+# wmic is deprecated and GONE from a current Windows 11. The process table had
+# a PowerShell fallback and the MEMORY numbers did not, so on exactly those
+# machines the gauge read "RAM unavailable on this OS", the Resources view had
+# nothing to draw, and `ram_preflight` could not tell you the stack would not
+# fit. Both sources now answer both questions.
+
+_win_mem() { # $1 = source, $2 = expression to run with the stubs in place
+  bash -c "
+    uname() { printf 'MINGW64_NT-10.0-22631\n'; }
+    export -f uname 2>/dev/null || true
+    . '$_ROOT/lib/00-platform.sh' 2>/dev/null
+    PITCREW_WIN_PS_SOURCE=$1
+    wmic() {
+      case \"\$*\" in
+        *TotalPhysicalMemory*) printf 'TotalPhysicalMemory=34124451840\r\n' ;;
+        *FreePhysicalMemory*)  printf 'FreePhysicalMemory=8388608\r\n' ;;
+      esac
+    }
+    _pf_win_ps() {
+      case \"\$1\" in
+        *Win32_ComputerSystem*)  printf '34124451840' ;;
+        *Win32_OperatingSystem*) printf '8388608' ;;
+      esac
+    }
+    $2"
+}
+
+test_total_ram_is_readable_from_either_source() {
+  local src
+  for src in _pf_ps_win_wmic _pf_ps_win_powershell; do
+    assert_eq "$(_win_mem "$src" '_pf_win_mem_total_kb')" "33324660" \
+      "$src: 32 GiB, in KiB"
+  done
+}
+
+test_free_ram_is_readable_from_either_source() {
+  # The one WMI counter already in kilobytes — converting it would be a gauge
+  # off by 1024, which looks plausible and is entirely wrong.
+  local src
+  for src in _pf_ps_win_wmic _pf_ps_win_powershell; do
+    assert_eq "$(_win_mem "$src" '_pf_win_mem_free_kb')" "8388608" "$src: free, in KiB"
+  done
+}
+
+test_a_source_that_answers_with_nothing_leaves_the_gauge_unknown() {
+  # An unreadable gauge renders as "—". What it must never do is render as a
+  # number: a machine reporting 0 KiB total is a RAM preflight that says
+  # nothing fits.
+  local out
+  out=$(_win_mem _pf_ps_win_powershell '_pf_win_ps() { printf ""; }; _pf_win_mem_total_kb || echo FAILED')
+  assert_eq "$out" "FAILED" "no answer is a failure, not a zero"
+  out=$(_win_mem _pf_ps_win_powershell '_pf_win_ps() { printf "not a number"; }; _pf_win_mem_free_kb || echo FAILED')
+  assert_eq "$out" "FAILED" "and neither is a non-number"
+}
+
+test_free_ram_is_sampled_on_its_own_slow_interval() {
+  # Where wmic is gone this costs a whole PowerShell start, which is more than
+  # the process table a frame already pays for. Per-frame sampling would double
+  # the cost of the slowest platform to watch a number that moves in seconds.
+  # The counter lives in a FILE: the sample happens inside a command
+  # substitution, so a shell variable bumped by the stub is bumped in a
+  # subshell and lost — which is a test that always reads zero and passes for
+  # the wrong reason.
+  local tally; tally=$(mktemp)
+  local out
+  out=$(_win_mem _pf_ps_win_powershell '
+    PITCREW_MEM_TOTAL_KB=33324660
+    _pf_win_mem_free_kb() { echo x >> "'"$tally"'"; printf "8388608"; }
+    for _ in 1 2 3 4 5; do sys_gauges_windows; done
+    echo "${SYS_MEM_USED_KB:-none}"')
+  assert_eq "$(grep -c . "$tally")" "1" "five frames, one sample"
+  assert_eq "$out" "24936052" "and the held value still feeds the gauge"
+  rm -f "$tally"
+}
+
+# ── running what a repo ships ───────────────────────────────────────────────
+
+test_a_wrapper_script_counts_as_runnable_on_windows() {
+  # Windows has no execute permission: NTFS has no such bit and MSYS
+  # synthesises one from the extension, so `[ -x gradlew ]` is FALSE for a
+  # wrapper bash runs perfectly. `pitcrew init` therefore wrote
+  # `cd $ROOT/x && gradle bootRun` for every Windows repo that ships one,
+  # pointing at a system gradle the machine may not have at all.
+  local d; d=$(mktemp -d)
+  printf '#!/bin/sh\n' > "$d/gradlew"
+  chmod -x "$d/gradlew"
+
+  local out
+  out=$(bash -c ". '$_ROOT/lib/00-platform.sh' 2>/dev/null
+                 PITCREW_OS=windows
+                 pf_runnable '$d/gradlew' && echo yes || echo no")
+  assert_eq "$out" "yes" "on Windows, existing is runnable"
+
+  out=$(bash -c ". '$_ROOT/lib/00-platform.sh' 2>/dev/null
+                 PITCREW_OS=linux
+                 pf_runnable '$d/gradlew' && echo yes || echo no")
+  assert_eq "$out" "no" "and elsewhere the bit still has to be set"
+
+  out=$(bash -c ". '$_ROOT/lib/00-platform.sh' 2>/dev/null
+                 PITCREW_OS=windows
+                 pf_runnable '$d/nothing-here' && echo yes || echo no")
+  assert_eq "$out" "no" "a file that is not there is never runnable"
+  rm -rf "$d"
+}
+
+test_nothing_asks_for_an_execute_bit_that_windows_does_not_have() {
+  # The two wrappers are the ones that matter, and they were the ones wrong.
+  local strays
+  strays=$(grep -n '\[ -x "\$root/' "$_ROOT/lib/14-detect.sh" || true)
+  assert_empty "$strays" "detect still testing -x on a repo file"
+}
+
 run_tests

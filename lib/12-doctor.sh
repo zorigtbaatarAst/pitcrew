@@ -18,7 +18,7 @@ cmd_doctor() {
   else
     case "$PITCREW_OS" in
       macos)   warn "fzf missing — menus use a numbered prompt instead ${GREY}(brew install fzf for the fuzzy picker)${RESET}" ;;
-      windows) warn "fzf missing — menus use a numbered prompt instead ${GREY}(pacman -S fzf under MSYS2 for the fuzzy picker)${RESET}" ;;
+      windows) warn "fzf missing — menus use a numbered prompt instead ${GREY}(MSYS2: pacman -S mingw-w64-ucrt-x86_64-fzf, for the fuzzy picker)${RESET}" ;;
       *)       warn "fzf missing — menus use a numbered prompt instead ${GREY}(install fzf for the fuzzy picker)${RESET}" ;;
     esac
   fi

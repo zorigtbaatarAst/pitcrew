@@ -79,7 +79,14 @@ test_the_ps_collector_measures_a_real_process() {
   assert_match "${SNAP_RSS[be-both]}" '^[0-9]+$' "RSS is a number"
   [ "${SNAP_RSS[be-both]}" -gt 0 ] || _t_bad "RSS of a live process must be > 0"
   assert_match "${SNAP_CPU[be-both]}" '^[0-9]+$' "CPU is a number"
-  assert_eq "${SNAP_PROC_CMD[$p]}" "sleep"     "comm, basenamed (macOS reports a full path)"
+  # SNAP_PROC_CMD is keyed by the NATIVE pid, which on Windows is not the pid
+  # bash knows — the pidfile holds an MSYS pid and the process table is in
+  # Windows ones. Translate at the same boundary the collector does, or this
+  # reads an absent key and `set -u` takes the whole file down with it.
+  # And the name carries .exe there, because that is what Windows calls it.
+  pf_pid_native "$p"
+  assert_match "${SNAP_PROC_CMD[$NATIVE_PID]:-}" '^sleep(\.exe)?$' \
+    "comm, basenamed (macOS reports a full path)"
   assert_eq "${SNAP_STATE[be-both]}" "starting" "alive, nothing listening yet"
 
   # Second frame: now there is a previous sample, so CPU% is a real delta over
@@ -106,8 +113,11 @@ test_the_ps_collector_walks_the_whole_process_tree() {
   snapshot
   local n; n=$(printf '%s\n' ${SNAP_PIDS[be-both]} | grep -c .)
   [ "$n" -ge 2 ] || _t_bad "tree walk found $n pid(s) under a parent with children"
+  # The tree is in NATIVE pids — on Windows that is not the pid bash handed
+  # back from `&`. Same translation the collector makes, at the same boundary.
+  pf_pid_native "$root"
   case " ${SNAP_PIDS[be-both]} " in
-    " $root "*) ;;
+    " $NATIVE_PID "*) ;;
     *) _t_bad "the root pid must come first in the tree" ;;
   esac
 

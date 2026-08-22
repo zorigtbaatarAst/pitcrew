@@ -137,10 +137,19 @@ test_a_frame_is_fast_enough_for_a_sub_second_refresh() {
     a=$(_now_ms); _frame >/dev/null 2>&1; d=$(( $(_now_ms) - a ))
     [ $d -lt $best ] && best=$d
   done
-  # generous on purpose: this catches a catastrophic regression without
+  # Generous on purpose: this catches a catastrophic regression without
   # flapping on a loaded CI runner. The fork budget above is the sharp test.
-  [ "$best" -le 250 ] || _t_bad "best frame took ${best}ms (budget 250ms)"
-  printf '      \033[90mbest frame %dms\033[0m\n' "$best"
+  #
+  # Per-OS, because the frame COSTS a different thing on each: zero forks on
+  # Linux, one ps plus one port listing on macOS, and on Windows a whole
+  # process-table call — wmic at ~80ms, and PowerShell, which is what a current
+  # Windows 11 has left, at several hundred. `doctor` says so and tells you to
+  # raise PITCREW_REFRESH. Holding Windows to the Linux number would be
+  # asserting something the tool has never claimed.
+  local budget=250
+  [ "$PITCREW_OS" = windows ] && budget=1500
+  [ "$best" -le "$budget" ] || _t_bad "best frame took ${best}ms (budget ${budget}ms)"
+  printf '      \033[90mbest frame %dms (budget %dms)\033[0m\n' "$best" "$budget"
 }
 
 test_idle_logs_are_not_re_read_every_frame() {

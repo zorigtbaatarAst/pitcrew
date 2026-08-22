@@ -108,6 +108,19 @@ case "$PITCREW_OS" in
     ;;
 esac
 
+# ── is this file something we can run? ──────────────────────────────────────
+# `[ -x ]` answers this everywhere but Windows, where there is no execute
+# permission at all: NTFS has no such bit and MSYS synthesises one from the
+# file extension, so a shebang script like `gradlew` or `mvnw` reads as NOT
+# executable even though bash runs it perfectly. `pitcrew init` therefore wrote
+# `cd $ROOT/x && gradle bootRun` for a repo that ships a wrapper — pointing at
+# a system gradle the machine may not even have.
+pf_runnable() { # $1 path
+  [ -f "$1" ] || return 1
+  [ "$PITCREW_OS" = windows ] && return 0
+  [ -x "$1" ]
+}
+
 # ── listening ports ─────────────────────────────────────────────────────────
 # Every locally-reachable listening port, one per line, as `addr:port`. Lifted
 # out of the collector so that "how do I see a listening socket" is answered
@@ -458,25 +471,79 @@ _pf_windows_init() {
   pf_listening() { netstat -ano 2>/dev/null | tr -d '\r' | _netstat_listening_parse; }
   port_pid() { netstat -ano 2>/dev/null | tr -d '\r' | _netstat_port_pid_parse "$1"; }
 
-  # Total RAM, once. wmic and PowerShell both know it; systeminfo is the last
-  # resort and is far too slow to call more than once.
-  local total=""
-  if [ "$PITCREW_WIN_PS_SOURCE" = _pf_ps_win_wmic ]; then
-    total=$(wmic computersystem get TotalPhysicalMemory /value 2>/dev/null | tr -d '\r' |
-            sed -n 's/^TotalPhysicalMemory=//p')
-  fi
-  case "$total" in ''|*[!0-9]*) ;; *) PITCREW_MEM_TOTAL_KB=$(( total / 1024 )) ;; esac
+  # Total RAM is NOT resolved here. See _pf_win_mem_total_once: where wmic is
+  # gone it costs a PowerShell start, and `pitcrew stop` should not pay a third
+  # of a second for a number it never reads.
 }
 
-# Free memory has to be sampled, not resolved once. The counter is in KILOBYTES
-# in wmic's output and the collector wants the same, so no conversion.
+# One PowerShell expression, its answer trimmed. Every whitespace byte goes,
+# the \r a Windows tool leaves included, because every caller here wants a bare
+# integer.
+_pf_win_ps() { # $1 = expression
+  powershell.exe -NoProfile -NonInteractive -Command "$1" 2>/dev/null | tr -d ' \t\r\n'
+}
+
+_pf_win_mem_total_kb() { # → total physical RAM in KiB, or failure
+  local bytes=""
+  case "${PITCREW_WIN_PS_SOURCE:-}" in
+    _pf_ps_win_wmic)
+      bytes=$(wmic computersystem get TotalPhysicalMemory /value 2>/dev/null | tr -d '\r' |
+              sed -n 's/^TotalPhysicalMemory=//p') ;;
+    _pf_ps_win_powershell)
+      bytes=$(_pf_win_ps '(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory') ;;
+  esac
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' $(( bytes / 1024 ))
+}
+
+# Already KILOBYTES in both sources — the one WMI counter that is not in bytes.
+_pf_win_mem_free_kb() { # → free physical RAM in KiB, or failure
+  local free=""
+  case "${PITCREW_WIN_PS_SOURCE:-}" in
+    _pf_ps_win_wmic)
+      free=$(wmic os get FreePhysicalMemory /value 2>/dev/null | tr -d '\r' |
+             sed -n 's/^FreePhysicalMemory=//p') ;;
+    _pf_ps_win_powershell)
+      free=$(_pf_win_ps '(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory') ;;
+  esac
+  case "$free" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$free"
+}
+
+# Free memory has to be sampled, not resolved once — but where wmic is gone,
+# sampling it costs a whole PowerShell start (a few hundred ms), which is more
+# than the process table the frame is already paying for. So it is sampled on
+# its OWN slow interval and held in between, exactly the deal sys_swap strikes:
+# RAM does not move fast enough for one frame to care.
+PITCREW_WIN_MEM_INTERVAL=${PITCREW_WIN_MEM_INTERVAL:-5}
+_PF_WIN_MEM_AT=0
+_PF_WIN_MEM_FREE_KB=""
+_PF_WIN_MEM_TOTAL_DONE=0
+
+# Physical RAM does not change while we run, so it is asked once — but on the
+# first frame that wants it, not at startup. Asking only wmic for it is how the
+# gauge came to read "unavailable on this OS" on every recent Windows 11: wmic
+# is deprecated and gone from the current images, the process table had already
+# fallen back to PowerShell, and this had not. The machine gauge and the RAM
+# preflight went dead together.
+_pf_win_mem_total_once() {
+  [ "$_PF_WIN_MEM_TOTAL_DONE" = 1 ] && return 0
+  _PF_WIN_MEM_TOTAL_DONE=1
+  PITCREW_MEM_TOTAL_KB=$(_pf_win_mem_total_kb) || PITCREW_MEM_TOTAL_KB=0
+  return 0
+}
+
 sys_gauges_windows() {
+  _pf_win_mem_total_once
   SYS_MEM_TOTAL_KB=$PITCREW_MEM_TOTAL_KB
   [ "${SYS_MEM_TOTAL_KB:-0}" -gt 0 ] || return 0
-  local free=""
-  [ "$PITCREW_WIN_PS_SOURCE" = _pf_ps_win_wmic ] &&
-    free=$(wmic os get FreePhysicalMemory /value 2>/dev/null | tr -d '\r' |
-           sed -n 's/^FreePhysicalMemory=//p')
+  local now; printf -v now '%(%s)T' -1
+  if [ -z "$_PF_WIN_MEM_FREE_KB" ] ||
+     [ $(( now - _PF_WIN_MEM_AT )) -ge "$PITCREW_WIN_MEM_INTERVAL" ]; then
+    _PF_WIN_MEM_FREE_KB=$(_pf_win_mem_free_kb) || _PF_WIN_MEM_FREE_KB=""
+    _PF_WIN_MEM_AT=$now
+  fi
+  local free=$_PF_WIN_MEM_FREE_KB
   case "$free" in ''|*[!0-9]*) return 0 ;; esac
   [ "$free" -le "$SYS_MEM_TOTAL_KB" ] || free=$SYS_MEM_TOTAL_KB
   SYS_MEM_USED_KB=$(( SYS_MEM_TOTAL_KB - free ))

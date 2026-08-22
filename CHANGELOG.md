@@ -87,6 +87,23 @@ field is removed or changes meaning.
 - MSYS2's *msys* python reports `MSYS_NT-10.0-…` from `platform.system()`, not
   `Windows`, and under it every Windows special case in the GUI silently
   switched off.
+- **The machine gauges were dead on any current Windows.** `wmic` is deprecated
+  and gone from Windows 11; the process table already had a PowerShell
+  fallback and the MEMORY numbers did not, so the gauge read *"RAM unavailable
+  on this OS"*, Resources had nothing to draw, and `ram_preflight` could not
+  tell you the stack would not fit. Both totals and free memory now come from
+  either source. Free memory is sampled on its own slow interval and held in
+  between — where wmic is gone it costs a whole PowerShell start, more than the
+  process table the frame already pays for — and the total is resolved on first
+  use rather than at startup, so `pitcrew stop` does not pay a third of a
+  second for a number it never reads.
+- **`pitcrew init` ignored the wrapper a Windows repo ships.** `[ -x gradlew ]`
+  is false on Windows: NTFS has no execute permission and MSYS synthesises one
+  from the file extension, so a shebang script bash runs perfectly reads as not
+  executable. Every Windows repo got `cd $ROOT/x && gradle bootRun`, pointing
+  at a system gradle the machine may not have, instead of `./gradlew
+  :x:bootRun`. There is a `pf_runnable` in the platform layer now, and the
+  detector asks it.
 - `setup.sh` and `gui/*.sh` are now parse-checked and shellchecked. They were
   not, which is where the Windows install quietly rotted: three installer
   scripts nobody linted, on a platform nobody ran.

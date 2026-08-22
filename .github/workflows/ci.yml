@@ -193,8 +193,13 @@ jobs:
       # --yes exits non-zero if anything is still missing, but say it loudly: a
       # silent "installed" that did not is the failure worth catching here, and
       # on Windows it is the failure that actually happened.
+      # No `tee /dev/stderr` here: MSYS2 has no /dev/stderr node, so the step
+      # failed on the plumbing rather than on the thing it was checking.
       - name: and they really are importable now
-        run: ./gui/install-deps.sh | tee /dev/stderr | grep -q 'Nothing to install'
+        run: |
+          report=$(./gui/install-deps.sh)
+          printf '%s\n' "$report"
+          printf '%s\n' "$report" | grep -q 'Nothing to install'
       - name: the whole setup, desktop app included
         run: ./setup.sh --yes
       - name: the launcher finds an interpreter and runs

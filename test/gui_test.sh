@@ -1076,9 +1076,13 @@ test_the_two_python_searches_agree_about_windows() {
   # module answers "which should the launcher re-exec into". Different jobs,
   # but a Windows box where one finds MSYS2 and the other does not is exactly
   # the install that reports success and produces nothing runnable.
+  # IS_MACOS off as well as IS_WINDOWS on: python_candidates() asks the macOS
+  # question first, so on a Mac this test was reading the Homebrew list and
+  # calling it a Windows failure.
   local out; out=$(_settings_drive "
 import os
 import pitcrewgui.platform as pf
+pf.IS_MACOS = False
 pf.IS_WINDOWS = True
 os.environ['MINGW_PREFIX'] = '/ucrt64'
 candidates = pf.python_candidates()

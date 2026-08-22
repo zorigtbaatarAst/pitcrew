@@ -88,6 +88,23 @@ assert_empty() { [ -z "$1" ] || _t_bad "${2:-value}: expected empty, got [$1]"; 
 # strip SGR colour so assertions compare text, not escape codes
 plain() { printf '%s' "$1" | sed -e $'s/\x1b\\[[0-9;]*m//g'; }
 
+# Every distinct CHARACTER in $1, once each, in UNIQ_CHARS.
+#
+# In bash rather than `fold -w1 | sort -u`, because GNU fold counts BYTES
+# unless the build carries the multibyte patch — Fedora's does, Git for
+# Windows' does not. So on Windows a 3-byte block character became three
+# separate bytes and `sort` gave up on the invalid sequences. Every assertion
+# using this is about the characters a terminal DRAWS, which is the one thing
+# a byte split cannot answer.
+_uniq_chars() { # $1 text → UNIQ_CHARS
+  local s=$1 i ch out=""
+  for ((i = 0; i < ${#s}; i++)); do
+    ch=${s:i:1}
+    case "$out" in *"$ch"*) ;; *) out+=$ch ;; esac
+  done
+  UNIQ_CHARS=$out
+}
+
 run_tests() {
   local fn
   printf '\n\033[1m%s\033[0m\n' "${0##*/}"

@@ -38,8 +38,12 @@ test_a_steady_service_does_not_saturate_the_graph() {
   _cells "$R"
   assert_not_match "$CELLS" '████' "a flat series must not draw as a solid block"
   # and it is drawn as ONE height, because nothing happened
-  local uniq; uniq=$(printf '%s' "$CELLS" | fold -w1 | sort -u | tr -d '\n')
-  assert_eq "${#uniq}" 1 "a flat series is a flat line, not a texture"
+  # In bash, not `fold -w1 | sort -u`: GNU fold counts BYTES unless the build
+  # carries the multibyte patch, so on Git Bash every 3-byte block character
+  # became three bytes and sort refused the invalid sequences outright. The
+  # characters being counted here are the whole point of the assertion.
+  _uniq_chars "$CELLS"
+  assert_eq "${#UNIQ_CHARS}" 1 "a flat series is a flat line, not a texture"
 }
 
 test_the_same_series_on_the_old_absolute_scale_still_saturates() {

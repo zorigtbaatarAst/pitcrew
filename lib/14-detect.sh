@@ -152,13 +152,16 @@ _detect_cmd() { # $1 root, $2 dir, $3 kind, $4 port → CMD
     gradle)
       # A module inside a Gradle build is addressed by its project path, which
       # is just its directory path with colons — sales/backend → :sales:backend
-      if [ -n "$rel" ] && [ -x "$root/gradlew" ]; then CMD="./gradlew :${rel//\//:}:bootRun"
-      elif [ -x "$root/gradlew" ];                then CMD="./gradlew bootRun"
+      # pf_runnable, not -x: Windows has no execute bit, so `[ -x gradlew ]` is
+      # false for a wrapper that bash runs perfectly — and every Windows repo
+      # got told to use a system gradle instead of the wrapper it ships.
+      if [ -n "$rel" ] && pf_runnable "$root/gradlew"; then CMD="./gradlew :${rel//\//:}:bootRun"
+      elif pf_runnable "$root/gradlew";              then CMD="./gradlew bootRun"
       else                                             CMD="cd \$ROOT${rel:+/$rel} && gradle bootRun"
       fi ;;
     maven)
-      if [ -n "$rel" ] && [ -x "$root/mvnw" ]; then CMD="./mvnw -pl $rel spring-boot:run"
-      elif [ -x "$root/mvnw" ];                then CMD="./mvnw spring-boot:run"
+      if [ -n "$rel" ] && pf_runnable "$root/mvnw"; then CMD="./mvnw -pl $rel spring-boot:run"
+      elif pf_runnable "$root/mvnw";              then CMD="./mvnw spring-boot:run"
       else                                          CMD="cd \$ROOT${rel:+/$rel} && mvn spring-boot:run"
       fi ;;
     node)
