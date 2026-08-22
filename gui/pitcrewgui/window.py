@@ -230,6 +230,13 @@ class Window(Adw.ApplicationWindow):
         keeps `q quit` in the hint row.
         """
         self._zen_pill.set_visible(self._zen)
+        # Minimal means minimal: in zen the header is the navigation icons and
+        # the one green oval. The project name and the up-count are both
+        # answers to questions zen is not asking — which project and how much
+        # is fine — and the page below already says everything that needs you.
+        self._project_button.set_visible(not self._zen)
+        self._running_pill.set_visible(not self._zen)
+        self._switcher_titles(not self._zen)
         # The whole left COLUMN, not just the groups inside it: it carries a
         # 360px width-request, so hiding only its contents left the findings
         # pinned to the right of a dead gutter a third of the window wide.
@@ -254,6 +261,45 @@ class Window(Adw.ApplicationWindow):
         self._layout_key = None            # the visible set changed; rebuild
         if self._last_state is not None:
             self._on_state(self._last_state)
+
+    def _switcher_titles(self, show: bool) -> None:
+        """Icon-only navigation in zen, with the titles moved to tooltips.
+
+        Adw.ViewSwitcher has no icon-only policy — NARROW stacks the title
+        under the icon, WIDE puts it beside — so the titles are hidden one by
+        one. Keyed on "this label has text": the other labels in an
+        AdwViewSwitcherButton are its badge counters, which are empty and must
+        stay that way. Nothing here reads the box-and-stack shape around them,
+        so a libadwaita that rearranges it loses the effect rather than
+        crashing on a hierarchy that moved.
+
+        The title becomes a tooltip on the way out. Zen may shed chrome but
+        never navigation (see _apply_zen), and an unlabelled icon with nothing
+        to hover is navigation you have to guess at.
+        """
+        button = self._switcher.get_first_child()
+        while button is not None:
+            title = ""
+            for label in self._labels_in(button):
+                if not label.get_text():
+                    continue                      # the badge counter, not a title
+                title = title or label.get_text()
+                label.set_visible(show)
+            if title:
+                button.set_tooltip_text(None if show else title)
+            button = button.get_next_sibling()
+
+    @classmethod
+    def _labels_in(cls, widget: Gtk.Widget) -> list[Gtk.Label]:
+        found: list[Gtk.Label] = []
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Label):
+                found.append(child)
+            else:
+                found.extend(cls._labels_in(child))
+            child = child.get_next_sibling()
+        return found
 
     @staticmethod
     def _zen_wants(comp: dict) -> bool:
@@ -300,8 +346,9 @@ class Window(Adw.ApplicationWindow):
         # NARROW stacks the icon over the label, which is what makes four views
         # fit: WIDE puts them side by side and truncated every title to "Comp…"
         # the moment a fourth tab arrived.
-        header.set_title_widget(
-            Adw.ViewSwitcher(stack=self._stack, policy=Adw.ViewSwitcherPolicy.NARROW))
+        self._switcher = Adw.ViewSwitcher(stack=self._stack,
+                                          policy=Adw.ViewSwitcherPolicy.NARROW)
+        header.set_title_widget(self._switcher)
         header.pack_start(self._build_project_button())
         header.pack_start(self._build_running_pill())
         header.pack_end(self._build_menu_button())
@@ -309,49 +356,58 @@ class Window(Adw.ApplicationWindow):
         return header
 
     def _build_zen_pill(self) -> Gtk.Widget:
-        """The mode indicator: what is on, what it costs you, and the way out.
+        """The mode indicator: one green oval, and nothing else.
 
         Zen hides rows, so it has to announce itself — a window that is quietly
-        not showing you six services is worse than one that never had them. A
-        bare lowercase "zen" announced only that SOMETHING was on: it named no
-        count, carried no icon, and in an accent theme near amber it read as a
-        warning badge rather than a state.
+        not showing you six services is worse than one that never had them. But
+        announcing it is the whole job, and this has been talked out of every
+        extra it accumulated: an icon, a live count of what was hidden, then a
+        status dot beside the word. Each was defensible and together they made
+        the one calm thing in the header the widest thing in it.
 
-        So it is a chip instead. The eye-with-a-slash says what the mode DOES,
-        the count says what it is costing you right now, and the ✕ says the
-        whole thing is a button you can press to leave — which is the first
-        thing anyone does with a mode they did not mean to enter.
+        So the oval IS the indicator. Green because zen being on is fine —
+        Adwaita's own success pair, so the fill and the text on it stay legible
+        in light and dark rather than being a hex value that only works in one.
+        In zen it is also the only coloured thing left up there, which is what
+        makes a single small pill enough to carry the message.
+
+        The ✕ is transparent until hover, with its width reserved either way.
+        With the project name and the running count gone in zen, this chip is
+        the only thing on screen that says how to get out, so it keeps the
+        affordance even while it looks like it has nothing but a word in it.
         """
-        icon = Gtk.Image.new_from_icon_name("view-conceal-symbolic")
-        icon.set_pixel_size(14)
-        name = Gtk.Label(label="Zen")
+        name = Gtk.Label(label="zen")
         name.add_css_class("caption-heading")
-        # The count is the honest part of the chip, so it is styled as content
-        # rather than as chrome — but dimmer than the name, which never changes.
-        self._zen_count = Gtk.Label(visible=False)
-        self._zen_count.add_css_class("caption")
-        self._zen_count.add_css_class("zen-pill-count")
         close = Gtk.Image.new_from_icon_name("window-close-symbolic")
         close.set_pixel_size(11)
         close.add_css_class("zen-pill-close")
 
-        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-        for child in (icon, name, self._zen_count, close):
+        # Margins rather than CSS padding. A header-bar button's padding comes
+        # from the theme and beats an application rule for it: setting `padding`
+        # on .zen-pill changed the oval's width by exactly nothing, at any
+        # value, which is the kind of rule that looks like it works. A margin on
+        # the child is ours and cannot be themed away.
+        #
+        # Asymmetric on purpose: the reserved width of the invisible close mark
+        # is trailing space already, so the two sides read as even.
+        box = Gtk.Box(spacing=5, valign=Gtk.Align.CENTER,
+                      margin_start=11, margin_end=2)
+        for child in (name, close):
             box.append(child)
-        self._zen_pill = Gtk.Button(child=box, visible=False, valign=Gtk.Align.CENTER,
-                                    tooltip_text="Only what needs you. "
-                                                 "Click or Ctrl+Z to leave.")
+        self._zen_pill = Gtk.Button(child=box, visible=False, valign=Gtk.Align.CENTER)
         self._zen_pill.add_css_class("zen-pill")
         self._zen_pill.connect("clicked", lambda _b: self._toggle_zen())
+        self._update_zen_pill(0)
         return self._zen_pill
 
     def _update_zen_pill(self, hidden: int) -> None:
-        """How many components zen is holding back, live."""
-        self._zen_count.set_visible(bool(hidden))
-        if hidden:
-            self._zen_count.set_text(f"{hidden} hidden")
+        """What zen is holding back. Not on the chip — in the tooltip.
+
+        On the chip it was noise on every frame; here it is an answer to the
+        question the chip provokes, available the moment anyone asks it.
+        """
         self._zen_pill.set_tooltip_text(
-            f"Zen is hiding {hidden} component{'s' if hidden != 1 else ''} that are fine.\n"
+            f"Zen is hiding {hidden} component{'' if hidden == 1 else 's'} that are fine.\n"
             "Click or Ctrl+Z to show everything again."
             if hidden else
             "Zen is on, and nothing is being hidden — everything here needs you.\n"
@@ -425,7 +481,11 @@ class Window(Adw.ApplicationWindow):
             headline or "Components up / configured")
         # Clicking the health indicator goes to the health page. Anything else
         # would be a status light that resents being asked about itself.
-        self._running_pill.set_visible(True)
+        #
+        # Keyed on zen, not a bare True: this runs on every frame, so a flat
+        # `set_visible(True)` would put the pill back half a second after zen
+        # took it away, and only sometimes — which is worse than never hiding it.
+        self._running_pill.set_visible(not self._zen)
 
     def _build_menu_button(self) -> Gtk.Widget:
         menu = Gio.Menu()

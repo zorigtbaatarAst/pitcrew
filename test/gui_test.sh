@@ -1464,7 +1464,7 @@ w._toggle_zen()
 rows = w._group_rows.get('', [])
 print(len(rows), sum(1 for r in rows if r.get_visible()))
 print(list(w._group_toggles))
-print(w._zen_count.get_text(), w._zen_count.get_visible())
+print(w._zen_pill.get_tooltip_text().splitlines()[0])
 # and with nothing left to show, the page says so rather than going blank
 w._settings['stopped'] = 'hide'
 w._on_state(w._last_state)
@@ -1474,10 +1474,70 @@ print(repr(w._empty_label.get_text()), w._empty_group.get_visible())
     "every row zen kept is a row you can see"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "[]" \
     "and there is no expander in zen, which is what made the fold unescapable"
-  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "2 hidden True" \
-    "the pill says what zen is holding back"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" \
+    "Zen is hiding 2 components that are fine." \
+    "the chip stays a dot and a word; the count it used to spell out is a tooltip away"
   assert_eq "$(printf '%s' "$out" | sed -n 4p)" "'Nothing needs you.' True" \
     "an empty zen list is an answer, not a blank page"
+}
+
+test_the_zen_header_is_the_icons_and_the_oval_and_nothing_else() {
+  gui_display || return 0
+  # Zen strips the header down to navigation plus one green oval. The project
+  # name and the up-count both answer questions zen is not asking, and the
+  # switcher keeps its icons but drops its titles.
+  #
+  # Everything asserted twice, on and off: the running pill is repainted on
+  # EVERY frame, so a version of this that only checked the way in would pass
+  # while the pill reappeared half a second later.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw, Gtk
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+
+def titles():
+    got = [l.get_text() for l in w._labels_in(w._switcher) if l.get_text()]
+    return len([l for l in w._labels_in(w._switcher) if l.get_text() and l.get_visible()]), len(got)
+
+def tips():
+    out, b = [], w._switcher.get_first_child()
+    while b is not None:
+        out.append(b.get_tooltip_text()); b = b.get_next_sibling()
+    return out
+
+def line(tag):
+    print(tag, w._project_button.get_visible(), w._running_pill.get_visible(),
+          w._zen_pill.get_visible(), titles())
+
+line('off')
+w._toggle_zen()
+line('on')
+print(tips())
+# the frame loop must not undo it
+w._on_state({'at': 1, 'machine': {'memTotal': 100, 'memUsed': 10, 'cpuPercent': 1},
+             'components': [{'name': 'be-a', 'app': 'a', 'role': 'be', 'state': 'up',
+                             'rss': 10, 'cpu': 0, 'errors': 0, 'since': 1}],
+             'deps': [], 'summary': {'up': 1},
+             'health': {'verdict': 'ok', 'headline': 'ok', 'deep': False,
+                        'counts': {}, 'findings': [], 'recoverable': {}}})
+line('frame')
+w._toggle_zen()
+line('back')
+print(tips())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "off True True False (10, 10)" \
+    "normally: the project, the count, no oval, every title readable"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "on False False True (0, 10)" \
+    "in zen: icons and the oval, nothing else"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" \
+    "['Overview', 'Components', 'Resources', 'Logs', 'Projects']" \
+    "the titles become tooltips — zen sheds chrome, never navigation"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "frame False False True (0, 10)" \
+    "and a frame arriving does not put the count back"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "back True True False (10, 10)" \
+    "leaving puts all of it back"
+  assert_eq "$(printf '%s' "$out" | sed -n 6p)" "[None, None, None, None, None]" \
+    "including dropping the tooltips that stood in for the titles"
 }
 
 test_zen_never_hides_the_way_out_of_zen() {

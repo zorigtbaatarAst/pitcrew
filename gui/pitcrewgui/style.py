@@ -48,36 +48,30 @@ row.finding-info { border-left-color: alpha(@accent_color, 0.55); }
   padding: 2px 14px 6px 14px;
 }
 
-/* The zen indicator. Accent-tinted rather than `suggested-action`, which is
-   for the one button you are meant to press: this is a state you are
-   in, not the button you should hit next.
+/* The zen indicator: one green oval, and in zen the only coloured thing in the
+   header. Adwaita's own success pair rather than a hex value, so the fill and
+   the text on it are legible together in light and dark. A green picked for
+   one scheme is unreadable in the other, and this is the single control that
+   says how to leave the mode.
 
-   A chip, not a badge: the outline is what separates "a mode is on, press this
-   to leave" from "something is wrong here". Tinted fill alone read as a
-   warning on any theme whose accent sits near amber, which is most of the warm
-   ones, and this app spends amber on real warnings elsewhere. */
+   Success, not accent: accent follows whatever colour the user chose, and on a
+   warm one this read as a warning badge. Zen being on is not a warning. */
 .zen-pill {
-  background: alpha(@accent_bg_color, 0.14);
-  box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.40);
-  color: @accent_color;
+  background: @success_bg_color;
+  color: @success_fg_color;
   border-radius: 999px;
-  padding: 2px 8px 2px 10px;
   min-height: 24px;
+  font-weight: bold;
 }
-.zen-pill:hover {
-  background: alpha(@accent_bg_color, 0.28);
-  box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.70);
-}
-.zen-pill:active { background: alpha(@accent_bg_color, 0.40); }
-
-/* The count is the honest part of the chip (how much is being kept from you),
-   so it stays legible while sitting a step behind the name that never changes. */
-.zen-pill-count { opacity: 0.72; font-feature-settings: "tnum"; }
+.zen-pill:hover  { background: shade(@success_bg_color, 1.12); }
+.zen-pill:active { background: shade(@success_bg_color, 0.92); }
 
 /* The close mark is an affordance, not an action of its own: the whole chip is
-   the button. Quiet until the pointer says it is about to be pressed. */
-.zen-pill-close { opacity: 0.55; }
-.zen-pill:hover .zen-pill-close { opacity: 1; }
+   the button. Invisible until the pointer arrives, so at rest the oval is a
+   word and nothing else -- but its WIDTH is reserved either way, because a
+   chip that grows under the pointer is a chip you can miss by hovering it. */
+.zen-pill-close { opacity: 0; }
+.zen-pill:hover .zen-pill-close { opacity: 0.85; }
 """
 
 
