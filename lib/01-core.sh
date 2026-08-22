@@ -379,3 +379,192 @@ tui_resume() {
   TERM_DIRTY=1
   return 0
 }
+
+# ── choosing from a list ─────────────────────────────────────────────────────
+# One chooser for every picker in the tool: fzf when it is installed, a
+# numbered prompt when it is not.
+#
+# That fallback is not a nicety. Nothing ships fzf on a stock macOS, and
+# without it `pitcrew menu` died on the spot while the dashboard's own `m` key
+# — advertised in its key row — returned silently and simply looked broken.
+# `doctor` has always said menus "fall back to plain prompts"; this is the code
+# that makes that true.
+#
+# The contract is fzf's, so every call site reads the same either way:
+#   in   the choices on stdin, one per line, plain or "key<TAB>label"
+#   out  the chosen LINE(S) on stdout, whole, one per line
+#   rc   1 when nothing was chosen — cancelled, empty list, or no terminal
+#
+# Everything the user READS goes to /dev/tty. stdout carries the answer (every
+# call site captures it) and stdin carries the choices, so neither is free for
+# an interface — which is exactly why fzf talks to the terminal directly too.
+#
+# The options land in _PICK_* rather than being threaded through seven
+# positional parameters: the same in/out-parameter idiom read_key uses for KEY
+# and _swap_kb for SWAP_KB.
+_PICK_CHOICES=()
+_PICK_TABBED=0
+_PICK_MULTI=0
+_PICK_PROMPT='pick ❯ '
+_PICK_HEADER=''
+_PICK_HEIGHT='40%'
+_PICK_PREVIEW=''
+_PICK_PREVIEW_WIN='down:3'
+
+pick() {
+  _PICK_MULTI=0; _PICK_PROMPT='pick ❯ '; _PICK_HEADER=''
+  _PICK_HEIGHT='40%'; _PICK_PREVIEW=''; _PICK_PREVIEW_WIN='down:3'
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --multi)          _PICK_MULTI=1 ;;
+      --prompt)         _PICK_PROMPT=${2:-};      shift ;;
+      --header)         _PICK_HEADER=${2:-};      shift ;;
+      --height)         _PICK_HEIGHT=${2:-40%};   shift ;;
+      --preview)        _PICK_PREVIEW=${2:-};     shift ;;
+      --preview-window) _PICK_PREVIEW_WIN=${2:-}; shift ;;
+      # Never something a user typed — a call site wired wrong. Say so loudly.
+      *) die "pick: unknown option $1" ;;
+    esac
+    shift
+  done
+
+  local line
+  _PICK_CHOICES=()
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    _PICK_CHOICES+=("$line")
+  done
+  [ ${#_PICK_CHOICES[@]} -gt 0 ] || return 1
+
+  # Do the lines carry a "key<TAB>" prefix? fzf has to be told: --with-nth=2..
+  # over a line with no tab in it displays an EMPTY row, so it cannot simply be
+  # passed always. The plain prompt asks the same question to decide what to
+  # print, which is why it is answered once, here.
+  _PICK_TABBED=1
+  for line in "${_PICK_CHOICES[@]}"; do
+    case "$line" in *$'\t'*) ;; *) _PICK_TABBED=0; break ;; esac
+  done
+
+  # PITCREW_PICKER=plain runs the no-fzf path on a machine that HAS fzf — the
+  # same bargain PITCREW_FORCE_COLLECTOR strikes for the macOS meters, and for
+  # the same reason: a fallback nobody exercises is a fallback that rots, and
+  # this one is what a stock macOS gets every day.
+  case "${PITCREW_PICKER:-auto}" in
+    plain) _pick_plain; return ;;
+    fzf)   _pick_fzf;   return ;;
+  esac
+  if command -v fzf >/dev/null 2>&1; then
+    _pick_fzf
+  else
+    _pick_plain
+  fi
+}
+
+_pick_fzf() {
+  local -a opts=(--height="$_PICK_HEIGHT" --border=rounded --ansi
+                 --prompt="$_PICK_PROMPT" --pointer='▶')
+  [ "$_PICK_TABBED" = 1 ] && opts+=(--delimiter=$'\t' --with-nth=2..)
+  [ "$_PICK_MULTI"  = 1 ] && opts+=(--multi --marker='✔ ')
+  [ -n "$_PICK_HEADER" ]  && opts+=(--header="$_PICK_HEADER")
+  [ -n "$_PICK_PREVIEW" ] && opts+=(--preview="$_PICK_PREVIEW" \
+                                    --preview-window="$_PICK_PREVIEW_WIN")
+  printf '%s\n' "${_PICK_CHOICES[@]}" | fzf "${opts[@]}"
+}
+
+pick_label() { # $1 choice line → PICK_LABEL, the part a human is meant to read
+  case "$1" in
+    *$'\t'*) PICK_LABEL=${1#*$'\t'} ;;
+    *)       PICK_LABEL=$1 ;;
+  esac
+}
+
+# What one typed answer MEANS against the list currently on screen. Pure on
+# purpose — no terminal, no reading, no printing — because this is where the
+# fiddly part lives and a picker nobody can unit-test is how the fallback rots.
+# The same reason _vm_stat_avail_kb and _wmic_ps_parse are filters rather than
+# platform calls.
+#
+#   in   $1 answer, $2 multi (0|1), $3.. the lines currently shown
+#   out  PICK_RESULT  cancel | chosen | narrow | none
+#        PICK_OUT     the chosen lines, or the ones that survived a narrow
+#        PICK_MSG     what to tell the user, when there is anything to say
+_pick_resolve() {
+  local answer=$1 multi=$2; shift 2
+  local -a shown=("$@") words=() bare=()
+  local n i
+
+  PICK_RESULT=cancel; PICK_OUT=(); PICK_MSG=""
+  [ -n "$answer" ] || return 0
+
+  # Positions. Commas are accepted because "2,5" is what people type.
+  if [[ $answer =~ ^[0-9]+([[:space:],]+[0-9]+)*$ ]]; then
+    read -ra words <<< "${answer//,/ }"
+    for n in "${words[@]}"; do
+      if [ "$n" -lt 1 ] || [ "$n" -gt "${#shown[@]}" ]; then
+        PICK_RESULT=none; PICK_OUT=(); PICK_MSG="$n is not on the list"
+        return 0
+      fi
+      PICK_OUT+=("${shown[$((n - 1))]}")
+    done
+    # A single-choice picker takes the first number and ignores the rest,
+    # rather than handing a caller two lines it is not expecting.
+    [ "$multi" = 1 ] || PICK_OUT=("${PICK_OUT[0]}")
+    PICK_RESULT=chosen
+    return 0
+  fi
+
+  # Otherwise: a case-insensitive substring of the label. One strip_ansi over
+  # the whole list rather than a fork per line — the labels carry colour, and a
+  # match has to happen on what is actually readable.
+  mapfile -t bare < <(printf '%s\n' "${shown[@]}" | strip_ansi)
+  for ((i = 0; i < ${#shown[@]}; i++)); do
+    pick_label "${bare[$i]:-}"
+    [[ ${PICK_LABEL,,} == *"${answer,,}"* ]] && PICK_OUT+=("${shown[$i]}")
+  done
+  case ${#PICK_OUT[@]} in
+    0) PICK_RESULT=none;   PICK_MSG="nothing matches \"$answer\"" ;;
+    1) PICK_RESULT=chosen ;;
+    *) PICK_RESULT=narrow ;;
+  esac
+  return 0
+}
+
+# The no-fzf path: print the list, read one line, act on what _pick_resolve
+# made of it. A number picks by position; anything else narrows — which is the
+# one thing genuinely missed from fzf, since a twenty-entry action menu you
+# have to count down is a worse menu than one where you type "logs".
+_pick_plain() {
+  # No controlling terminal (a pipeline, a cron job, CI) means there is nobody
+  # to ask. Fail like a cancelled picker rather than hanging on a dead fd.
+  { [ -r /dev/tty ] && [ -w /dev/tty ]; } || return 1
+
+  local -a shown=("${_PICK_CHOICES[@]}")
+  local answer hint i
+
+  hint='a number, or text to narrow · Enter alone cancels'
+  [ "$_PICK_MULTI" = 1 ] && hint='numbers (2 5), or text to narrow · Enter alone cancels'
+
+  while true; do
+    {
+      printf '\n'
+      [ -n "$_PICK_HEADER" ] && printf '  %s%s%s\n' "$C_MUTED" "$_PICK_HEADER" "$RESET"
+      for ((i = 0; i < ${#shown[@]}; i++)); do
+        pick_label "${shown[$i]}"
+        printf '  %s%3d%s  %s\n' "$C_ACCENT" "$((i + 1))" "$RESET" "$PICK_LABEL"
+      done
+      printf '  %s%s%s\n' "$C_FAINT" "$hint" "$RESET"
+      printf '%s' "$_PICK_PROMPT"
+    } > /dev/tty
+
+    # EOF (^D) is a cancel, not a loop spinning forever on a closed stdin.
+    IFS= read -r answer < /dev/tty || { printf '\n' > /dev/tty; return 1; }
+
+    _pick_resolve "$answer" "$_PICK_MULTI" "${shown[@]}"
+    case "$PICK_RESULT" in
+      cancel) return 1 ;;
+      chosen) printf '%s\n' "${PICK_OUT[@]}"; return 0 ;;
+      narrow) shown=("${PICK_OUT[@]}") ;;
+      none)   printf '  %s%s%s\n' "$C_WARN" "$PICK_MSG" "$RESET" > /dev/tty ;;
+    esac
+  done
+}

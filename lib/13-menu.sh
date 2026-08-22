@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# lib/13-menu.sh — the fzf action picker, in two forms sharing one choice
-# list and one dispatcher:
+# lib/13-menu.sh — the action picker, in two forms sharing one choice list and
+# one dispatcher. Both go through pick() (lib/01-core.sh), which is fzf where
+# fzf is installed and a numbered prompt where it is not — a stock macOS has no
+# fzf, and this menu is not optional there:
 #   menu()       — standalone entry (`pitcrew menu`): clears the screen,
 #                  prints its own status table, loops until closed.
 #   watch_menu() — opened with 'm' from the live dashboard (05-dashboard.sh).
@@ -40,13 +42,13 @@ cmd_urls() {
 }
 
 pick_apps() {
-  printf '%s\n' "${PITCREW_APPS[@]}" | fzf --multi --height=40% --border=rounded \
-    --prompt='apps ❯ ' --pointer='▶' --marker='✔ ' \
-    --header='TAB = select several · Enter = confirm · Esc = cancel'
+  printf '%s\n' "${PITCREW_APPS[@]}" | pick --multi --height 40% \
+    --prompt 'apps ❯ ' \
+    --header 'TAB = select several · Enter = confirm · Esc = cancel'
 }
 
-# Each entry is "key<TAB>label". fzf is told to display only the label, but it
-# returns the whole line, so dispatch happens on the key.
+# Each entry is "key<TAB>label". The picker displays only the label but returns
+# the whole line, so dispatch happens on the key.
 #
 # This used to dispatch on the leading emoji, which quietly broke the moment
 # two entries shared one: `case` takes the first match, so "change theme" ran
@@ -86,11 +88,10 @@ menu_choices() { # $1 = "overlay" trims entries meaningless inside the watch ove
 
 menu_keys() { menu_choices "${1:-}" | cut -f1; }
 
-# fzf, showing the label but returning the key with it
+# The picker shows the label and hands back the key with it. `pick` is fzf
+# where fzf exists and a numbered prompt where it does not — see lib/01-core.sh.
 menu_pick() { # $1 = height, $2 = header, $3 = overlay|""
-  menu_choices "${3:-}" | fzf --height="$1" --border=rounded --ansi \
-    --delimiter=$'\t' --with-nth=2.. \
-    --prompt='pitcrew ❯ ' --pointer='▶' --header="$2"
+  menu_choices "${3:-}" | pick --height "$1" --prompt 'pitcrew ❯ ' --header "$2"
 }
 
 # ── actions taken from inside the live dashboard ────────────────────────────
@@ -195,12 +196,12 @@ dispatch_choice() {
     watch)         cmd_watch ;;
     logs)          cmd_logs ;;
     shell)         if [ ${#PITCREW_SHELLS[@]} -eq 0 ]; then warn "no shells configured (set PITCREW_SHELLS)"; sleep 2; return 0; fi
-                   shname=$(printf '%s\n' "${!PITCREW_SHELLS[@]}" | fzf --height=30% --border=rounded --prompt='shell ❯ ') || true
+                   shname=$(printf '%s\n' "${!PITCREW_SHELLS[@]}" | pick --height 30% --prompt 'shell ❯ ') || true
                    [ -n "${shname:-}" ] && { clear; cmd_shell "$shname"; read -rp "  press Enter…"; } ;;
     switch)        switch_project ;;
-    theme)         th=$(theme_list | fzf --height=40% --border=rounded --ansi --prompt='theme ❯ ' \
-                        --pointer='▶' --header='live preview · Enter applies and remembers · Esc cancels' \
-                        --preview "'$SELF' theme --swatch {}" --preview-window='down:3' 2>/dev/null) || true
+    theme)         th=$(theme_list | pick --height 40% --prompt 'theme ❯ ' \
+                        --header 'live preview · Enter applies and remembers · Esc cancels' \
+                        --preview "'$SELF' theme --swatch {}" --preview-window 'down:3') || true
                    if [ -n "${th:-}" ]; then
                      theme_save "$th"
                      PITCREW_THEME_ENV=$th; theme_load
@@ -211,11 +212,10 @@ dispatch_choice() {
     render)        # one flat list of every setting × every value, each with a
                    # swatch in the preview pane — the same shape as the theme
                    # picker, because it is the same kind of choice
-                   rnd=$(render_choices | fzf --height=45% --border=rounded --ansi \
-                        --delimiter=$'\t' --with-nth=2.. \
-                        --prompt='render ❯ ' --pointer='▶' \
-                        --header='live preview · Enter applies and remembers · Esc cancels' \
-                        --preview "'$SELF' render --swatch {1}" --preview-window='down:3' 2>/dev/null) || true
+                   rnd=$(render_choices | pick --height 45% \
+                        --prompt 'render ❯ ' \
+                        --header 'live preview · Enter applies and remembers · Esc cancels' \
+                        --preview "'$SELF' render --swatch {1}" --preview-window 'down:3') || true
                    if [ -n "${rnd:-}" ]; then
                      rkey=${rnd%%$'\t'*}; rval=${rkey#*=}; rkey=${rkey%%=*}
                      render_save "$rkey" "$rval"
@@ -227,16 +227,14 @@ dispatch_choice() {
     limits)        # two steps rather than one flat component×size list: twelve
                    # components times eleven sizes is a haystack, and the first
                    # question ("which service") is the one you already know.
-                   lc=$(limit_choices | fzf --height=45% --border=rounded --ansi \
-                        --delimiter=$'\t' --with-nth=2.. \
-                        --prompt='cap ❯ ' --pointer='▶' \
-                        --header='pick a component · Esc cancels' 2>/dev/null) || true
+                   lc=$(limit_choices | pick --height 45% \
+                        --prompt 'cap ❯ ' \
+                        --header 'pick a component · Esc cancels') || true
                    if [ -n "${lc:-}" ]; then
                      lcomp=${lc%%$'\t'*}
-                     lval=$(limit_size_choices "$lcomp" | fzf --height=45% --border=rounded --ansi \
-                          --delimiter=$'\t' --with-nth=2.. \
-                          --prompt="$lcomp ❯ " --pointer='▶' \
-                          --header='Enter sets it · applies when the service next starts' 2>/dev/null) || true
+                     lval=$(limit_size_choices "$lcomp" | pick --height 45% \
+                          --prompt "$lcomp ❯ " \
+                          --header 'Enter sets it · applies when the service next starts') || true
                      if [ -n "${lval:-}" ]; then
                        lval=${lval%%$'\t'*}
                        [ "$lval" = default ] && lval=""
@@ -271,7 +269,6 @@ dispatch_choice() {
 }
 
 menu() {
-  command -v fzf >/dev/null || die "interactive menu needs fzf (or use: pitcrew start|stop|status)"
   local choice
   while true; do
     clear
@@ -289,7 +286,6 @@ menu() {
 # clear, no leaving the alt-buffer — so the dashboard is never "switched
 # away from"; this is just a togglable section under it.
 watch_menu() {
-  command -v fzf >/dev/null || return
   tui_pause
   printf '\n\n%b── menu %b\n' "$GREY" "$RESET"
   local choice

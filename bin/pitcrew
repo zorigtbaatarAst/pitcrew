@@ -82,7 +82,7 @@ Usage:
   pitcrew                  live dashboard (default) — l logs · s stop · m menu · q quit
                             observes only — nothing is started for you
                             (in logs: Tab/←→ switch · x stop · r restart · Enter full log)
-  pitcrew menu              interactive fzf menu
+  pitcrew menu              interactive action menu (fzf if installed)
   pitcrew start [all|backends|frontends|deps|@profile|<app>...]
   pitcrew up                 start whatever isn't already running, then the live dashboard
   pitcrew stop  [all|@profile|<app>...]     stops tool-managed AND external

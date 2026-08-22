@@ -10,7 +10,18 @@ cmd_doctor() {
   command -v bash >/dev/null && ok "bash   $BASH_VERSION"
   command -v lsof >/dev/null && ok "lsof   present ${GREY}(port → pid lookups)${RESET}" \
     || warn "lsof missing — falls back to ss (Linux) or port checks will be limited"
-  command -v fzf  >/dev/null && ok "fzf    $(fzf --version | awk '{print $1}')" || warn "fzf missing — menus fall back to plain prompts"
+  # Not a hard dependency: pick() (lib/01-core.sh) falls back to a numbered
+  # prompt, which is what a stock macOS actually gets — nothing ships fzf
+  # there. Say how to get the fuzzy picker rather than just that it is absent.
+  if command -v fzf >/dev/null; then
+    ok "fzf    $(fzf --version | awk '{print $1}')"
+  else
+    case "$PITCREW_OS" in
+      macos)   warn "fzf missing — menus use a numbered prompt instead ${GREY}(brew install fzf for the fuzzy picker)${RESET}" ;;
+      windows) warn "fzf missing — menus use a numbered prompt instead ${GREY}(pacman -S fzf under MSYS2 for the fuzzy picker)${RESET}" ;;
+      *)       warn "fzf missing — menus use a numbered prompt instead ${GREY}(install fzf for the fuzzy picker)${RESET}" ;;
+    esac
+  fi
   if [ "$PITCREW_COLLECTOR" = proc ]; then
     ok "meters /proc ${GREY}(fork-free collector · refresh ${PITCREW_REFRESH}s · graph ${PITCREW_GRAPH})${RESET}"
   elif [ "$PITCREW_OS" = macos ] || [ "$PITCREW_OS" = bsd ]; then

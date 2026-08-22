@@ -119,13 +119,11 @@ project_info() { # $1 name
 }
 
 project_pick() { # → the chosen project name on stdout, nothing if cancelled
-  command -v fzf >/dev/null 2>&1 || return 1
   local n; n=$(project_list | wc -l)
   [ "$n" -gt 0 ] || return 1
-  project_list | fzf --height=45% --border=rounded --ansi \
-    --prompt='project ❯ ' --pointer='▶' \
-    --header='switch project · Enter opens it · Esc cancels' \
-    --preview "'$SELF' projects --show {}" --preview-window='down:5' 2>/dev/null
+  project_list | pick --height 45% --prompt 'project ❯ ' \
+    --header 'switch project · Enter opens it · Esc cancels' \
+    --preview "'$SELF' projects --show {}" --preview-window 'down:5'
 }
 
 # Switching project inside a running dashboard cannot be done by re-sourcing:

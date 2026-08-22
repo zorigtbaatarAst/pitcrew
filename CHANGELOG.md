@@ -36,6 +36,18 @@ field is removed or changes meaning.
   a native tool is on the other end.
 
 ### Fixed
+- **The menus were unopenable on a stock macOS.** Every picker shelled out to
+  `fzf` directly, and nothing ships fzf on a Mac: `pitcrew menu` died on the
+  spot, and the dashboard's `m` — which its own key row advertises — hit a bare
+  `command -v fzf || return` and did nothing at all, silently. The same went for
+  the theme, render, RAM-cap, profile, shell and project pickers. All of them
+  now go through one `pick()` (`lib/01-core.sh`) that is fzf where fzf is
+  installed and a numbered prompt where it is not — type a number, or type text
+  to narrow the list the way you would in fzf. `doctor` has claimed since the
+  beginning that menus "fall back to plain prompts"; that is now true, and it
+  names the command that installs the fuzzy one. `PITCREW_PICKER=plain` forces
+  the fallback on a machine that has fzf, and CI runs the whole suite that way,
+  the same bargain `PITCREW_FORCE_COLLECTOR=ps` strikes for the macOS meters.
 - A component group's heading counted the rows a filter left behind rather than
   the group: `orders 0/1 up` over a group of two, and a "Stop all" that stopped
   one of them. Headings now describe the group and say `1 not shown`, and the

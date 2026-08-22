@@ -16,7 +16,7 @@
 # so 05a → 05b → 05c → 05d all load before 06.
 
 cmd_watch() {
-  local W H bw sw frame line ts pick sc c app i n rule_len r
+  local W H bw sw frame line ts c app i n rule_len r
   local ln avail
   tui_enter
   trap 'tui_leave; trap - INT; return 0' INT
@@ -132,19 +132,17 @@ watch_mouse() {
 }
 
 watch_stop() {
-  command -v fzf >/dev/null || return
-  local pick sc
+  local chosen sc
   tui_pause
   printf '\n\n%b── stop %b\n' "$GREY" "$RESET"
-  pick=$(running_comps | fzf --multi --height=40% --border=rounded \
-    --prompt='stop ❯ ' --pointer='▶' --marker='✔ ' \
-    --header='TAB = select several · Enter = stop · Esc = cancel') || pick=""
+  chosen=$(running_comps | pick --multi --height 40% --prompt 'stop ❯ ' \
+    --header 'TAB = select several · Enter = stop · Esc = cancel') || chosen=""
   local stopped=()
   while IFS= read -r sc; do
     [ -n "$sc" ] || continue
     stop_comp "$sc" >/dev/null 2>&1
     stopped+=("$sc")
-  done <<< "$pick"
+  done <<< "$chosen"
   tui_resume
   [ ${#stopped[@]} -gt 0 ] && toast "${GREY}■${RESET} stopped ${BOLD}${stopped[*]}${RESET}"
   return 0

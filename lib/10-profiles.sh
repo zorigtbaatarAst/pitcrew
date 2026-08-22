@@ -30,7 +30,7 @@ cmd_profile() {
 
 pick_profile() {
   [ -d "$PROFILE_DIR" ] && [ -n "$(ls -A "$PROFILE_DIR" 2>/dev/null)" ] || return 1
-  ls "$PROFILE_DIR" | fzf --height=30% --border=rounded --prompt='profile ❯ ' --pointer='▶' \
-    --preview "cat $PROFILE_DIR/{}" --preview-window='right:40%' \
-    --header='pick a profile · Esc=cancel'
+  ls "$PROFILE_DIR" | pick --height 30% --prompt 'profile ❯ ' \
+    --preview "cat $PROFILE_DIR/{}" --preview-window 'right:40%' \
+    --header 'pick a profile · Esc=cancel'
 }

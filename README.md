@@ -6,7 +6,7 @@ If your project is "N apps, each with a backend + frontend, plus a couple of
 docker dependencies" and you're tired of hunting down which port is which,
 or watching a service spin forever because nobody told you it actually
 crashed — pitcrew gives you one command with a live dashboard, per-service
-RAM/CPU meters, an error radar over the logs, and fzf menus to
+RAM/CPU meters, an error radar over the logs, and menus to
 start/stop/restart/inspect anything.
 
 Every component is a plain background process — RAM-capped via
@@ -100,7 +100,10 @@ the tool knows what it is running on.
 
 The portable collector is not a fallback that rots: `PITCREW_FORCE_COLLECTOR=ps`
 runs it on Linux, and CI runs the whole suite that way on every push, so the
-path macOS depends on is exercised even by people who never touch a Mac.
+path macOS depends on is exercised even by people who never touch a Mac. The
+menus get the same treatment — `PITCREW_PICKER=plain` runs the no-fzf pickers
+on a box that has fzf, and CI runs the suite that way too, because "nobody here
+has that setup" is exactly how the menu came to be unopenable on a Mac.
 
 ## Install
 
@@ -119,7 +122,9 @@ on your `$PATH`.
 Everything else is optional or already on the box. `docker` only if you
 declare deps. `systemd --user` only for enforced RAM caps on Linux. `lsof` for
 port lookups (present on macOS; falls back to `ss` on Linux). `fzf` is
-optional but strongly recommended for the interactive menu. Nothing here needs
+optional: with it the menus are fuzzy pickers, without it the same menus are
+numbered prompts that take a number or a substring. Nothing is out of reach
+either way, which matters because a stock macOS has no fzf. Nothing here needs
 GNU coreutils — no `timeout`, no `readlink -f`, no GNU-only `sed`/`grep`
 flags — so a stock macOS has what it needs after the bash upgrade.
 
@@ -246,7 +251,7 @@ starts it. It is still a guess: the header says so, and `pitcrew edit` opens it.
 pitcrew start          # bring everything up, with a live boot dashboard
 pitcrew                # live dashboard (also the default with no args) — observes
                         # only, starts nothing on its own
-pitcrew menu           # fzf menu for everything below
+pitcrew menu           # action menu for everything below
 pitcrew logs           # in-place log viewer, Tab/←→ to switch services
 pitcrew stop           # stop everything (deps stay up unless --deps)
 ```
@@ -258,7 +263,7 @@ pitcrew                  live dashboard (default) — ↑↓ select · ⏎ proce
                           l logs · e errors · r restart · s stop · m menu · q quit
                           observes only — nothing is started for you
                           (in logs: Tab/←→ switch · x stop · r restart · Enter full log)
-pitcrew menu              interactive fzf menu
+pitcrew menu              interactive action menu (fzf if installed)
 pitcrew start [all|backends|frontends|deps|@profile|<app>...]
 pitcrew up                 start whatever isn't already running, then the live dashboard
 pitcrew stop  [all|@profile|<app>...]     stops tool-managed AND external
@@ -800,7 +805,7 @@ it changes.** Auto-wrap is off, so a row one column too wide is eaten silently
 by the terminal and a frame one row too tall scrolls the alt screen and
 corrupts every repaint after it. The layout is therefore a function of the
 real terminal size, re-measured on every `SIGWINCH` and on every return from a
-pager or an `fzf` menu — the two places a resize can happen behind the
+pager or the action menu — the two places a resize can happen behind the
 dashboard's back.
 
 The width tiers, and what each one gives up:
@@ -922,6 +927,7 @@ Start there with `PITCREW_ZEN=1 pitcrew watch`.
 | `PITCREW_COMPACT_AT` | `24` | below this height, the gauges fold onto one line and the legend goes |
 | `PITCREW_MICRO_AT` | `12` | below this height, only the title, the table and the key hints survive |
 | `PITCREW_MOUSE` | `0` | `1` enables click-to-select / click-again-to-expand / wheel |
+| `PITCREW_PICKER` | auto | `fzf` or `plain` — force one menu picker instead of using fzf when it is installed |
 | `PITCREW_ERROR_PATTERN` | `ERROR\|FATAL\|Exception\|UnhandledRejection` | what the error radar counts |
 | `PITCREW_HEALTH_INTERVAL` | `5` | seconds between health probes (×3 once a service reports UP) |
 | `PITCREW_DEP_INTERVAL` | `10` | seconds between docker dep checks |
@@ -934,9 +940,9 @@ pitcrew theme tokyonight   # switch, and remember it for next time
 pitcrew theme --reset      # forget the saved choice
 ```
 
-Or press `m` in the dashboard and pick **change theme…** — the fzf preview
-draws each palette as you move through the list, and choosing one applies it
-immediately and remembers it.
+Or press `m` in the dashboard and pick **change theme…** — with fzf the
+preview draws each palette as you move through the list; choosing one applies
+it immediately and remembers it either way.
 
 Four settings decide the theme, most specific first: `PITCREW_THEME` in the
 environment (a one-off for this run), `PITCREW_THEME` in the project's
@@ -993,7 +999,7 @@ Everything the CLI does, apart from the things a window genuinely cannot host:
 | Logs | live tail, filter, errors-only |
 
 Terminal-only by nature: `pitcrew theme` and `pitcrew render` (they style the
-terminal dashboard; the app follows your desktop theme), the fzf `menu`, and
+terminal dashboard; the app follows your desktop theme), the `menu`, and
 actually *running* a `shell` — a GTK window cannot host an interactive `psql`,
 so Tools hands you the exact command to paste instead of pretending.
 

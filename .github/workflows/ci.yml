@@ -21,6 +21,11 @@ jobs:
       # it fails on the fast job, minutes before the macOS one gets there.
       - name: test again on the portable collector
         run: PITCREW_FORCE_COLLECTOR=ps make test
+      # Same bargain for the menus. fzf is on every ubuntu runner and on no
+      # stock Mac, so the numbered-prompt path is the one a new macOS user
+      # meets first and the one nobody here would ever run by accident.
+      - name: test again on the no-fzf picker
+        run: PITCREW_PICKER=plain make test
       # Both config formats, because they are two front ends onto one model and
       # a regression in either is invisible from the other.
       - name: the tool runs at all
