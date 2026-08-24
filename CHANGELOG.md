@@ -11,6 +11,46 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Fixed
+- **A component row showed nothing for the commands worth reading.** Adw
+  renders a row's subtitle as Pango markup, and every real start command has
+  `&&` in it — which is not an entity, so the markup failed to parse and the
+  line rendered empty. Subtitles in the config form are text now.
+- **A Gradle module that uses a version catalog is a service again.** Modern
+  Gradle modules do not name their plugins — `alias(libs.plugins.spring.boot)`
+  is the whole line, and the id it stands for is declared in
+  `settings.gradle.kts` or `gradle/libs.versions.toml`. Detection read only the
+  module, so a Kotlin/Spring backend was invisible: `pitcrew init` wrote a
+  config with the frontend in it and nothing to talk to, and the honest reading
+  of that was "pitcrew does not know what my backend is". The alias is resolved
+  through the catalog now, from either place it can be declared, with the alias
+  name as the fallback where there is no catalog to read. `apply false` is
+  understood too — a root build file that declares every plugin for its
+  subprojects is not itself an app. The same spelling reached the health check:
+  `libs.bundles.spring.boot.starters` is Spring Boot, so `/actuator/health`
+  comes back with it. A `compose.dev.yml` is now read for `deps:` as well —
+  a repo whose `compose.yml` describes the deployment keeps the database it
+  runs locally in the dev file.
+- **`migrate` moves the pointer with the file.** Converting a registered
+  project's config wrote a `pitcrew.yaml` that nothing then read. `pitcrew -p
+  <name>` resolves through `~/.config/pitcrew/projects/<name>.sh`, and the
+  entry `pitcrew init` writes for a repo that ships its own config says
+  `source "$PITCREW_ROOT/pitcrew.config.sh"` out loud — so every command, the
+  dashboard and the desktop app carried on loading the bash config, and the
+  only visible symptom was the app offering to convert it a second time. The
+  entry is rewritten as an `include:` of the new file, and the old one is
+  replaced rather than left to be edited by mistake. A registry entry that
+  *holds* a config instead of pointing at one is somebody's own file: that one
+  is reported, never rewritten, along with the `pitcrew init` that would
+  replace it.
+- **The config editor's output panel can be dragged, and stops closing itself.**
+  It was a fixed 120px strip in a dialog that cannot be resized, so `doctor`'s
+  port report and `migrate`'s warnings were read six lines at a time. The
+  editor and the output share the height now, with a handle between them that
+  neither half can be dragged onto nothing. And a conversion no longer closes
+  the dialog a second later — which used to throw away both the warnings about
+  what YAML cannot carry and the one line saying where the file went. It names
+  the file it wrote, and **Convert to YAML** becomes **Open the YAML**, which
+  reopens the editor on it.
 - **The theme reaches the bars.** Switching theme changed the text and left
   every meter, gauge and sparkline looking the same, because they were painted
   from `T_OK`/`T_WARN`/`T_CRIT` — and every palette's ok/warn/crit is some
@@ -32,6 +72,30 @@ field is removed or changes meaning.
   un-bolded itself there.
 
 ### Added
+- **`pitcrew detect [--json]`.** The guess `init` makes, printed instead of
+  written: what pitcrew thinks is in a directory, with the command, port and
+  health path it would give each part, and nothing written anywhere. `init` and
+  `detect` now run the same `detect_plan`, because the point of the command is
+  that there is ONE guess — the desktop app's "add an app" list is this JSON,
+  and an app offering a component `init` would never write is a second opinion
+  about somebody's project.
+- **The config editor knows what a config is.** Three things it could not do:
+
+  *Highlighting.* The YAML tab was one undifferentiated grey. It is now
+  highlighted as the language the file actually is — YAML for a `pitcrew.yaml`,
+  shell for a `pitcrew.config.sh` — with line numbers, and Tab inserting
+  spaces, because pitcrew's loader rejects a tab used for indentation.
+  GtkSourceView is optional: without it the plain view is still there.
+
+  *Adding an app.* It asked for a name and wrote `cmd: "true"`, leaving the
+  gradle task, the port and the health path to be typed by hand for a project
+  pitcrew can read. It now runs `pitcrew detect --json` and offers what was
+  found — every app the config does not already have, each with its real
+  command — with an "Empty app…" way out for the ones no detector can guess.
+
+  *Room to read.* The output panel was a fixed 120px strip in a dialog that
+  cannot be resized. It shares the height with the editor now, through a handle
+  neither half can be dragged onto nothing.
 - **The desktop app follows `pitcrew theme`.** It used to follow the desktop
   theme and nothing else, so picking Gruvbox turned the dashboard Gruvbox and
   left the window it belongs to alone. The app now draws its meters, graph

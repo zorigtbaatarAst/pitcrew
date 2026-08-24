@@ -1225,6 +1225,84 @@ print(dialog._output.__class__.__name__ != '')
   rm -f "$SAMPLE_YAML"
 }
 
+test_a_command_with_an_ampersand_in_it_is_still_shown() {
+  gui_available || return 0
+  # Adw renders a row's subtitle as Pango MARKUP by default, and every real
+  # start command has `&&` in it. `&&` is not an entity, so the markup failed
+  # to parse and the line rendered as nothing — the component row that says
+  # what a component runs was blank for exactly the commands worth reading.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+cmd = '{ [ -d node_modules ] || npm install; } && npm run dev'
+row = dialog._component_row('frontend', {'role': 'fe', 'cmd': cmd})
+print(row.get_subtitle() == cmd, row.get_use_markup())
+")
+  assert_eq "$(printf '%s' "$out" | tail -n 1)" "True False" \
+    "the command is the subtitle, and it is text rather than markup"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_adding_an_app_offers_what_pitcrew_found_in_the_checkout() {
+  gui_available || return 0
+  # Asking for a name and writing `cmd: "true"` under it left the actual work —
+  # the gradle task, the port, the health path — to be typed by hand for a
+  # project pitcrew can read perfectly well. The list comes from
+  # `pitcrew detect --json`, which is the same guess `init` makes.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  frontend:' '    fe:' '      cmd: "npm run dev"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+found = {'schema': 1, 'root': '/checkout', 'deps': [], 'apps': [
+    {'name': 'frontend', 'components': [{'role': 'fe', 'cmd': 'npm run dev',
+                                         'dir': 'frontend', 'port': 3000, 'health': ''}]},
+    {'name': 'backend', 'components': [{'role': 'be', 'cmd': './gradlew :backend:bootRun',
+                                        'dir': '', 'port': 8444,
+                                        'health': '/actuator/health'}]},
+]}
+dialog._config = {'root': '/checkout', 'apps': [{'name': 'frontend'}]}
+# what the picker would have been given
+import pitcrewgui.dialogs as d
+offered = []
+dialog._offer_detected = lambda apps: offered.extend(a['name'] for a in apps)
+dialog._detected(found, '')
+print(offered)
+dialog._add_detected([found['apps'][1]])
+print(text())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "['backend']" \
+    "only what the config does not already have is offered"
+  assert_match "$out" 'backend:'                         "the app is written"
+  assert_match "$out" 'cmd: \./gradlew :backend:bootRun' "with the command pitcrew found"
+  assert_match "$out" 'port: 8444'                       "the port it found"
+  assert_match "$out" 'health: /actuator/health'         "and the health path"
+  assert_not_match "$out" 'cmd: "true"' "and no placeholder anybody has to replace"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_a_project_pitcrew_cannot_read_still_gets_an_empty_app() {
+  gui_available || return 0
+  # Plenty of projects are started by a command no detector could guess. That
+  # is not a failure — it just means the empty app is the only thing left to
+  # offer, and it has to still be offered.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+asked = []
+dialog._ask_app_name = lambda: asked.append('asked')
+dialog._config = {'root': '/checkout', 'apps': [{'name': 'a'}]}
+dialog._detected(None, 'detect: no such directory')
+dialog._detected({'apps': []}, '')
+print(asked)
+start, end = dialog._output._buffer.get_bounds()
+print('no such directory' in dialog._output._buffer.get_text(start, end, False)
+      or 'nothing here' in dialog._output._buffer.get_text(start, end, False))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "['asked', 'asked']" \
+    "both a failed look and an empty one fall back to naming it yourself"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and what happened is said"
+  rm -f "$SAMPLE_YAML"
+}
+
 test_a_bash_config_is_offered_a_way_out_of_being_bash() {
   gui_available || return 0
   # The .sh configs that most need a form are exactly the ones a form cannot
@@ -1268,6 +1346,129 @@ labels(dialog._header(True).get_first_child(), found)
 print(sorted(found))
 ")
   assert_not_match "$yaml_out" 'Convert to YAML' "a yaml config is not"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_the_config_is_edited_as_the_language_it_is_written_in() {
+  gui_available || return 0
+  # A wall of one-colour YAML is a file you read a line at a time. Where
+  # GtkSourceView is installed the editor highlights it — as YAML for a
+  # pitcrew.yaml and as shell for a pitcrew.config.sh, which are two different
+  # languages that used to look identical. Where it is NOT installed the plain
+  # view is still there: the typelib is one more package on seven package
+  # managers, and an install without it has to keep opening configs.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+from pitcrewgui import widgets
+buffer = dialog._buffer
+if widgets.GtkSource is None:
+    print('plain', 'plain')
+else:
+    lang = buffer.get_language()
+    print(lang.get_id() if lang is not None else 'none', buffer.get_highlight_syntax())
+print('apps:' in text())
+")
+  assert_match "$(printf '%s' "$out" | sed -n 1p)" '(yaml True|plain plain)' \
+    "YAML is highlighted as YAML where that is possible"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and the file is still the file"
+  rm -f "$SAMPLE_YAML"
+
+  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
+  local sh_out; sh_out=$(_config_form "
+from pitcrewgui import widgets
+lang = None if widgets.GtkSource is None else dialog._buffer.get_language()
+print('plain' if widgets.GtkSource is None else (lang.get_id() if lang else 'none'))
+")
+  assert_match "$sh_out" '(sh|plain)' "and a bash config as shell"
+}
+
+test_the_editor_never_indents_a_config_with_a_tab() {
+  gui_available || return 0
+  # pitcrew's YAML loader REJECTS a tab used for indentation, so an editor that
+  # inserted one on Tab would write a file the tool then refuses — from a
+  # keystroke nobody thinks about.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+from pitcrewgui import widgets
+body = dialog.get_child().get_content()
+view = body.get_start_child().get_child_by_name('yaml').get_child()
+print(view.get_insert_spaces_instead_of_tabs() if widgets.GtkSource else True)
+")
+  assert_eq "$(printf '%s' "$out" | tail -n 1)" "True" "Tab inserts spaces"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_the_output_panel_shares_the_height_and_can_be_dragged() {
+  gui_available || return 0
+  # `doctor` reports every port this machine argues with itself about, and
+  # `migrate` reports what it could not carry over. In a dialog that cannot be
+  # resized, a fixed 120px strip meant reading those six lines at a time. The
+  # editor and the output split the height with a handle between them — and
+  # neither half can be dragged onto nothing, because a panel you can lose is
+  # a panel somebody will lose.
+  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+body = dialog.get_child().get_content()
+print(body.__class__.__name__)
+print(body.get_start_child() is dialog._stack, body.get_end_child() is dialog._output)
+print(body.get_shrink_start_child(), body.get_shrink_end_child())
+print(body.get_resize_start_child())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "Paned" "there is a handle between them"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True True" \
+    "the editor above it, the output below"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "False False" \
+    "and neither can be collapsed away"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "True" \
+    "the room a bigger window brings goes to the editor"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_a_conversion_says_where_the_file_went_and_waits_to_be_read() {
+  gui_available || return 0
+  # It used to close itself 1.2 seconds after converting, which threw away both
+  # the warnings about what YAML cannot carry and the one line saying where the
+  # file went — so the app looked like it had done nothing at all. The same
+  # button becomes the way on, pressed once that has been read.
+  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+import pathlib
+converted = pathlib.Path('/checkout/pitcrew.yaml')
+# Where it went is asked of pitcrew, not scraped out of that output.
+dialogs.project_config_path = lambda name: converted
+dialog._converted(True, 'wrote /checkout/pitcrew.yaml')
+start, end = dialog._output._buffer.get_bounds()
+shown = dialog._output._buffer.get_text(start, end, False)
+print(str(converted) in shown)
+print(dialog._convert.get_label())
+dialog._on_converted = lambda: print('reopened on it')
+dialog._convert_clicked()
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "the path is the first thing said"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "Open the YAML" \
+    "and the button stops offering a conversion that already happened"
+  assert_match "$out" 'reopened on it' "pressing it lands on the new file"
+  rm -f "$SAMPLE_YAML"
+}
+
+test_a_failed_conversion_leaves_the_button_where_it_was() {
+  gui_available || return 0
+  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
+  local out; out=$(_config_form "
+dialog._converted(False, 'the generated YAML does not mean the same thing')
+start, end = dialog._output._buffer.get_bounds()
+print(dialog._output._buffer.get_text(start, end, False))
+print(dialog._convert.get_label())
+")
+  assert_match "$out" 'does not mean the same thing' "the refusal is shown verbatim"
+  assert_eq "$(printf '%s' "$out" | tail -n 1)" "Convert to YAML" \
+    "and nothing pretends a file was written"
   rm -f "$SAMPLE_YAML"
 }
 

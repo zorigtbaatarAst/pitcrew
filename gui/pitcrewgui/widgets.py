@@ -5,7 +5,19 @@ from __future__ import annotations
 import math
 
 import cairo
+import gi
 from gi.repository import Adw, Gdk, Gtk, Pango
+
+# GtkSourceView where the machine has it, a plain text view where it does not.
+# The config editor is the one place in this app where you read a FILE rather
+# than a report, and a wall of one-colour YAML is what "unreadable" meant. It
+# stays OPTIONAL: the typelib is one more package on seven package managers,
+# and an install without it has to keep opening configs.
+try:
+    gi.require_version("GtkSource", "5")
+    from gi.repository import GtkSource
+except (ImportError, ValueError):          # not installed, or only version 4
+    GtkSource = None
 
 from .model import (
     LEVEL,
@@ -1154,3 +1166,55 @@ class OutputView(Gtk.ScrolledWindow):
 
     def show_text(self, text: str) -> None:
         self._buffer.set_text(text or "")
+
+
+# Style schemes, most preferred first per desktop theme. A scheme that is not
+# installed is skipped rather than guessed at; the last resort is whatever the
+# view already had, which is legible if plain.
+_SCHEMES_DARK = ("Adwaita-dark", "solarized-dark", "oblivion", "classic")
+_SCHEMES_LIGHT = ("Adwaita", "solarized-light", "tango", "classic")
+
+
+def _source_scheme(buffer) -> None:
+    dark = Adw.StyleManager.get_default().get_dark()
+    manager = GtkSource.StyleSchemeManager.get_default()
+    for name in (_SCHEMES_DARK if dark else _SCHEMES_LIGHT):
+        scheme = manager.get_scheme(name)
+        if scheme is not None:
+            buffer.set_style_scheme(scheme)
+            return
+
+
+def code_view(text: str, language: str, editable: bool):
+    """A monospace editor for one file, highlighted where that is available.
+
+    Returns `(widget, buffer)`. The buffer is a plain `Gtk.TextBuffer` as far
+    as every caller is concerned — `GtkSource.Buffer` is one — so nothing above
+    this function needs to know which of the two it got.
+
+    Spaces, never tabs: pitcrew's YAML loader REJECTS a tab used for
+    indentation (lib/18-yaml.sh), so an editor that inserted one on Tab would
+    write a file the tool then refused, from a keystroke nobody thinks about.
+    """
+    if GtkSource is None:
+        buffer = Gtk.TextBuffer()
+        buffer.set_text(text)
+        view = Gtk.TextView(buffer=buffer, monospace=True, editable=editable,
+                            top_margin=10, bottom_margin=10,
+                            left_margin=10, right_margin=10)
+        return view, buffer
+
+    buffer = GtkSource.Buffer()
+    lang = GtkSource.LanguageManager.get_default().get_language(language)
+    if lang is not None:
+        buffer.set_language(lang)
+    buffer.set_highlight_syntax(True)
+    _source_scheme(buffer)
+    buffer.set_text(text)
+    view = GtkSource.View(buffer=buffer, monospace=True, editable=editable,
+                          show_line_numbers=True, highlight_current_line=editable,
+                          auto_indent=True, insert_spaces_instead_of_tabs=True,
+                          tab_width=2, indent_width=2,
+                          top_margin=10, bottom_margin=10,
+                          left_margin=10, right_margin=10)
+    return view, buffer

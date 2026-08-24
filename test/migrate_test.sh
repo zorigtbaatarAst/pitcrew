@@ -157,6 +157,69 @@ test_the_cd_quoting_the_two_loaders_use_is_not_treated_as_a_difference() {
   _cleanup
 }
 
+# ── the pointer at the config ───────────────────────────────────────────────
+#
+# Converting the file is half the job. `pitcrew -p demo` resolves through the
+# registry, and the entry `pitcrew init` writes for a repo that ships its own
+# config names pitcrew.config.sh in a `source` line — so a conversion that
+# left it alone wrote a file that nothing, including the desktop app, ever
+# read again.
+
+_registered_pointer() { # the entry `pitcrew init` writes for a repo with its own config
+  mkdir -p "$PROJECTS_DIR"
+  {
+    printf 'PITCREW_ROOT=%s\n' "$PROJ"
+    printf '# shellcheck source=/dev/null\n'
+    printf 'source "$PITCREW_ROOT/pitcrew.config.sh"\n'
+  } > "$PROJECTS_DIR/demo.sh"
+}
+
+test_the_registry_entry_moves_with_the_file_it_points_at() {
+  _looped_project
+  _registered_pointer
+  local out; out=$(cmd_migrate 2>&1)
+  assert_match "$(plain "$out")" 'points at it now' "the repoint is said, not done quietly"
+  assert_match "$(cat "$PROJECTS_DIR/demo.yaml" 2>/dev/null)" 'include: pitcrew.yaml' \
+    "the entry points at what was written"
+  assert_match "$(cat "$PROJECTS_DIR/demo.yaml" 2>/dev/null)" "root: $PROJ" \
+    "at the same checkout as before"
+  [ -e "$PROJECTS_DIR/demo.sh" ] && _t_bad "the old pointer was left behind to be edited"
+  # The whole point: the file worth editing is the new one, which is what
+  # `pitcrew edit` opens and what the desktop app resolves.
+  assert_eq "$(project_content_file demo)" "$PROJ/pitcrew.yaml" \
+    "and -p demo reads the YAML now"
+  rm -f "$PROJECTS_DIR"/demo.*
+  _cleanup
+}
+
+test_a_registry_entry_that_is_itself_a_config_is_reported_not_rewritten() {
+  # An entry that HOLDS a config rather than pointing at one is somebody's own
+  # file. migrate leaves those alone — and says which file is still being read,
+  # because the alternative is a conversion that looks like it worked.
+  _looped_project
+  mkdir -p "$PROJECTS_DIR"
+  {
+    printf 'PITCREW_ROOT=%s\n' "$PROJ"
+    printf 'PITCREW_APPS=(sales)\n'
+  } > "$PROJECTS_DIR/demo.sh"
+  local out; out=$(cmd_migrate 2>&1)
+  assert_match "$(plain "$out")" 'still loads that one' "what is still read is named"
+  assert_match "$(plain "$out")" 'pitcrew init'         "and how to change that"
+  [ -e "$PROJECTS_DIR/demo.yaml" ] && _t_bad "an entry that was not a pointer was rewritten"
+  assert_match "$(cat "$PROJECTS_DIR/demo.sh")" 'PITCREW_APPS' "the entry is untouched"
+  rm -f "$PROJECTS_DIR"/demo.*
+  _cleanup
+}
+
+test_an_unregistered_project_is_converted_without_inventing_an_entry() {
+  # A config found by walking up from a directory is not registered at all,
+  # and pitcrew already prefers the YAML there. Nothing to repoint.
+  _looped_project
+  cmd_migrate >/dev/null 2>&1
+  assert_empty "$(ls "$PROJECTS_DIR" 2>/dev/null)" "the registry is left alone"
+  _cleanup
+}
+
 # ── the edges ───────────────────────────────────────────────────────────────
 
 test_it_refuses_to_convert_a_config_that_is_already_yaml() {

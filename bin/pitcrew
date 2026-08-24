@@ -129,6 +129,9 @@ Usage:
   pitcrew init [<dir>] [--sh]       look at a project and write a starter
                                      pitcrew.yaml for it (--sh for the old
                                      bash format; default dir: $PWD)
+  pitcrew detect [--json] [<dir>]   the same guess, printed and not written:
+                                     what pitcrew thinks is in a directory, with
+                                     the command and port it would give each part
   pitcrew check [<file>]            load a config and report what is wrong with
                                      it, without starting anything
   pitcrew theme [<name>]            colour palette — bare lists them with swatches
@@ -173,6 +176,7 @@ done
 case "${1:-}" in
   help|-h|--help) usage; exit 0 ;;
   init)     shift; cmd_init     "$@"; exit $? ;;
+  detect)   shift; cmd_detect   "$@"; exit $? ;;
   check)    shift; cmd_check    "$@"; exit $? ;;
   theme)    shift; cmd_theme    "$@"; exit $? ;;
   render)   shift; cmd_render   "$@"; exit $? ;;

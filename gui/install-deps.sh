@@ -48,21 +48,26 @@ detect_pkg() {
   printf unknown
 }
 
-# ── what each manager calls the same four things ────────────────────────────
+# ── what each manager calls the same few things ─────────────────────────────
 # One case, one line per OS: this is the whole platform seam for dependencies.
+#
+# GtkSourceView is the one OPTIONAL entry: it is what highlights a config in
+# the editor, and the app checks for it at import time and falls back to a
+# plain text view. It is installed here so a new install gets it; an existing
+# one without it keeps working, and the probe below does not ask for it.
 packages_for() { # $1 = manager
   case "$1" in
-    dnf)    echo "python3-gobject python3-cairo gtk4 libadwaita" ;;
-    apt)    echo "python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1" ;;
-    pacman) echo "python-gobject python-cairo gtk4 libadwaita" ;;
-    zypper) echo "python3-gobject python3-cairo typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1" ;;
-    apk)    echo "py3-gobject3 py3-cairo gtk4.0 libadwaita" ;;
-    brew)   echo "pygobject3 gtk4 libadwaita" ;;
+    dnf)    echo "python3-gobject python3-cairo gtk4 libadwaita gtksourceview5" ;;
+    apt)    echo "python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gtksource-5" ;;
+    pacman) echo "python-gobject python-cairo gtk4 libadwaita gtksourceview5" ;;
+    zypper) echo "python3-gobject python3-cairo typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 typelib-1_0-GtkSource-5" ;;
+    apk)    echo "py3-gobject3 py3-cairo gtk4.0 libadwaita gtksourceview5" ;;
+    brew)   echo "pygobject3 gtk4 libadwaita gtksourceview5" ;;
     # pycairo is a SEPARATE package here, and it was missing: PyGObject does
     # not pull it in on MSYS2 the way brew and the Linux distros do, so
     # `import gi, cairo` failed on the cairo half and the probe reported the
     # bindings missing right after a successful install.
-    msys2)  echo "mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-python-cairo mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita" ;;
+    msys2)  echo "mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-python-cairo mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-gtksourceview5" ;;
     *)      echo "" ;;
   esac
 }
@@ -92,6 +97,14 @@ bash5_package_for() { # $1 = manager — only where the system bash is too old
 . "$(dirname "${BASH_SOURCE[0]}")/pyfind.sh"
 
 have_bindings() { pitcrew_find_python_gtk >/dev/null 2>&1; }
+
+# Optional, and reported rather than required: without it the config editor
+# opens a plain text view instead of a highlighted one, which is a worse
+# editor and a working app.
+have_sourceview() {
+  pitcrew_find_python 'import gi; gi.require_version("GtkSource","5"); from gi.repository import GtkSource' \
+    >/dev/null 2>&1
+}
 
 have_bash5() {
   local candidate major
@@ -141,6 +154,7 @@ main() {
   echo "platform         $(uname -s)"
   echo "package manager  $PKG"
   have_bindings && echo "GTK bindings     present" || echo "GTK bindings     MISSING"
+  have_sourceview && echo "highlighting     present" || echo "highlighting     absent (configs open unhighlighted)"
   have_bash5    && echo "bash 5           present" || echo "bash 5           MISSING"
   echo
 

@@ -53,15 +53,79 @@ _detect_kind() { # $1 dir → KIND
 # in its dependencies and no boot plugin. Matching on the quote that follows
 # `boot` separates the plugin id from a dependency coordinate, which always has
 # a colon there.
+# Where a Gradle module's version catalog lives: the nearest directory at or
+# above it holding a settings file or a gradle/libs.versions.toml. A module
+# using a catalog does not say what it applies — `alias(libs.plugins.spring.boot)`
+# is the whole line — so the plugin id has to be read from there.
+_gradle_catalog_dir() { # $1 module dir → CATDIR ("" when there is none)
+  local d=$1 i
+  CATDIR=""
+  for i in 1 2 3 4; do
+    if [ -f "$d/settings.gradle" ] || [ -f "$d/settings.gradle.kts" ] \
+       || [ -f "$d/gradle/libs.versions.toml" ]; then CATDIR=$d; return 0; fi
+    case "$d" in */*) d=${d%/*} ;; *) return 0 ;; esac
+    [ -n "$d" ] || return 0
+  done
+  return 0
+}
+
+# One catalog alias → the plugin id it stands for. Gradle turns `-` and `_` in
+# a catalog key into `.` in the accessor, so the key is matched back with any
+# of the three. Both places a catalog can be declared are read: the TOML file,
+# and a versionCatalogs block in settings.gradle[.kts].
+_gradle_plugin_id() { # $1 catalog dir, $2 accessor → PID ("" when not declared)
+  local dir=$1 pat=${2//./[-_.]} f
+  PID=""
+  f="$dir/gradle/libs.versions.toml"
+  if [ -f "$f" ]; then
+    PID=$(grep -iE "^[[:space:]]*${pat}[[:space:]]*=" "$f" \
+          | sed -nE 's/.*[iI][dD][[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' | head -1)
+    [ -n "$PID" ] && return 0
+  fi
+  for f in "$dir/settings.gradle.kts" "$dir/settings.gradle"; do
+    [ -f "$f" ] || continue
+    PID=$(sed -nE "s/.*plugin\([\"']${pat}[\"'][[:space:]]*,[[:space:]]*[\"']([^\"']+)[\"'].*/\1/p" \
+          "$f" | head -1)
+    [ -n "$PID" ] && return 0
+  done
+  return 0
+}
+
+# Does this build file apply a plugin that makes the module startable, through
+# a version catalog? The alias is resolved to its id where the catalog can be
+# found, and falls back to the alias NAME where it cannot — an alias called
+# `spring.boot` is not a guess anybody would regret, and a module wrongly
+# skipped is a service that silently disappears (see the note above).
+_gradle_alias_runnable() { # $1 module dir, $2 the build file's applied lines
+  local acc
+  _gradle_catalog_dir "$1"
+  while IFS= read -r acc; do
+    [ -n "$acc" ] || continue
+    PID=""
+    [ -n "$CATDIR" ] && _gradle_plugin_id "$CATDIR" "$acc"
+    [ -n "$PID" ] || PID=$acc
+    case "$PID" in
+      *spring*boot*|application|*.application) return 0 ;;
+    esac
+  done <<< "$(printf '%s\n' "$2" \
+              | sed -nE 's/.*alias\([A-Za-z0-9_]+\.plugins\.([A-Za-z0-9_.]+)\).*/\1/p')"
+  return 1
+}
+
 _detect_runnable() { # $1 dir, $2 kind → 0 when it can be started
   local d=$1 f
   case "$2" in
     gradle)
       for f in "$d"/build.gradle "$d"/build.gradle.kts; do
         [ -f "$f" ] || continue
-        grep -qE "org\.springframework\.boot[\"')]" "$f" && return 0
-        grep -qE "(id[[:space:]]*[(\"']+application|apply plugin:[[:space:]]*[\"']application)" "$f" && return 0
+        # `apply false` DECLARES a plugin for the subprojects to apply and does
+        # not apply it here, so a root build file that lists every plugin that
+        # way is not itself an app.
+        local applied; applied=$(grep -v 'apply[[:space:]]\+false' "$f")
+        printf '%s\n' "$applied" | grep -qE "org\.springframework\.boot[\"')]" && return 0
+        printf '%s\n' "$applied" | grep -qE "(id[[:space:]]*[(\"']+application|apply plugin:[[:space:]]*[\"']application)" && return 0
         grep -qE "^[[:space:]]*(bootRun|application)[[:space:]]*\{" "$f" && return 0
+        _gradle_alias_runnable "$d" "$applied" && return 0
       done
       return 1 ;;
     maven)
@@ -138,8 +202,12 @@ _detect_port() { # $1 dir, $2 kind → PORT ("" when it cannot be known)
 _detect_health() { # $1 dir, $2 kind → HEALTH ("" unless it is clearly Spring Boot)
   HEALTH=""
   case "$2" in
-    gradle) grep -qs 'spring-boot' "$1"/build.gradle* && HEALTH=/actuator/health ;;
-    maven)  grep -qs 'spring-boot' "$1/pom.xml"       && HEALTH=/actuator/health ;;
+    # `spring[-._]boot`, not `spring-boot`: through a version catalog the same
+    # dependency is written `libs.bundles.spring.boot.starters`, and a backend
+    # that lost its health check lost the only thing that says it is UP rather
+    # than merely running.
+    gradle) grep -qsiE 'spring[-._]boot' "$1"/build.gradle* && HEALTH=/actuator/health ;;
+    maven)  grep -qsiE 'spring[-._]boot' "$1/pom.xml"       && HEALTH=/actuator/health ;;
   esac
   return 0
 }
@@ -264,12 +332,177 @@ detect_scan() { # $1 root → DET_APPS, DET_DIR
 detect_deps() { # $1 root → DET_DEPS, docker services worth declaring
   DET_DEPS=()
   local f
+  # The dev variants too: a repo whose compose.yml describes the deployment
+  # keeps the database it runs locally in compose.dev.yml, and that is the one
+  # worth declaring as a dependency.
   for f in "$1/docker-compose.yml" "$1/docker-compose.yaml" "$1/compose.yml" "$1/compose.yaml" \
+           "$1/compose.dev.yml" "$1/compose.dev.yaml" "$1/docker-compose.dev.yml" \
            "$1/docker/docker-compose.yml" "$1/docker/docker-compose.yaml"; do
     [ -f "$f" ] || continue
     while IFS= read -r s; do [ -n "$s" ] && DET_DEPS+=("$s"); done < <(
       awk '/^services:/{f=1;next} f&&/^[a-zA-Z_-]/{exit} f&&/^  [a-zA-Z0-9._-]+:/{gsub(/[ :]/,"");print}' "$f")
     break
   done
+  return 0
+}
+
+# Detected commands are written as `cd $ROOT/<rel> && <cmd>` because that is
+# what a .sh config needs. YAML has `dir:` for exactly that, so pull it back
+# out — the resulting config says where the app lives instead of open-coding a
+# cd in every command.
+detect_split_dir() { # $1 command → YDIR, YCMD
+  YDIR=""; YCMD=$1
+  case "$1" in
+    'cd $ROOT && '*)     YDIR="."; YCMD=${1#'cd $ROOT && '} ;;
+    'cd $ROOT/'*' && '*) YDIR=${1#'cd $ROOT/'}; YDIR=${YDIR%%' && '*}; YCMD=${1#*' && '} ;;
+  esac
+}
+
+_port_taken() { local p; for p in "${USED_PORTS[@]}"; do [ "$p" = "$1" ] && return 0; done; return 1; }
+
+# Sets NEXT_PORT and RESERVES it. It must not print its answer: called as
+# $(_next_port 8080) the reservation happens in a subshell and is thrown away,
+# so every component is handed the same "first free" port and the generated
+# config collides with itself.
+_next_port() { # $1 base → NEXT_PORT
+  NEXT_PORT=$1
+  while _port_taken "$NEXT_PORT"; do NEXT_PORT=$((NEXT_PORT + 1)); done
+  USED_PORTS+=("$NEXT_PORT")
+}
+
+# The whole guess about one directory, in the order the answers depend on each
+# other: what is in it, then the port each part gets — the one the project pins
+# where it pins one, the next free one in the role's range where it does not —
+# then the command and health path, which both need the port.
+#
+# One function because there must be ONE guess: `pitcrew init` writes it to a
+# file, `pitcrew detect` prints it, and the desktop app's "add an app" list is
+# that JSON. A GUI with its own idea of what a project contains is a second
+# opinion nobody asked for.
+#
+# `declare -gA`, not `declare -A`: a bare declare inside a function is scoped
+# to that function, and the caller would get empty maps back.
+detect_plan() { # $1 root → DET_APPS, DET_DIR, DET_DEPS, P_KIND, P_PORT, P_CMD, P_HEALTH
+  local dir=$1 app role d
+  DET_APPS=(); detect_scan "$dir"
+  DET_DEPS=(); detect_deps "$dir"
+
+  USED_PORTS=()
+  declare -gA P_PORT=() P_CMD=() P_HEALTH=() P_KIND=()
+  for app in "${DET_APPS[@]}"; do
+    for role in be fe; do
+      d=${DET_DIR[$app.$role]:-}; [ -n "$d" ] || continue
+      _detect_kind "$d"; P_KIND[$app.$role]=$KIND
+      _node_flavour "$d"
+      _detect_port "$d" "$KIND"
+      if [ -n "$PORT" ] && ! _port_taken "$PORT"; then
+        USED_PORTS+=("$PORT"); P_PORT[$app.$role]=$PORT
+      fi
+    done
+  done
+  # anything still without one gets the next free port in its role's range
+  for app in "${DET_APPS[@]}"; do
+    for role in be fe; do
+      d=${DET_DIR[$app.$role]:-}; [ -n "$d" ] || continue
+      [ -n "${P_PORT[$app.$role]:-}" ] && continue
+      if [ "$role" = be ]; then _next_port 8080; else _next_port 3000; fi
+      P_PORT[$app.$role]=$NEXT_PORT
+    done
+  done
+  for app in "${DET_APPS[@]}"; do
+    for role in be fe; do
+      d=${DET_DIR[$app.$role]:-}; [ -n "$d" ] || continue
+      _node_flavour "$d"
+      _detect_cmd "$dir" "$d" "${P_KIND[$app.$role]}" "${P_PORT[$app.$role]}"
+      P_CMD[$app.$role]=$CMD
+      _detect_health "$d" "${P_KIND[$app.$role]}"
+      P_HEALTH[$app.$role]=$HEALTH
+    done
+  done
+  return 0
+}
+
+# ── `pitcrew detect` ────────────────────────────────────────────────────────
+#
+# The same guess `init` makes, printed rather than written. It exists for two
+# readers: somebody deciding whether `init` would get their project right, and
+# the desktop app, whose "add an app" list is this command's --json. The app
+# adding a component it detected ITSELF would be a second opinion about a
+# project, and one of the two would be wrong first.
+detect_json() { # $1 root — the plan, as data
+  local dir=$1 app role first=1 firstc dep
+  printf '{"schema":1,'
+  _json_str "$dir"; printf '"root":%s,"apps":[' "$JSTR"
+  for app in "${DET_APPS[@]}"; do
+    [ "$first" = 1 ] || printf ','
+    first=0
+    _json_str "$app"; printf '{"name":%s,"components":[' "$JSTR"
+    firstc=1
+    for role in be fe; do
+      [ -n "${DET_DIR[$app.$role]:-}" ] || continue
+      [ "$firstc" = 1 ] || printf ','
+      firstc=0
+      detect_split_dir "${P_CMD[$app.$role]}"
+      _json_str "$role";                     printf '{"role":%s,' "$JSTR"
+      _json_str "${P_KIND[$app.$role]}";     printf '"kind":%s,' "$JSTR"
+      _json_str "$YDIR";                     printf '"dir":%s,' "$JSTR"
+      _json_str "$YCMD";                     printf '"cmd":%s,' "$JSTR"
+      _json_str "${P_HEALTH[$app.$role]}";   printf '"health":%s,' "$JSTR"
+      printf '"port":%s}' "${P_PORT[$app.$role]:-null}"
+    done
+    printf ']}'
+  done
+  printf '],"deps":['
+  first=1
+  for dep in ${DET_DEPS[@]+"${DET_DEPS[@]}"}; do
+    [ "$first" = 1 ] || printf ','
+    first=0
+    _json_str "$dep"; printf '%s' "$JSTR"
+  done
+  printf ']}\n'
+}
+
+cmd_detect() { # [--json] [<dir>]
+  local as_json=0 dir="" app role
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) as_json=1; shift ;;
+      -*)     die "usage: pitcrew detect [--json] [<dir>]" ;;
+      *)      dir=$1; shift ;;
+    esac
+  done
+  dir=${dir:-${ROOT:-$PWD}}
+  [ -d "$dir" ] || die "detect: no such directory: $dir"
+  dir=$(cd "$dir" && pwd)
+
+  detect_plan "$dir"
+
+  if [ "$as_json" = 1 ]; then detect_json "$dir"; return 0; fi
+
+  banner
+  say "  ${BOLD}looking at${RESET} ${C_MUTED}${dir}${RESET}"
+  say ""
+  if [ ${#DET_APPS[@]} -eq 0 ]; then
+    warn "nothing recognisable here"
+    say "  ${C_MUTED}pitcrew looks for gradle, maven, npm, go, cargo, django, python and ruby${RESET}"
+    say "  ${C_MUTED}projects, either at the top level or one or two directories down${RESET}"
+    say ""
+    return 1
+  fi
+  for app in "${DET_APPS[@]}"; do
+    say "  ${C_ACCENT}${BOLD}${app}${RESET}"
+    for role in be fe; do
+      [ -n "${DET_DIR[$app.$role]:-}" ] || continue
+      detect_split_dir "${P_CMD[$app.$role]}"
+      say "    ${BOLD}${role}${RESET}  ${C_MUTED}${P_KIND[$app.$role]}${RESET}  :${P_PORT[$app.$role]}${YDIR:+  ${C_MUTED}in ${YDIR}${RESET}}"
+      say "        ${YCMD}"
+      [ -n "${P_HEALTH[$app.$role]}" ] && say "        ${C_MUTED}health ${P_HEALTH[$app.$role]}${RESET}"
+    done
+  done
+  say ""
+  [ ${#DET_DEPS[@]} -gt 0 ] && \
+    say "  ${C_MUTED}docker services in this project's compose file: ${DET_DEPS[*]}${RESET}"
+  say "  ${C_MUTED}nothing was written — ${RESET}pitcrew init $dir${C_MUTED} is what writes a config${RESET}"
+  say ""
   return 0
 }

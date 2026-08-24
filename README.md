@@ -251,6 +251,25 @@ For each component it works out:
 Run it against a six-app Gradle + Next monorepo and you get a config that
 starts it. It is still a guess: the header says so, and `pitcrew edit` opens it.
 
+**Gradle version catalogs are read.** A module built in the last few years does
+not name its plugins: `alias(libs.plugins.spring.boot)` is the whole line, and
+the id it stands for lives in `settings.gradle.kts` or
+`gradle/libs.versions.toml`. Reading only the module made a Kotlin/Spring
+backend invisible — `init` wrote a config with the frontend in it and nothing
+to talk to. The alias is resolved through the catalog now, in both of the
+places a catalog can be declared, and `apply false` is understood: a root build
+file that declares every plugin for its subprojects is not itself an app.
+
+```bash
+pitcrew detect [--json] [<dir>]
+```
+
+The same guess, printed instead of written — what pitcrew thinks is in a
+directory, with the command, port and health path it would give each part, and
+not a byte written anywhere. Useful before `init`, and it is what the desktop
+app's **Add an app** list is built from, so the app and the CLI cannot come to
+different conclusions about a project.
+
 ## Quick start
 
 1. Point pitcrew at a project once: `pitcrew init ~/work/your-repo`. It
@@ -294,6 +313,9 @@ pitcrew diagnose [--json] [--watch]
                                   what is wrong with the STACK, why, and what
                                     to do about it (exit 1 on a critical finding)
 pitcrew plugins                   what is loaded from ~/.config/pitcrew/plugins
+pitcrew detect [--json] [<dir>]   what pitcrew thinks is in a directory, and the
+                                   command and port it would give each part — the
+                                   guess `init` makes, written nowhere
 pitcrew init [<dir>] [--sh]       look at a project and write a pitcrew.yaml (--sh
                                     for the older bash format; default dir: $PWD)
 pitcrew check [<file>]            load a config and say what is wrong with it
@@ -511,9 +533,21 @@ What YAML cannot carry is named up front — a `pitcrew_doctor_extra()` shell
 function has to be rewritten as `doctor:` label/command pairs by hand.
 
 Your `.sh` is left in place. pitcrew reads YAML in preference to it, so the new
-file is live immediately; delete the old one once you are happy. The desktop
-app offers the same conversion as a **Convert to YAML** button whenever it
-opens a `.sh` config, since that is the one it cannot show you as a form.
+file is live immediately; delete the old one once you are happy.
+
+**The registry entry moves with it.** A registered project resolves through
+`~/.config/pitcrew/projects/<name>.*`, and the entry `pitcrew init` writes for
+a repo that ships its own config names the file in a `source` line — so a
+conversion that left it alone would write a file that `pitcrew -p <name>`, the
+dashboard and the desktop app all carried on ignoring. `migrate` rewrites that
+pointer to `include:` the new YAML and says so. A registry entry that *holds* a
+config rather than pointing at one is your file: that one is reported, never
+rewritten, with the `pitcrew init` command that would replace it.
+
+The desktop app offers the same conversion as a **Convert to YAML** button
+whenever it opens a `.sh` config, since that is the one it cannot show you as a
+form. It names the file it wrote, keeps the warnings on screen until you have
+read them, and the same button then reopens the editor on the new YAML.
 
 ### The older bash format
 
@@ -1364,8 +1398,23 @@ A YAML config opens on a **form**: one group per app, one expander per
 component, with its command, its checkout, its directory, port, health path and
 RAM cap — plus a switch for `enabled:` on the row itself, because that is the
 one field you flip without wanting to read anything else. **+** on a group adds
-a role; **Add an app** adds a group. A **YAML** tab sits next to it for
-anything the form does not cover.
+a role. A **YAML** tab sits next to it for anything the form does not cover;
+it is highlighted as what it is — YAML for a `pitcrew.yaml`, shell for a
+`pitcrew.config.sh` — wherever GtkSourceView is installed, and Tab inserts
+spaces there, because pitcrew's loader rejects a tab used for indentation.
+
+**Add an app** asks pitcrew what is in the checkout. It runs `pitcrew detect
+--json` and offers what came back — every app the config does not already have,
+each with the command, port and health path `init` would have written — with a
+switch per app and an **Empty app…** way out for a project no detector could
+guess. It used to ask for a name and write `cmd: "true"` under it, which left
+the actual work (the gradle task, the port, the health path) to be typed by
+hand for a project pitcrew can read perfectly well.
+
+The editor and the output panel below it share the height through a handle you
+can drag: `doctor` reports every port this machine argues with itself about,
+and a dialog cannot be resized, so a fixed strip meant reading that six lines
+at a time.
 
 Two things it deliberately does not do.
 
@@ -1424,6 +1473,11 @@ make gui-deps YES=1    # go ahead and install it
 `gui/install-deps.sh` detects the package manager and knows what each one calls
 PyGObject, pycairo, GTK 4 and libadwaita — plus **bash 5** on macOS, where the
 system bash is 3.2 and pitcrew refuses to run under it.
+
+**GtkSourceView is the one optional entry.** It is what highlights a config in
+the editor. It is installed for a new install and reported (not demanded) for
+an existing one: without it the config opens in a plain text view, which is a
+worse editor and a working app.
 
 | | |
 |---|---|

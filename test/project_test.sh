@@ -42,6 +42,66 @@ mkdir -p "$ROOTFIX/node_modules/foo" "$ROOTFIX/build" "$ROOTFIX/docker" "$ROOTFI
 mk "$ROOTFIX/node_modules/foo/package.json" '{}'
 mk "$ROOTFIX/shared/build.gradle" ""
 
+# A Gradle build that uses a VERSION CATALOG, which is what a repo generated in
+# the last few years looks like: the module says `alias(libs.plugins.spring.boot)`
+# and the plugin id it stands for is declared somewhere else entirely. Both
+# places are covered — a versionCatalogs block in settings.gradle.kts, and a
+# gradle/libs.versions.toml.
+mkdir -p "$FIX/cat" && CATFIX="$FIX/cat"
+: > "$CATFIX/gradlew"; chmod +x "$CATFIX/gradlew"
+mk "$CATFIX/settings.gradle.kts" 'rootProject.name = "issues"
+include("backend")
+dependencyResolutionManagement {
+  versionCatalogs {
+    create("libs") {
+      plugin("kotlin-jvm", "org.jetbrains.kotlin.jvm").versionRef("kotlin")
+      plugin("spring-boot", "org.springframework.boot").versionRef("spring-boot")
+      plugin("jib", "com.google.cloud.tools.jib").versionRef("jib")
+    }
+  }
+}'
+# the root build file declares every plugin for its subprojects to apply, and
+# applies none of them itself
+mk "$CATFIX/build.gradle.kts" 'plugins {
+    alias(libs.plugins.kotlin.jvm) apply false
+    alias(libs.plugins.spring.boot) apply false
+}'
+mk "$CATFIX/backend/build.gradle.kts" 'plugins {
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.spring.boot)
+    alias(libs.plugins.jib)
+}
+dependencies {
+    implementation(libs.bundles.spring.boot.starters)
+}'
+mk "$CATFIX/backend/src/main/resources/application.yml" 'server:
+  port: 8444'
+# a library module in the same build: it uses the catalog too, and applies
+# nothing that could start it
+mk "$CATFIX/shared-model/build.gradle.kts" 'plugins {
+    alias(libs.plugins.kotlin.jvm)
+}
+dependencies {
+    implementation(libs.bundles.spring.boot.starters)
+}'
+
+# the same thing again, with the catalog in the file Gradle documents
+mkdir -p "$FIX/toml" && TOMLFIX="$FIX/toml"
+: > "$TOMLFIX/gradlew"; chmod +x "$TOMLFIX/gradlew"
+mk "$TOMLFIX/settings.gradle.kts" 'include("api")'
+mk "$TOMLFIX/gradle/libs.versions.toml" '[versions]
+boot = "3.4.1"
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "boot" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }'
+mk "$TOMLFIX/api/build.gradle.kts" 'plugins {
+    alias(libs.plugins.spring.boot)
+}'
+mk "$TOMLFIX/model/build.gradle.kts" 'plugins {
+    alias(libs.plugins.kotlin.jvm)
+}'
+
 _init_repo() { # → INITOUT, and the generated config path in GENCFG
   INITOUT=$(cmd_init --force --name fixrepo "$ROOTFIX" 2>&1)
   GENCFG=$(project_file fixrepo)
@@ -85,6 +145,85 @@ test_runnability_is_judged_per_toolchain() {
   assert_fails _detect_runnable "$ROOTFIX/apis/report-model" gradle
   assert_ok    _detect_runnable "$ROOTFIX/sales/frontend"    node
   assert_fails _detect_runnable "$ROOTFIX/packages/ui-kit"   node
+}
+
+test_a_module_that_applies_its_plugins_through_a_catalog_is_still_a_service() {
+  # `alias(libs.plugins.spring.boot)` is all a modern Gradle module says; the
+  # id lives in the catalog. Reading only the module meant a Kotlin/Spring
+  # backend was invisible — `pitcrew init` wrote a config with the frontend in
+  # it and nothing to talk to, and the answer looked like "pitcrew does not
+  # know what my backend is".
+  DET_APPS=(); detect_scan "$CATFIX"
+  local apps=" ${DET_APPS[*]} "
+  assert_match     "$apps" 'backend'      "the module that applies the boot plugin"
+  assert_not_match "$apps" 'shared-model' "not the library beside it"
+  assert_eq "${#DET_APPS[@]}" 1 "and nothing else in the build"
+}
+
+test_a_plugin_declared_for_the_subprojects_is_not_applied_here() {
+  # `apply false` in a root build file declares a plugin for the subprojects to
+  # apply. The root is not a service, and a build that names every plugin that
+  # way would otherwise look like the biggest one.
+  assert_fails _detect_runnable "$CATFIX" gradle
+  assert_ok    _detect_runnable "$CATFIX/backend" gradle
+}
+
+test_the_catalog_is_read_from_the_toml_as_well_as_the_settings_file() {
+  assert_ok    _detect_runnable "$TOMLFIX/api"   gradle
+  assert_fails _detect_runnable "$TOMLFIX/model" gradle
+  _gradle_catalog_dir "$TOMLFIX/api"
+  assert_eq "$CATDIR" "$TOMLFIX" "the catalog is found by walking up"
+  _gradle_plugin_id "$TOMLFIX" "spring.boot"
+  assert_eq "$PID" "org.springframework.boot" "and the alias resolves to an id"
+}
+
+test_a_catalog_spelling_of_spring_boot_still_gets_a_health_check() {
+  # Through a catalog the dependency reads `libs.bundles.spring.boot.starters`,
+  # so a grep for `spring-boot` found nothing and the backend lost the one
+  # thing that says it is UP rather than merely running.
+  _detect_health "$CATFIX/backend" gradle
+  assert_eq "$HEALTH" "/actuator/health" "spelled with dots, it is still Spring Boot"
+}
+
+test_a_catalog_module_keeps_its_port_and_its_gradle_path() {
+  DET_APPS=(); detect_scan "$CATFIX"
+  _detect_port "${DET_DIR[backend.be]}" gradle
+  assert_eq "$PORT" 8444 "server.port out of application.yml"
+  _detect_cmd "$CATFIX" "${DET_DIR[backend.be]}" gradle 8444
+  assert_eq "$CMD" './gradlew :backend:bootRun' "and the module's project path"
+}
+
+test_detect_prints_the_guess_and_writes_nothing() {
+  # `pitcrew detect` is init's first half without its second. It exists for
+  # somebody deciding whether init would get their project right — and for the
+  # desktop app, whose "add an app" list is this JSON. One guess, one place.
+  local out; out=$(cmd_detect --json "$CATFIX")
+  assert_match "$out" '"name":"backend"'                        "the app"
+  assert_match "$out" '"cmd":"\./gradlew :backend:bootRun"'      "with the command it would write"
+  assert_match "$out" '"port":8444'                             "the port it found"
+  assert_match "$out" '"health":"/actuator/health"'             "and the health path"
+  [ -e "$CATFIX/pitcrew.yaml" ] && _t_bad "detect wrote a config"
+  if command -v python3 >/dev/null 2>&1; then
+    assert_ok python3 -c 'import json,sys; json.load(sys.stdin)' <<< "$out"
+  fi
+}
+
+test_detect_says_so_when_it_recognises_nothing() {
+  local empty; empty=$(mktemp -d)
+  assert_fails cmd_detect "$empty"
+  rm -rf "$empty"
+}
+
+test_detect_and_init_agree_about_a_project() {
+  # Two code paths that guess differently would be worse than no detect
+  # command at all: the app would offer a component that init never writes.
+  local json; json=$(cmd_detect --json "$ROOTFIX")
+  _init_repo
+  local generated; generated=$(cat "$GENCFG")
+  assert_match "$json"      'gradlew :sales:backend:bootRun' "detect says the gradle path"
+  assert_match "$generated" 'gradlew :sales:backend:bootRun' "and so does the file init writes"
+  assert_match "$json"      '"port":8111' "detect reads the pinned port"
+  assert_match "$generated" '8111'        "and init writes it"
 }
 
 test_roles_come_from_the_directory_layout() {

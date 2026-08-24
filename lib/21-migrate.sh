@@ -245,6 +245,68 @@ migrate_warnings() {
   printf '%s\n' "${out[@]}"
 }
 
+# ── the pointer at the config ───────────────────────────────────────────────
+#
+# "pitcrew reads YAML in preference to .sh" is true of a config found by
+# walking up from a directory, and NOT true of a registered project. `pitcrew
+# -p autoland` resolves to ~/.config/pitcrew/projects/autoland.sh, and the
+# entry `pitcrew init` writes for a repo that ships its own config names the
+# file it points at out loud:
+#
+#     source "$PITCREW_ROOT/pitcrew.config.sh"
+#
+# Leave that alone and the conversion writes a file nothing ever reads: every
+# -p command, the dashboard and the desktop app keep loading the .sh, and the
+# only visible symptom is the app offering to convert it a second time. So the
+# pointer moves with the file it points at.
+#
+# Only the pointer. A registry entry that HOLDS a config rather than pointing
+# at one is somebody's own file, and this command does not rewrite those — it
+# says what is still being read instead.
+_mig_entry_is_pointer() { # $1 registry entry → is it a stub that sources the .sh?
+  grep -qE '^[[:space:]]*(\.|source)[[:space:]]+.*pitcrew\.config\.sh' "$1" 2>/dev/null
+}
+
+migrate_repoint_registry() { # $1 the YAML just written
+  local dest=$1 name entry target rel
+  name=$(project_for_dir "$ROOT") || return 0
+  [ -n "$name" ] || return 0
+  entry=$(project_file "$name")
+  [ -f "$entry" ] || return 0
+  config_is_yaml "$entry" && return 0
+
+  if ! _mig_entry_is_pointer "$entry"; then
+    say ""
+    warn "the registry entry for ${BOLD}${name}${RESET} is a bash config in its own right:"
+    say "    ${C_MUTED}${entry}${RESET}"
+    say "    ${C_MUTED}pitcrew -p ${name} still loads that one. Re-register with${RESET} pitcrew init $ROOT"
+    return 0
+  fi
+
+  case "$dest" in
+    "$ROOT"/*) rel=${dest#"$ROOT"/} ;;
+    *) say ""
+       warn "the registry entry for ${BOLD}${name}${RESET} still points at ${CONFIG_FILE##*/}"
+       say "    ${C_MUTED}${entry}${RESET}"
+       say "    ${C_MUTED}it points into ${ROOT}, and this went elsewhere — repoint it by hand${RESET}"
+       return 0 ;;
+  esac
+
+  target="$PROJECTS_DIR/$name.yaml"
+  {
+    printf '# %s — repointed by `pitcrew migrate` on %(%Y-%m-%d)T.\n' "$name" -1
+    printf '#\n# This project ships its own %s, so this entry just points at it.\n' "${dest##*/}"
+    printf '# Edit the config in the repository, not here. `pitcrew init --detect`\n'
+    printf '# replaces this with a freshly detected config instead.\n\n'
+    # `include:` FIRST — the loader requires it to be the first key (lib/18-yaml.sh).
+    printf 'include: %s\n' "$rel"
+    printf 'root: %s\n' "$ROOT"
+  } > "$target" || die "could not write $target"
+  ok "the registry entry for ${BOLD}${name}${RESET} points at it now"
+  say "    ${C_MUTED}${target}${RESET}"
+  _init_prune_registry "$name" "$target"
+}
+
 cmd_migrate() { # [--force] [--print] [-o FILE]
   local force=0 print_only=0 dest=""
   while [ $# -gt 0 ]; do
@@ -334,13 +396,21 @@ cmd_migrate() { # [--force] [--print] [-o FILE]
   if [ -e "$dest" ] && [ "$force" = 0 ]; then
     die "$dest already exists — pass --force to overwrite, or -o <file>"
   fi
+  # The bash config that is left over, which is NOT always $CONFIG_FILE: for a
+  # registered project that is the registry pointer, and the repoint below
+  # replaces it. Read before, because it may not exist after.
+  local leftover=$CONFIG_FILE
+  _mig_entry_is_pointer "$CONFIG_FILE" && [ -f "$ROOT/pitcrew.config.sh" ] \
+    && leftover="$ROOT/pitcrew.config.sh"
+
   printf '%s\n' "$rendered" > "$dest" || die "could not write $dest"
   ok "wrote $dest"
+  migrate_repoint_registry "$dest"
   say ""
   # find_config prefers YAML, so the new file is already what pitcrew reads.
   # Saying so beats letting somebody edit the .sh for an afternoon.
   say "  ${C_MUTED}pitcrew reads YAML in preference to .sh, so this is live now.${RESET}"
-  say "  ${C_MUTED}Check it with${RESET} pitcrew check ${C_MUTED}and${RESET} pitcrew status${C_MUTED}, then delete${RESET} ${CONFIG_FILE##*/}${C_MUTED}.${RESET}"
+  say "  ${C_MUTED}Check it with${RESET} pitcrew check ${C_MUTED}and${RESET} pitcrew status${C_MUTED}, then delete${RESET} ${leftover##*/}${C_MUTED}.${RESET}"
   say ""
   return 0
 }

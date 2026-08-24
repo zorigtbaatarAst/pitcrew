@@ -9,7 +9,7 @@ from gi.repository import Adw, GLib, Gtk
 from .model import human_bytes, plain
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error, yaml_config_error
-from .widgets import OutputView, ProcessTree, human_age
+from .widgets import OutputView, ProcessTree, code_view, human_age
 from .yamledit import add_block, set_value
 
 
@@ -108,6 +108,48 @@ class InitDialog(Adw.Dialog):
         self._run_button.set_label("Done")
         self._on_created()
 
+
+
+def _plain_subtitle(row, text: str, lines: int = 1) -> None:
+    """A subtitle that is TEXT, not markup.
+
+    Adw renders a row's subtitle as Pango markup by default, and a real start
+    command has `&&` in it — which is not an entity, so the whole line failed
+    to parse and rendered as nothing at all. The order matters: setting the
+    subtitle in the constructor happens before `use-markup` gets there.
+    """
+    row.set_use_markup(False)
+    row.set_subtitle(text)
+    row.set_subtitle_lines(lines)
+
+def _detected_summary(app: dict) -> str:
+    """One line describing what pitcrew would write for a detected app."""
+    parts = []
+    for comp in app.get("components") or []:
+        port = comp.get("port")
+        parts.append(f"{comp['role']}: {comp.get('cmd') or '?'}"
+                     + (f"  ·  :{port}" if port else ""))
+    return "\n".join(parts) or "nothing to start"
+
+
+def _detected_fields(comp: dict) -> list[tuple[str, str]]:
+    """A detected component, in the order `pitcrew init` writes the same keys."""
+    fields: list[tuple[str, str]] = []
+    if comp.get("dir"):
+        fields.append(("dir", comp["dir"]))
+    fields.append(("cmd", comp.get("cmd") or "true"))
+    if comp.get("port"):
+        fields.append(("port", str(comp["port"])))
+    if comp.get("health"):
+        fields.append(("health", comp["health"]))
+    return fields
+
+# An Adw.Dialog cannot be resized by the user, so its size is a decision made
+# here, once. Wide enough for a `--be-cmd` line without wrapping, and tall
+# enough that the editor and the output panel below it are both usable.
+CONFIG_WIDTH = 820
+CONFIG_HEIGHT = 680
+
 # The fields a component has, in the order they are worth reading: what it
 # runs, then where, then how it is reached, then the switches. Each is one
 # dotted path under `apps.<app>.<role>`.
@@ -143,11 +185,17 @@ class ConfigDialog(Adw.Dialog):
     check` for a .yaml, `bash -n` for a .sh.
     """
 
-    def __init__(self, runner: Runner, name: str, on_saved):
-        super().__init__(title=f"{name} · config", content_width=820, content_height=680)
+    def __init__(self, runner: Runner, name: str, on_saved, on_converted=None):
+        super().__init__(title=f"{name} · config",
+                         content_width=CONFIG_WIDTH, content_height=CONFIG_HEIGHT)
         self._runner = runner
         self._name = name
         self._on_saved = on_saved
+        # Reopens this dialog on whatever the config turned into. Optional: the
+        # conversion is the only thing that needs it.
+        self._on_converted = on_converted
+        self._converted_to: Path | None = None
+        self._convert: Gtk.Button | None = None
         self._path = project_config_path(name)
         self._is_yaml = self._path.suffix in (".yaml", ".yml")
         self._config: dict | None = None
@@ -158,17 +206,19 @@ class ConfigDialog(Adw.Dialog):
         self._groups: list[Adw.PreferencesGroup] = []
         self._loading = False
 
-        self._buffer = Gtk.TextBuffer()
         try:
-            self._buffer.set_text(self._path.read_text(encoding="utf-8"))
+            text = self._path.read_text(encoding="utf-8")
             editable = True
         except OSError as error:
-            self._buffer.set_text(f"# cannot read {self._path}: {error}")
+            text = f"# cannot read {self._path}: {error}"
             editable = False
         self._editable = editable
 
-        view = Gtk.TextView(buffer=self._buffer, monospace=True, editable=editable,
-                            top_margin=10, bottom_margin=10, left_margin=10, right_margin=10)
+        # Highlighted as what it IS. A pitcrew.config.sh is a shell script and
+        # a pitcrew.yaml is YAML, and the tab that opens on a .sh config used
+        # to be the same undifferentiated grey as the one that opens on YAML.
+        view, self._buffer = code_view(text, "yaml" if self._is_yaml else "sh",
+                                       editable)
         scroller = Gtk.ScrolledWindow(child=view, vexpand=True)
         scroller.add_css_class("card")
 
@@ -183,11 +233,22 @@ class ConfigDialog(Adw.Dialog):
         self._stack.add_titled_with_icon(scroller, "yaml", "YAML",
                                          "text-x-generic-symbolic")
 
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
-                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
-        body.append(self._stack)
+        # A dialog cannot be resized, and what lands in the output panel is not
+        # a line or two: `doctor` reports every port this machine argues with
+        # itself about, and `migrate` reports what it could not carry over. A
+        # fixed strip meant reading those six lines at a time, so the two share
+        # the height and the handle between them belongs to whoever is reading.
+        # Neither half can be collapsed onto the other — a panel you can lose
+        # by dragging is a panel somebody will lose.
+        body = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL,
+                         resize_start_child=True, resize_end_child=False,
+                         shrink_start_child=False, shrink_end_child=False,
+                         margin_top=12, margin_bottom=12,
+                         margin_start=12, margin_end=12)
         self._stack.set_vexpand(True)
-        body.append(self._output)
+        body.set_start_child(self._stack)
+        body.set_end_child(self._output)
+        body.set_position(CONFIG_HEIGHT - 230)
 
         wrapper = Adw.ToolbarView()
         wrapper.add_top_bar(self._header(editable))
@@ -219,8 +280,9 @@ class ConfigDialog(Adw.Dialog):
             convert = Gtk.Button(label="Convert to YAML")
             convert.set_tooltip_text("write the equivalent pitcrew.yaml, "
                                      "then edit it as a form")
-            convert.connect("clicked", lambda _b: self._ask_convert())
+            convert.connect("clicked", lambda _b: self._convert_clicked())
             header.pack_start(convert)
+            self._convert = convert
         return header
 
     # ── the form ────────────────────────────────────────────────────────────
@@ -294,7 +356,8 @@ class ConfigDialog(Adw.Dialog):
     def _component_row(self, app: str, comp: dict) -> Adw.ExpanderRow:
         role = comp["role"]
         base = ("apps", app, role)
-        row = Adw.ExpanderRow(title=role, subtitle=comp.get("cmd") or "no command")
+        row = Adw.ExpanderRow(title=role)
+        _plain_subtitle(row, comp.get("cmd") or "no command")
 
         # The exclusion switch, on the row rather than buried inside it: it is
         # the one field you flip without wanting to read anything else.
@@ -417,7 +480,100 @@ class ConfigDialog(Adw.Dialog):
         self._set_text(updated)
         self._save(reload_form=True)
 
+    # ── adding an app ───────────────────────────────────────────────────────
+    #
+    # Asking for a name and writing `cmd: "true"` under it left the actual work
+    # — `./gradlew :backend:bootRun`, the port, the health path — to be typed
+    # by hand into a form, for a project pitcrew can read. So this asks pitcrew
+    # what is in the checkout first, and offers that.
+    #
+    # `pitcrew detect --json`, not a scan written here: `init` guesses from the
+    # same function, and an app that offered a component `init` would never
+    # write is a second opinion about somebody's project.
+
     def _add_app(self) -> None:
+        root = (self._config or {}).get("root") or str(self._path.parent)
+        self._output.show_text(f"looking at {root} …")
+        self._runner.run_json(["detect", "--json", root], self._detected)
+
+    def _detected(self, found: dict | None, problem: str) -> None:
+        # Nothing recognisable is not a failure — plenty of projects are
+        # started by a command no detector could guess. It just means the empty
+        # app is the only thing left to offer.
+        if found is None:
+            self._output.show_text(f"could not look at the project:\n\n{problem}")
+            self._ask_app_name()
+            return
+        known = {app["name"] for app in (self._config or {}).get("apps") or []}
+        fresh = [app for app in (found.get("apps") or []) if app["name"] not in known]
+        if not fresh:
+            self._output.show_text(
+                "pitcrew found nothing here that this config does not already have")
+            self._ask_app_name()
+            return
+        self._offer_detected(fresh)
+
+    def _offer_detected(self, apps: list[dict]) -> None:
+        group = Adw.PreferencesGroup()
+        switches: list[tuple[dict, Adw.SwitchRow]] = []
+        for app in apps:
+            row = Adw.SwitchRow(title=app["name"], active=True)
+            _plain_subtitle(row, _detected_summary(app), lines=2)
+            group.add(row)
+            switches.append((app, row))
+
+        box = Gtk.ScrolledWindow(child=group, min_content_height=min(360, 84 * len(apps)),
+                                 propagate_natural_height=True, hexpand=True)
+        dialog = Adw.AlertDialog(
+            heading="Add an app",
+            body=("pitcrew read the checkout. These are the commands and ports it "
+                  "would write for what it found — a guess, and an editable one."))
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("empty", "Empty app…")
+        dialog.add_response("add", "Add")
+        dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("add")
+        dialog.connect("response", lambda _d, r: self._offer_answered(r, switches))
+        dialog.present(self)
+
+    def _offer_answered(self, response: str, switches) -> None:
+        if response == "empty":
+            self._ask_app_name()
+            return
+        if response != "add":
+            return
+        chosen = [app for app, row in switches if row.get_active()]
+        if chosen:
+            self._add_detected(chosen)
+
+    def _add_detected(self, apps: list[dict]) -> None:
+        text = self._text()
+        try:
+            text = self._ensure_apps(text)
+            for app in apps:
+                text = add_block(text, ("apps", app["name"]), [])
+                for comp in app.get("components") or []:
+                    text = add_block(text, ("apps", app["name"], comp["role"]),
+                                     _detected_fields(comp))
+        except LookupError as error:
+            self._output.show_text(f"could not add it: {error} — edit the YAML tab")
+            return
+        self._set_text(text)
+        self._save(reload_form=True)
+        self._output.show_text(
+            "added " + ", ".join(app["name"] for app in apps)
+            + "\n\nThe commands are pitcrew's guess at how this project starts. "
+              "Check them here before you start anything with them.")
+
+    def _ensure_apps(self, text: str) -> str:
+        """`apps:` has to exist before an app can be added under it."""
+        try:
+            return add_block(text, ("apps",), [])
+        except LookupError:                 # it is already there
+            return text
+
+    def _ask_app_name(self) -> None:
         self._ask("App name", "shop", "the group these components belong to",
                   self._do_add_app)
 
@@ -426,7 +582,8 @@ class ConfigDialog(Adw.Dialog):
             self._output.show_text("an app name cannot be empty or contain a dot or a space")
             return
         try:
-            updated = add_block(self._text(), ("apps", name), [])
+            updated = self._ensure_apps(self._text())
+            updated = add_block(updated, ("apps", name), [])
             updated = add_block(updated, ("apps", name, "be"), [("cmd", "true")])
         except LookupError as error:
             self._output.show_text(f"could not add it: {error} — edit the YAML tab")
@@ -489,33 +646,59 @@ class ConfigDialog(Adw.Dialog):
                   "it actually says — every app a loop produced, spelled out.\n\n"
                   "The result is loaded and compared against this one field by "
                   "field before anything is written; nothing is written if they "
-                  "differ. Your .sh file is left alone."))
+                  "differ. Your .sh file is left alone.\n\n"
+                  "It is written as pitcrew.yaml next to it, and this project's "
+                  "registry entry is repointed at it — pitcrew reads the new "
+                  "file from then on."))
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("go", "Convert")
         dialog.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("go")
-        dialog.connect("response", lambda _d, r: r == "go" and self._convert())
+        dialog.connect("response", lambda _d, r: r == "go" and self._run_convert())
         dialog.present(self)
 
-    def _convert(self) -> None:
+    def _convert_clicked(self) -> None:
+        if self._converted_to is None:
+            self._ask_convert()
+            return
+        self._open_converted()
+
+    def _run_convert(self) -> None:
         self._output.show_text("converting…")
         self._runner.run(["-p", self._name, "migrate"], self._converted)
 
     def _converted(self, ok: bool, output: str) -> None:
         # pitcrew's own words, verbatim — including the warnings about what
         # YAML cannot carry, which are the parts somebody has to port by hand.
-        self._output.show_text(output or ("converted" if ok else "conversion failed"))
         if not ok:
+            self._output.show_text(output or "conversion failed")
             return
         self._on_saved()
-        # The dialog is bound to the .sh path it opened; the YAML is a
-        # different file. Closing and letting it be reopened is honest, and
-        # cheaper than re-resolving every path this dialog holds.
-        GLib.timeout_add(1200, self._close_after_convert)
+        # Where the file went, asked of pitcrew rather than scraped out of that
+        # output: the registry now points at the new config, so re-resolving
+        # this project's config path IS the answer. It used to close itself a
+        # second later, which threw away both the warnings and the one line
+        # saying where to look — hence a button, pressed once they are read.
+        path = project_config_path(self._name)
+        self._converted_to = path if path != self._path else None
+        headline = ""
+        if self._converted_to is not None:
+            headline = (f"wrote {self._converted_to}\n"
+                        "pitcrew reads that file now — “Open the YAML” to edit it here.\n\n")
+            if self._convert is not None:
+                self._convert.set_label("Open the YAML")
+                self._convert.set_tooltip_text(str(self._converted_to))
+                self._convert.add_css_class("suggested-action")
+        self._output.show_text(headline + (output or "converted"))
 
-    def _close_after_convert(self) -> bool:
+    def _open_converted(self) -> None:
+        # This dialog is bound to the .sh path it opened; the YAML is a
+        # different file, and one with a form tab the .sh cannot have. Reopening
+        # on it is honest, and cheaper than re-resolving every path this dialog
+        # holds.
         self.close()
-        return False
+        if self._on_converted is not None:
+            self._on_converted()
 
     def _check(self) -> None:
         problem = self._problem(self._text())

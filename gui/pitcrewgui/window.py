@@ -1162,7 +1162,14 @@ class Window(Adw.ApplicationWindow):
             self._toast(f"{name} config saved")
             if name == self._project:
                 self._restart_stream()
-        ConfigDialog(self._runner, name, saved).present(self)
+        def reopen() -> None:
+            # A .sh config that has just become a pitcrew.yaml is a different
+            # file with a form tab, so the editor opens again on whatever the
+            # config now is. Deferred: the dialog asking for this is still
+            # closing when it calls.
+            GLib.idle_add(lambda: self._edit_config(name) or False)
+
+        ConfigDialog(self._runner, name, saved, reopen).present(self)
 
     def _switch_to(self, name: str) -> None:
         self._project_action.activate(GLib.Variant.new_string(name))
