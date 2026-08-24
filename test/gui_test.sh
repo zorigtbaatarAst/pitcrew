@@ -136,6 +136,23 @@ def spin(ms):
     loop = GLib.MainLoop()
     GLib.timeout_add(ms, lambda: (loop.quit(), False)[1])
     loop.run()
+
+# The child that stands in for \`pitcrew json --watch\`, as THIS interpreter.
+#
+# It used to be /usr/bin/printf and /bin/sh. Both exist under MSYS2 — but the
+# python that has the GTK bindings there is a NATIVE Windows build, Stream
+# spawns through Gio.Subprocess, and CreateProcess cannot open a path spelled
+# like that. So every spawn failed, every assertion below ran against zero
+# frames, and two of the three still passed: '0 quiet 0' is what a stream that
+# was never started looks like as well. sys.executable is the one program
+# guaranteed to be startable by whoever is running these.
+def emits(text):                       # writes text, then exits
+    return [sys.executable, '-c', 'import sys; sys.stdout.write(%r)' % text]
+
+def emits_forever(line, every):        # ... and one that keeps going
+    return [sys.executable, '-c',
+            'import sys, time\nwhile True:\n'
+            '    sys.stdout.write(%r); sys.stdout.flush(); time.sleep(%r)' % (line, every)]
 $1
 "
 }
@@ -146,8 +163,8 @@ test_reader_stops_at_eof_instead_of_spinning() {
   # quiet; the broken one completed ~150000 times in the same window.
   local out; out=$(_drive "
 frames = []
-s = Counting('/usr/bin/printf', None, 1, frames.append, lambda e: None)
-s._argv = ['/usr/bin/printf', '{\"a\":1}\n{\"a\":2}\n']
+s = Counting(sys.executable, None, 1, frames.append, lambda e: None)
+s._argv = emits('{\"a\":1}\n{\"a\":2}\n')
 s.start(); spin(1500)
 print(len(frames), 'quiet' if s.reads < 20 else f'SPUN({s.reads})')
 ")
@@ -160,8 +177,8 @@ test_eof_is_not_reported_as_a_malformed_frame() {
   # banner with "malformed state" while the UI locked up.
   local out; out=$(_drive "
 errors = []
-s = Counting('/usr/bin/printf', None, 1, lambda f: None, errors.append)
-s._argv = ['/usr/bin/printf', '{\"a\":1}\n']
+s = Counting(sys.executable, None, 1, lambda f: None, errors.append)
+s._argv = emits('{\"a\":1}\n')
 s.start(); spin(1500)
 print(sum('malformed' in e for e in errors))
 ")
@@ -175,8 +192,8 @@ test_a_stopped_stream_goes_quiet_and_delivers_nothing() {
   # the reader; it does not merely kill the child.
   local out; out=$(_drive "
 frames, errors = [], []
-s = Counting('/bin/sh', None, 1, frames.append, errors.append)
-s._argv = ['/bin/sh', '-c', 'while :; do echo {}; sleep 0.05; done']
+s = Counting(sys.executable, None, 1, frames.append, errors.append)
+s._argv = emits_forever('{}\n', 0.05)
 s.start(); spin(300)
 s.stop()
 frames.clear(); after = s.reads
@@ -522,7 +539,11 @@ _py() { # $1 = python program → its stdout; its stderr onto the run's stderr
     printf '      \033[90mpython exited %d: %s\033[0m\n' "$rc" "$(tail -1 "$err")" >&2
   fi
   rm -f "$err"
-  printf '%s' "$out"
+  # no_cr because the interpreter with the bindings on Windows is a NATIVE
+  # build: it writes CRLF into this pipe, and every assertion below compares
+  # whole lines. See harness.sh. Every python in this file runs through here,
+  # so this is the one place it has to be said.
+  no_cr "$out"
 }
 
 test_settings_round_trip_through_the_house_file_format() {
@@ -857,8 +878,13 @@ test_the_cli_argv_names_an_interpreter_only_where_it_has_to() {
   # the path alone is executable. Windows has no shebang — CreateProcess on a
   # file starting with `#!` fails with "not a valid application", which from a
   # GUI with no console is a button that does nothing at all.
+  # Both branches are set explicitly, because ONE of these runs on the OS it is
+  # asking about: the Windows GUI job's interpreter really is Windows, so the
+  # off-Windows case inherited IS_WINDOWS=True and asserted the wrong branch
+  # against itself. What is under test is the function, not the runner.
   local out; out=$(_settings_drive "
 import pitcrewgui.platform as pf
+pf.IS_WINDOWS = False
 print(' '.join(pf.cli_argv('/home/me/.local/bin/pitcrew', ['status', '--json'])))
 pf.IS_WINDOWS = True
 pf.find_bash = lambda: 'C:/msys64/usr/bin/bash.exe'
@@ -1019,8 +1045,18 @@ import pathlib
 print(pgui.pitcrew_home() == pathlib.Path.home() / '.config' / 'pitcrew')
 ") )
   assert_eq "$out" "True" "same path the CLI uses, on every OS"
-  local out2; out2=$(PITCREW_HOME=/tmp/elsewhere _settings_drive "print(pgui.pitcrew_home())")
-  assert_eq "$out2" "/tmp/elsewhere" "and PITCREW_HOME still overrides it"
+  # Set in the interpreter, and compared as a Path rather than as a string.
+  # Both for the same reason: on the Windows job this crosses an MSYS boundary,
+  # which rewrites a POSIX-looking value in the environment it hands a native
+  # process (/tmp/elsewhere arrived as D:/a/_temp/msys64/tmp/elsewhere), and
+  # pathlib then spells the result back with backslashes. Neither is what this
+  # test is about — which is that the variable is READ at all.
+  local out2; out2=$(_settings_drive "
+import os, pathlib
+os.environ['PITCREW_HOME'] = '/tmp/elsewhere'
+print(pgui.pitcrew_home() == pathlib.Path('/tmp/elsewhere'))
+")
+  assert_eq "$out2" "True" "and PITCREW_HOME still overrides it"
 }
 
 test_config_validation_uses_a_bash_pitcrew_would_accept() {
@@ -1147,8 +1183,14 @@ test_nothing_shells_out_on_windows_without_suppressing_the_console() {
   # python answers yes to "behaves like Windows" and raises ValueError on
   # creationflags, being a Cygwin-style POSIX build — which would break the
   # launcher on the one interpreter whose only job is to find a better one.
+  #
+  # Every case sets _TAKES_CREATIONFLAGS itself. On the Windows GUI job this
+  # module is imported by an interpreter for which it is genuinely True, so
+  # leaving it alone asked the host what it is rather than asking the function
+  # what it does — and the first two cases failed on the OS they are about.
   local out; out=$(_settings_drive "
 import pitcrewgui.platform as pf
+pf.IS_WINDOWS, pf._TAKES_CREATIONFLAGS = False, False
 print(pf.no_window_kwargs() == {})
 pf.IS_WINDOWS = True
 print(pf.no_window_kwargs() == {})
@@ -1217,7 +1259,7 @@ import pitcrewgui.dialogs as dialogs
 SAMPLE = pathlib.Path('$(py_path "$SAMPLE_YAML")')
 dialogs.project_config_path = lambda name: SAMPLE
 dialog = dialogs.ConfigDialog(pgui.Runner('$PITCREW_DIR_PY/bin/pitcrew'), 'demo', lambda: None)
-# cli_argv, not a bare path: on Windows `bin/pitcrew` is a bash script that
+# cli_argv, not a bare path: on Windows bin/pitcrew is a bash script that
 # nothing will execute directly, and naming the interpreter is exactly what
 # that function is for — the app is not allowed to build an argv by hand
 # here either.

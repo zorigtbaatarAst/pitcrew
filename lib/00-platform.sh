@@ -152,6 +152,12 @@ port_pid() {
 # one becomes the other — and nowhere else.
 pf_pid_native() { NATIVE_PID=$1; }
 
+# Parent→child links the process table does not contain, added to the map the
+# portable collector just built (see _snapshot_ps). Nothing to add anywhere but
+# Windows, where a POSIX tree and the Windows one are genuinely two different
+# shapes — see _pf_win_msys_kids.
+pf_extra_kids() { :; }
+
 # ── process trees ───────────────────────────────────────────────────────────
 # Only the stop path uses these — the dashboard walks trees inside the snapshot
 # collector, without forking. `pgrep -P` means the same thing on Linux and BSD.
@@ -450,10 +456,59 @@ _netstat_port_pid_parse() { # $1 = port; netstat -ano on stdin -> owning pid
 # read, no fork — so pidfiles keep holding MSYS pids (which is what `kill` and
 # kill_tree need) and the translation happens only where a native tool is on
 # the other end.
+_pf_read_winpid() { # $1 msys pid -> WINPID, or "" when there is no mapping
+  WINPID=""
+  [ -r "/proc/$1/winpid" ] && read -r WINPID < "/proc/$1/winpid" 2>/dev/null
+  case "$WINPID" in *[!0-9]*) WINPID="" ;; esac
+}
+
 pf_winpid() { # $1 msys pid -> WINPID, or the input unchanged if unmappable
-  local w=""
-  [ -r "/proc/$1/winpid" ] && read -r w < "/proc/$1/winpid" 2>/dev/null
-  case "$w" in ''|*[!0-9]*) WINPID=$1 ;; *) WINPID=$w ;; esac
+  _pf_read_winpid "$1"
+  [ -n "$WINPID" ] || WINPID=$1
+}
+
+# The POSIX process tree, which the WINDOWS process table does not contain.
+#
+# Cygwin (and so MSYS2, and so Git Bash) has no exec: it implements one by
+# creating a NEW Windows process for the program being exec'd. So a child that
+# forks and then execs leaves the Windows table saying its parent is a process
+# that has already gone, and the link back to the real parent is lost.
+#
+# That is not a corner case here — it is every service pitcrew starts.
+# launch_process wraps each one in a subshell that runs `bash -c <cmd>`, and
+# the pidfile holds the wrapper. Walking the Windows table alone found the
+# wrapper and nothing beneath it, so every component on Windows reported the
+# wrapper's few MB and none of the JVM or node process actually doing the work.
+#
+# MSYS keeps the answer in its own /proc, where ppid and winpid are both plain
+# one-line reads — so this costs no fork, only the builtin reads, and only for
+# the handful of MSYS processes on the box.
+#
+# The link is ADDED to what the Windows table said rather than replacing it: a
+# native child of a native process — a JVM's own workers — is only in that one.
+
+# Adding one link, split out because it is the half of this that can be checked
+# on a machine with no /proc/<pid>/winpid to read (test/snapshot_test.sh).
+_pf_kid_link() { # $1 child pid, $2 parent pid — as the process table spells them
+  [ "$1" != "$2" ] || return 0                 # a self-link is a walk that never ends
+  case " ${_PS_KIDS[$2]:-} " in *" $1 "*) return 0 ;; esac
+  _PS_KIDS[$2]+="$1 "
+}
+
+# And reading them, which needs the real thing.
+_pf_win_msys_kids() {
+  local d pid ppid child parent
+  for d in /proc/[0-9]*; do
+    pid=${d#/proc/}
+    [ -r "$d/ppid" ] || continue
+    read -r ppid < "$d/ppid" 2>/dev/null
+    case "$ppid" in ''|0|*[!0-9]*) continue ;; esac
+    # Both ends must really map. pf_winpid falls back to the pid it was given,
+    # and an MSYS pid used as a Windows one is some unrelated process.
+    _pf_read_winpid "$pid";  child=$WINPID;  [ -n "$child" ]  || continue
+    _pf_read_winpid "$ppid"; parent=$WINPID; [ -n "$parent" ] || continue
+    _pf_kid_link "$child" "$parent"
+  done
 }
 
 _pf_windows_init() {
@@ -468,6 +523,7 @@ _pf_windows_init() {
   [ -n "$PITCREW_WIN_PS_SOURCE" ] && PITCREW_PS=(pf_ps_win)
 
   pf_pid_native() { pf_winpid "$1"; NATIVE_PID=$WINPID; }
+  pf_extra_kids() { _pf_win_msys_kids; }
   pf_listening() { netstat -ano 2>/dev/null | tr -d '\r' | _netstat_listening_parse; }
   port_pid() { netstat -ano 2>/dev/null | tr -d '\r' | _netstat_port_pid_parse "$1"; }
 

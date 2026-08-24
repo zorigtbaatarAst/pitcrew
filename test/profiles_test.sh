@@ -197,12 +197,14 @@ test_the_stream_carries_what_a_profile_covers() {
   _clear
   _profile core both
   _profile rotted ghost-app
-  local out; out=$(cmd_json | python3 -c '
+  # no_cr: the assertion below anchors on a line boundary, and a native Windows
+  # python writes CRLF into this pipe. See harness.sh.
+  local out; out=$(no_cr "$(cmd_json | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 for p in sorted(d["profiles"], key=lambda x: x["name"]):
     print(p["name"], p["total"], p["up"], ",".join(p["components"]), ",".join(p["missing"]))
-')
+')")
   assert_match "$out" $'(^|\n)core 2 0 be-both,fe-both (\n|$)' "resolved, counted, and named"
   assert_match "$out" 'rotted 0 0  ghost-app' "and a rotted one says which word died"
   _clear

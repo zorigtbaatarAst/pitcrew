@@ -368,6 +368,10 @@ _snapshot_ps() {
     # narrow column for it, so show what the Linux path shows.
     comm[$pid]=${cm##*/}
   done < <("${PITCREW_PS[@]}" -e -o pid=,ppid=,rss=,time=,etime=,comm= 2>/dev/null)
+  # Links the process table itself cannot express. A no-op everywhere but
+  # Windows, where the table records who Windows created a process from and
+  # that is not who its POSIX parent is — see _pf_win_msys_kids.
+  pf_extra_kids
 
   local c p rss_sum cs_sum d npid
   for c in "${PITCREW_COMPS[@]}"; do
@@ -439,8 +443,15 @@ _snapshot_ps() {
 }
 
 # tree walk over the ps-derived children map (fallback path only)
+#
+# The visited check is not defensive programming for its own sake: this map has
+# two sources on Windows (the process table and MSYS's /proc, see
+# pf_extra_kids), and a pid recycled between them — or a stale ppid pointing at
+# a recycled pid — is a cycle. Without the check that is not a wrong number, it
+# is a dashboard that never draws another frame.
 _walk_ps_tree() {
   local pid=$1 k
+  case " ${_TREE[*]} " in *" $pid "*) return 0 ;; esac
   _TREE+=("$pid")
   for k in ${_PS_KIDS[$pid]:-}; do _walk_ps_tree "$k"; done
 }

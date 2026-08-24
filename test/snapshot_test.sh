@@ -250,4 +250,43 @@ test_saving_never_overwrites_history_with_nothing() {
   _idle_cleanup
 }
 
+# ── the children map the portable collector walks ───────────────────────────
+#
+# On Windows that map has TWO sources — the process table, and the POSIX tree
+# MSYS publishes in its own /proc, which the Windows one cannot express (see
+# pf_extra_kids). Neither the reading nor the merging can be exercised on a
+# machine without /proc/<pid>/winpid, so the half that can be — what a link
+# does to the map, and what the walk does with a bad one — is pinned here.
+
+test_a_link_is_added_once_and_never_to_itself() {
+  _PS_KIDS=([100]="101 ")
+  _pf_kid_link 101 100                  # already known from the process table
+  _pf_kid_link 102 100                  # only MSYS knows this one
+  _pf_kid_link 100 100                  # a pid that is its own parent
+  assert_eq "${_PS_KIDS[100]}" "101 102 " "the new child, and no duplicate"
+  assert_empty "${_PS_KIDS[102]:-}" "and nothing invented for a leaf"
+}
+
+test_a_cycle_in_the_children_map_does_not_hang_the_frame() {
+  # Two sources means a pid recycled between them can have A under B while B is
+  # under A. Unguarded that is not a wrong number on screen, it is a dashboard
+  # that never draws another frame — so the walk has to survive it rather than
+  # trust the map it was handed.
+  _PS_KIDS=([10]="11 " [11]="12 " [12]="10 ")
+  _TREE=(); _walk_ps_tree 10
+  assert_eq "${_TREE[*]}" "10 11 12" "every pid once, and the walk returns"
+}
+
+test_nothing_is_added_to_the_map_off_windows() {
+  # pf_extra_kids is a hook, and a hook that quietly did something on Linux
+  # would be a fork budget and a process tree nobody went looking for.
+  # On Windows it is SUPPOSED to add links, and this box's own MSYS processes
+  # are what it would add — so there the question is a different one.
+  [ "$PITCREW_OS" = windows ] && return 0
+  _PS_KIDS=([200]="201 ")
+  pf_extra_kids
+  assert_eq "${_PS_KIDS[200]}" "201 " "the map is exactly what ps said"
+  assert_eq "${#_PS_KIDS[@]}" "1" "and no other parent gained one"
+}
+
 run_tests

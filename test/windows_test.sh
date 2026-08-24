@@ -385,10 +385,18 @@ test_a_wrapper_script_counts_as_runnable_on_windows() {
                  pf_runnable '$d/gradlew' && echo yes || echo no")
   assert_eq "$out" "yes" "on Windows, existing is runnable"
 
-  out=$(bash -c ". '$_ROOT/lib/00-platform.sh' 2>/dev/null
-                 PITCREW_OS=linux
-                 pf_runnable '$d/gradlew' && echo yes || echo no")
-  assert_eq "$out" "no" "and elsewhere the bit still has to be set"
+  # The other half only means something on a filesystem that HAS an execute
+  # bit — so it is asked only where the chmod above actually took. Under MSYS
+  # it does not: bash synthesises the bit from the file's first two bytes, so
+  # `[ -x gradlew ]` is true again the moment it starts with `#!`, which is the
+  # whole reason the windows branch exists. Asserting it there would be
+  # asserting that MSYS is Linux.
+  if [ ! -x "$d/gradlew" ]; then
+    out=$(bash -c ". '$_ROOT/lib/00-platform.sh' 2>/dev/null
+                   PITCREW_OS=linux
+                   pf_runnable '$d/gradlew' && echo yes || echo no")
+    assert_eq "$out" "no" "and elsewhere the bit still has to be set"
+  fi
 
   out=$(bash -c ". '$_ROOT/lib/00-platform.sh' 2>/dev/null
                  PITCREW_OS=windows

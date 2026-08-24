@@ -152,8 +152,20 @@ test_json_watch_emits_one_object_per_line() {
   command -v python3 >/dev/null 2>&1 || return 0
   # Two frames is enough to prove it is a stream of whole objects and not one
   # pretty-printed blob a line reader would choke on.
-  local out; out=$( ( cmd_json_watch --interval 1 & sleep 2.5; kill %1 2>/dev/null ) 2>/dev/null | head -2 )
-  local n; n=$(printf '%s\n' "$out" | python3 -c '
+  #
+  # Waited for, not slept through. A frame costs one process-table call, and on
+  # Windows that is a PowerShell start of a few hundred milliseconds on top of
+  # the interval — so on a loaded runner the second frame landed after the
+  # fixed 2.5s window this used to allow, and a slow machine reported itself as
+  # a malformed stream. The cap is generous because it only has to be reached
+  # when something is genuinely wrong.
+  local f; f=$(temp_file .ndjson)
+  : > "$f"
+  ( cmd_json_watch --interval 1 > "$f" 2>/dev/null &
+    local i=0
+    while [ "$i" -lt 60 ] && [ "$(grep -c . "$f")" -lt 2 ]; do sleep 0.25; i=$((i + 1)); done
+    kill %1 2>/dev/null ) 2>/dev/null
+  local n; n=$(head -2 "$f" | python3 -c '
 import json,sys
 n=0
 for line in sys.stdin:

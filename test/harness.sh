@@ -88,6 +88,19 @@ assert_empty() { [ -z "$1" ] || _t_bad "${2:-value}: expected empty, got [$1]"; 
 # strip SGR colour so assertions compare text, not escape codes
 plain() { printf '%s' "$1" | sed -e $'s/\x1b\\[[0-9;]*m//g'; }
 
+# Drop carriage returns from a program's output.
+#
+# For python in particular. A native Windows interpreter writes text-mode
+# stdout with CRLF line endings even into a pipe, so `tr '\n' ' '` on its
+# output leaves a \r on every field and an assertion anchored on (^|\n) never
+# matches the line it is looking at. The failure reads as a value that is
+# character-for-character the expected one, which is the worst kind.
+#
+# This is about the PIPE, not about the text: no assertion in this suite is
+# about a carriage return that a program deliberately emitted (the progress-bar
+# ones go through repr()), so there is nothing here to lose.
+no_cr() { printf '%s' "$1" | tr -d '\r'; }
+
 # Every distinct CHARACTER in $1, once each, in UNIQ_CHARS.
 #
 # In bash rather than `fold -w1 | sort -u`, because GNU fold counts BYTES

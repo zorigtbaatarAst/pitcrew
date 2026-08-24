@@ -11,6 +11,19 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Fixed
+- **On Windows every component measured the wrapper and nothing under it.**
+  Cygwin — and so MSYS2, and so Git Bash — has no `exec`: it implements one by
+  creating a *new* Windows process for the program being run. The Windows
+  process table therefore records who Windows created a process from, which
+  after a fork-and-exec is a process that has already gone, and the link back
+  to the real parent is lost. That is not a corner case: `launch_process`
+  wraps every service in a subshell that runs `bash -c <cmd>`, and the pidfile
+  holds the wrapper — so the tree walk found the wrapper's few MB and stopped,
+  and a JVM or a node dev server showed up as a rounding error while the RAM
+  meter said the machine was empty. The collector now also reads the POSIX
+  tree MSYS publishes in its own `/proc` and adds the links the Windows table
+  cannot express, at the cost of a few builtin reads and no forks. Linux and
+  macOS are untouched: there a pid is a pid and the hook does nothing.
 - **A component could get stuck on "crashed" and refuse to start again.**
   `systemd-run --unit X` refuses outright while a unit called X is still
   loaded — *"Failed to start transient scope unit: Unit X.scope was already
