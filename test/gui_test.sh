@@ -17,6 +17,10 @@ set -u
 source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
 
 GUI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/gui"
+# The same directory, spelled for the interpreter rather than for the shell —
+# on Windows those are two different things (see py_path in harness.sh).
+GUI_DIR_PY=$(py_path "$GUI_DIR")
+PITCREW_DIR_PY=$(py_path "$PITCREW_DIR")
 
 # The GTK bindings live in the system python, which is what the app shebangs
 # into — not whatever `python3` resolves to on $PATH (a Homebrew or pyenv
@@ -48,7 +52,7 @@ GUI_IMPORT_ERR=""
 if [ -n "$PY_WITH_GI" ] && [ -d "$GUI_DIR/pitcrewgui" ]; then
   GUI_IMPORT_ERR=$("$PY_WITH_GI" -c "
 import sys
-sys.path.insert(0, '$GUI_DIR')
+sys.path.insert(0, '$GUI_DIR_PY')
 import gi
 gi.require_version('Gtk', '4.0')
 import pitcrewgui.window, pitcrewgui.app, pitcrewgui.widgets
@@ -86,7 +90,7 @@ gui_display() {
 # module a name ended up in.
 _PRELUDE="
 import importlib, sys, types
-sys.path.insert(0, '$GUI_DIR')
+sys.path.insert(0, '$GUI_DIR_PY')
 pgui = types.SimpleNamespace()
 for _name in ('platform', 'model', 'registry', 'settings', 'runner', 'widgets',
               'dialogs', 'window', 'app'):
@@ -308,7 +312,7 @@ from gi.repository import Adw, GLib
 $_PRELUDE
 Adw.init()
 LogView = pgui.LogView
-d = pathlib.Path('$1')
+d = pathlib.Path('$(py_path "$1")')
 d.mkdir(parents=True, exist_ok=True)
 COMPS = [{'name': 'be-api', 'role': 'be', 'app': 'api'}]
 
@@ -525,7 +529,7 @@ test_settings_round_trip_through_the_house_file_format() {
   gui_available || return 0
   local dir; dir=$(mktemp -d)
   local out; out=$(_settings_drive "
-path = pathlib.Path('$dir/gui')
+path = pathlib.Path('$(py_path "$dir")/gui')
 s = Settings(path)
 s['group'] = 'role'; s['interval'] = 9
 print(s.save())
@@ -547,7 +551,7 @@ test_a_hand_edited_setting_falls_back_instead_of_crashing() {
   local dir; dir=$(mktemp -d)
   printf 'group=sideways\ninterval=nine\nhistory=99999\nbogus=1\n' > "$dir/gui"
   local out; out=$(_settings_drive "
-s = Settings(pathlib.Path('$dir/gui'))
+s = Settings(pathlib.Path('$(py_path "$dir")/gui'))
 print(s['group'], s['interval'], s['history'])
 ")
   rm -rf "$dir"
@@ -559,7 +563,7 @@ test_env_overrides_the_saved_file() {
   local dir; dir=$(mktemp -d)
   printf 'group=flat\n' > "$dir/gui"
   local out; out=$(PITCREW_GUI_GROUP=role _settings_drive "
-print(Settings(pathlib.Path('$dir/gui'))['group'])
+print(Settings(pathlib.Path('$(py_path "$dir")/gui'))['group'])
 ")
   rm -rf "$dir"
   assert_eq "$out" "role" "PITCREW_GUI_* beats the file, like PITCREW_GRAPH does"
@@ -893,21 +897,25 @@ test_the_config_editor_follows_the_source_indirection() {
   # reads, so the GUI has to open the file with the content in it.
   local home repo; home=$(mktemp -d); repo=$(mktemp -d)
   mkdir -p "$home/projects"
+  # Written, read back and compared in PYTHON's spelling of a path throughout —
+  # on Windows the interpreter's is not the shell's, and a test that mixed the
+  # two would be asserting about the difference rather than about the app.
+  local home_py repo_py; home_py=$(py_path "$home"); repo_py=$(py_path "$repo")
   # $PITCREW_ROOT stays literal on purpose — that is what init writes into the stub.
   # shellcheck disable=SC2016
-  printf 'PITCREW_ROOT=%s\nsource "$PITCREW_ROOT/pitcrew.config.sh"\n' "$repo" > "$home/projects/stub.sh"
+  printf 'PITCREW_ROOT=%s\nsource "$PITCREW_ROOT/pitcrew.config.sh"\n' "$repo_py" > "$home/projects/stub.sh"
   printf 'PITCREW_APPS=(a)\n' > "$repo/pitcrew.config.sh"
-  printf 'PITCREW_ROOT=%s\nPITCREW_APPS=(a)\n' "$repo" > "$home/projects/own.sh"
+  printf 'PITCREW_ROOT=%s\nPITCREW_APPS=(a)\n' "$repo_py" > "$home/projects/own.sh"
 
-  local out; out=$(PITCREW_HOME=$home _settings_drive "
+  local out; out=$(PITCREW_HOME=$home_py _settings_drive "
 print(pgui.project_config_path('stub'))
 print(pgui.project_config_path('own'))
 print(pgui.declared_root(pgui.project_file('own')))
 print(' '.join(pgui.known_projects()))
 ")
-  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "$repo/pitcrew.config.sh" "stub resolves into the repo"
-  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "$home/projects/own.sh" "a self-contained entry is edited in place"
-  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "$repo" "PITCREW_ROOT is read without sourcing"
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "$repo_py/pitcrew.config.sh" "stub resolves into the repo"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "$home_py/projects/own.sh" "a self-contained entry is edited in place"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "$repo_py" "PITCREW_ROOT is read without sourcing"
   assert_eq "$(printf '%s' "$out" | sed -n 4p)" "own stub" "the registry lists both"
   rm -rf "$home" "$repo"
 }
@@ -919,19 +927,20 @@ test_the_config_editor_follows_the_include_indirection_too() {
   # the repo's file rather than the two-line stub.
   local home repo; home=$(mktemp -d); repo=$(mktemp -d)
   mkdir -p "$home/projects"
-  printf 'root: %s\ninclude: pitcrew.yaml\n' "$repo" > "$home/projects/ystub.yaml"
+  local home_py repo_py; home_py=$(py_path "$home"); repo_py=$(py_path "$repo")
+  printf 'root: %s\ninclude: pitcrew.yaml\n' "$repo_py" > "$home/projects/ystub.yaml"
   printf 'name: shipped\napps:\n  a:\n    be:\n      cmd: "true"\n' > "$repo/pitcrew.yaml"
-  printf 'root: %s\nname: own\n' "$repo" > "$home/projects/yown.yaml"
+  printf 'root: %s\nname: own\n' "$repo_py" > "$home/projects/yown.yaml"
 
-  local out; out=$(PITCREW_HOME=$home _settings_drive "
+  local out; out=$(PITCREW_HOME=$home_py _settings_drive "
 print(pgui.project_config_path('ystub'))
 print(pgui.project_config_path('yown'))
 print(pgui.declared_root(pgui.project_file('yown')))
 print(' '.join(pgui.known_projects()))
 ")
-  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "$repo/pitcrew.yaml" "stub resolves into the repo"
-  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "$home/projects/yown.yaml" "a self-contained entry is edited in place"
-  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "$repo" "root: is read without loading the config"
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "$repo_py/pitcrew.yaml" "stub resolves into the repo"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "$home_py/projects/yown.yaml" "a self-contained entry is edited in place"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "$repo_py" "root: is read without loading the config"
   assert_eq "$(printf '%s' "$out" | sed -n 4p)" "yown ystub" "the registry lists both"
   rm -rf "$home" "$repo"
 }
@@ -1205,11 +1214,16 @@ $_PRELUDE
 Adw.init()
 import pitcrewgui.dialogs as dialogs
 
-SAMPLE = pathlib.Path('$SAMPLE_YAML')
+SAMPLE = pathlib.Path('$(py_path "$SAMPLE_YAML")')
 dialogs.project_config_path = lambda name: SAMPLE
-dialog = dialogs.ConfigDialog(pgui.Runner('$PITCREW_DIR/bin/pitcrew'), 'demo', lambda: None)
+dialog = dialogs.ConfigDialog(pgui.Runner('$PITCREW_DIR_PY/bin/pitcrew'), 'demo', lambda: None)
+# cli_argv, not a bare path: on Windows `bin/pitcrew` is a bash script that
+# nothing will execute directly, and naming the interpreter is exactly what
+# that function is for — the app is not allowed to build an argv by hand
+# here either.
 state = json.loads(subprocess.run(
-    ['$PITCREW_DIR/bin/pitcrew', '-C', '$PITCREW_DIR/test/fixture-yaml', 'config', '--json'],
+    pgui.cli_argv('$PITCREW_DIR_PY/bin/pitcrew',
+                  ['-C', '$PITCREW_DIR_PY/test/fixture-yaml', 'config', '--json']),
     capture_output=True, text=True).stdout)
 dialog._form_ready(state, '')
 
@@ -1226,7 +1240,7 @@ test_the_form_is_built_from_what_pitcrew_reads_not_from_a_second_parser() {
   # parser in the GUI would sooner or later accept a file the tool rejects, or
   # silently misread one and save it back — so every value on the form arrives
   # over `pitcrew config --json`.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   cp "$PITCREW_DIR/test/fixture-yaml/pitcrew.yaml" "$SAMPLE_YAML"
   local out; out=$(_config_form "
 paths = sorted('.'.join(p) for p in dialog._rows)
@@ -1241,7 +1255,7 @@ print('apps.both.be.cmd' in paths, 'apps.both.be.root' in paths, 'apps.both.fe.p
 
 test_editing_a_field_changes_one_line_and_leaves_the_comments() {
   gui_available || return 0
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' '# a note somebody left' 'apps:' '  a:' '    be:' \
     '      cmd: "true"    # and another' '      port: 1' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
@@ -1262,7 +1276,7 @@ test_the_form_never_writes_a_config_the_tool_cannot_load() {
   gui_available || return 0
   # Saving a config pitcrew cannot parse breaks every command for that project,
   # including the one that would tell you why.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 dialog._buffer.set_text('apps:\n  a:\n   \tbroken indent\n')
@@ -1278,7 +1292,7 @@ test_switching_a_component_off_writes_the_exclusion_and_switching_it_on_removes_
   gui_available || return 0
   # `enabled: true` is the default, so turning it back on should leave the file
   # as it was rather than adding a line that says nothing.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 class Fake:
@@ -1296,7 +1310,7 @@ print('enabled' in text())
 
 test_a_new_role_can_be_added_to_a_group_from_the_form() {
   gui_available || return 0
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 dialog._do_add_component('a', 'worker')
@@ -1317,7 +1331,7 @@ test_a_command_with_an_ampersand_in_it_is_still_shown() {
   # start command has `&&` in it. `&&` is not an entity, so the markup failed
   # to parse and the line rendered as nothing — the component row that says
   # what a component runs was blank for exactly the commands worth reading.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 cmd = '{ [ -d node_modules ] || npm install; } && npm run dev'
@@ -1335,7 +1349,7 @@ test_adding_an_app_offers_what_pitcrew_found_in_the_checkout() {
   # the gradle task, the port, the health path — to be typed by hand for a
   # project pitcrew can read perfectly well. The list comes from
   # `pitcrew detect --json`, which is the same guess `init` makes.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  frontend:' '    fe:' '      cmd: "npm run dev"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 found = {'schema': 1, 'root': '/checkout', 'deps': [], 'apps': [
@@ -1370,7 +1384,7 @@ test_a_project_pitcrew_cannot_read_still_gets_an_empty_app() {
   # Plenty of projects are started by a command no detector could guess. That
   # is not a failure — it just means the empty app is the only thing left to
   # offer, and it has to still be offered.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 asked = []
@@ -1395,7 +1409,7 @@ test_a_bash_config_is_offered_a_way_out_of_being_bash() {
   # touch: six apps built from a `for` loop over a `declare -A` of ports. The
   # offer to convert belongs where the problem is, so it sits in that dialog's
   # header and nowhere else.
-  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  SAMPLE_YAML=$(temp_file .sh)
   printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 def labels(widget, found):
@@ -1415,7 +1429,7 @@ print(sorted(found))
 
   # And a YAML one is not — there is nothing to convert.
   local yaml_out
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   yaml_out=$(_config_form "
 def labels(widget, found):
@@ -1443,7 +1457,7 @@ test_the_config_is_edited_as_the_language_it_is_written_in() {
   # languages that used to look identical. Where it is NOT installed the plain
   # view is still there: the typelib is one more package on seven package
   # managers, and an install without it has to keep opening configs.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 from pitcrewgui import widgets
@@ -1460,7 +1474,7 @@ print('apps:' in text())
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "and the file is still the file"
   rm -f "$SAMPLE_YAML"
 
-  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  SAMPLE_YAML=$(temp_file .sh)
   printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
   local sh_out; sh_out=$(_config_form "
 from pitcrewgui import widgets
@@ -1475,7 +1489,7 @@ test_the_editor_never_indents_a_config_with_a_tab() {
   # pitcrew's YAML loader REJECTS a tab used for indentation, so an editor that
   # inserted one on Tab would write a file the tool then refuses — from a
   # keystroke nobody thinks about.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 from pitcrewgui import widgets
@@ -1495,7 +1509,7 @@ test_the_output_panel_shares_the_height_and_can_be_dragged() {
   # editor and the output split the height with a handle between them — and
   # neither half can be dragged onto nothing, because a panel you can lose is
   # a panel somebody will lose.
-  SAMPLE_YAML=$(mktemp --suffix=.yaml)
+  SAMPLE_YAML=$(temp_file .yaml)
   printf '%s\n' 'apps:' '  a:' '    be:' '      cmd: "true"' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 body = dialog.get_child().get_content()
@@ -1520,7 +1534,7 @@ test_a_conversion_says_where_the_file_went_and_waits_to_be_read() {
   # the warnings about what YAML cannot carry and the one line saying where the
   # file went — so the app looked like it had done nothing at all. The same
   # button becomes the way on, pressed once that has been read.
-  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  SAMPLE_YAML=$(temp_file .sh)
   printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 import pathlib
@@ -1544,7 +1558,7 @@ dialog._convert_clicked()
 
 test_a_failed_conversion_leaves_the_button_where_it_was() {
   gui_available || return 0
-  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  SAMPLE_YAML=$(temp_file .sh)
   printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 dialog._converted(False, 'the generated YAML does not mean the same thing')
@@ -1563,7 +1577,7 @@ test_a_bash_config_is_offered_as_text_and_not_as_a_form() {
   # A pitcrew.config.sh is a sourced shell script that may branch, loop or
   # source something else. There is no form for that, and one that could not
   # round-trip it would quietly drop what it did not understand.
-  SAMPLE_YAML=$(mktemp --suffix=.sh)
+  SAMPLE_YAML=$(temp_file .sh)
   printf '%s\n' 'PITCREW_APPS=(a)' 'PITCREW_BE_CMD[a]=true' > "$SAMPLE_YAML"
   local out; out=$(_config_form "
 print(dialog._is_yaml)
@@ -2232,7 +2246,7 @@ test_a_module_that_does_not_import_says_why() {
   local out
   out=$("$PY_WITH_GI" -c "
 import importlib, sys
-sys.path.insert(0, '$GUI_DIR')
+sys.path.insert(0, '$GUI_DIR_PY')
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
@@ -2521,6 +2535,13 @@ test_a_theme_picked_elsewhere_reaches_an_open_window() {
 import tempfile
 from gi.repository import Adw, GLib
 Adw.init()
+# The value a palette entry ENDS UP with depends on whether the desktop is
+# dark: a dark palette is darkened to stay legible on a light one (see
+# theme.legible, and the test for it below). A CI runner has no desktop
+# preference at all and counts as light, so asserting a raw theme colour here
+# was really asserting what the machine's chrome happened to be. This test is
+# about the file reaching the window, so the other variable is pinned.
+Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 settings = pgui.Settings(path=pathlib.Path(tempfile.mktemp()))
 win = pgui.Window('/bin/true', None, settings)
 before = win._theme_name

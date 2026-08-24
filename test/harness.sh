@@ -123,6 +123,37 @@ run_tests() {
   [ "$_T_FAIL" -eq 0 ]
 }
 
+# ── portability of the harness itself ───────────────────────────────────────
+#
+# Two things the suite kept getting wrong about other people's machines, both
+# of which failed as a dozen unrelated assertions rather than as one message.
+
+# `mktemp --suffix` is GNU-only. BSD mktemp (macOS) rejects the flag, so the
+# command failed, the variable came back EMPTY, and every test that wrote a
+# sample config wrote it to nowhere — then asserted about a file that was never
+# there. One directory per test file, so nothing is left behind but an empty
+# one.
+TEST_TMP=$(mktemp -d)
+_TEST_TMP_N=0
+temp_file() { # $1 = suffix, e.g. .yaml → a path in this run's temp dir
+  _TEST_TMP_N=$((_TEST_TMP_N + 1))
+  printf '%s/sample%d%s' "$TEST_TMP" "$_TEST_TMP_N" "$1"
+}
+
+# A path as this machine's PYTHON understands it. On Windows the interpreter
+# that has the GTK bindings is a NATIVE build — MSYS2's ucrt64 python — and it
+# cannot resolve `/d/a/pitcrew/gui`. MSYS2 rewrites paths it sees in a program's
+# ARGUMENTS, but not ones sitting inside a `python -c` script, which is where
+# every one of these lives: the GUI suite put its own directory on sys.path
+# that way, the import failed, and all 107 tests behind that guard skipped
+# themselves on every Windows run.
+#
+# `cygpath -m` spells it `D:/a/pitcrew/gui` — forward slashes, so it is also
+# safe inside a single-quoted Python string. Everywhere else this is identity.
+py_path() { # $1 path → the same path, spelled for python
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
 # ── loading pitcrew itself ──────────────────────────────────────────────────
 # Mirrors bin/pitcrew's load sequence. The config MUST be sourced at the top
 # level (not inside a function) for the same reason bin/pitcrew does it there:

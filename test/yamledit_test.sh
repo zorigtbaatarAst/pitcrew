@@ -18,7 +18,7 @@
 set -u
 source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
 
-GUI_DIR="$PITCREW_DIR/gui"
+GUI_DIR=$(py_path "$PITCREW_DIR/gui")
 PY=$(command -v python3) || PY=""
 
 _edit() { # $1 = python body, with Y bound to the module and T to the sample
