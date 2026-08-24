@@ -1174,7 +1174,7 @@ Everything the CLI does, apart from the things a window genuinely cannot host:
 | Profiles | on the Overview with live counts, **Alt+1…9**, save what is running, delete |
 | Projects | add, switch, edit config, forget |
 | Ports · plugins · shells | one **Tools** dialog |
-| Logs | live tail, filter, errors-only |
+| Logs | live tail, filter, errors-only, and any of them in its own window |
 
 Terminal-only by nature: `pitcrew render` (it styles the terminal dashboard's
 graphs), the `menu`, and actually *running* a `shell` — a GTK window cannot
@@ -1353,6 +1353,14 @@ GUI is a renderer plus start/stop/restart buttons.
   **Start everything**, **Stop everything**, and your saved **Profiles**
 - the log view has a **filter box** and an **errors-only** toggle, both of
   which work on a live tail
+- **any log can be pulled out into its own window** — the ⧉ button on a
+  component row, or the one in the Logs toolbar for whatever is selected. It is
+  the same view, fed the same frames, so it keeps following live; a log is
+  something you read *while* restarting the thing that writes it or editing the
+  config that starts it, and in one tab of one window it is the only thing you
+  can be looking at. One window per component (asking twice raises the one you
+  have), and they close when you switch project, because a detached log belongs
+  to the project it came from
 - **zen mode** (`Ctrl+Z`, or the menu) — the same idea as the terminal's `z`,
   and the same layout change. Healthy components, dependencies that are up, the
   machine meters and the consumer ranking all go; the verdict, the findings and

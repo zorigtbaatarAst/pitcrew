@@ -16,7 +16,7 @@ from .dialogs import (
     ProfilesDialog,
     ToolsDialog,
 )
-from .logview import LogView
+from .logview import LogView, LogWindow
 from .model import (
     RAMP,
     SERIES_COLORS,
@@ -176,6 +176,11 @@ class Window(Adw.ApplicationWindow):
         self._live_findings: list[dict] = []
         self._last_components: list[dict] = []
         self._last_log_dir: str | None = None
+        self._last_pattern: str | None = None
+        # Detached logs. Keyed by component so asking for the same one twice
+        # raises the window you already have rather than stacking a second copy
+        # of it on top.
+        self._log_windows: dict[str, LogWindow] = {}
         self._last_profiles: list[dict] = []
         self._shells: list[str] = []
         self._detail: object | None = None
@@ -1030,7 +1035,7 @@ class Window(Adw.ApplicationWindow):
         return scroller
 
     def _build_logs(self) -> Gtk.Widget:
-        self._logs = LogView(self._toast)
+        self._logs = LogView(self._toast, on_detach=self._open_log_window)
         return self._logs
 
     def _build_projects(self) -> Gtk.Widget:
@@ -1326,6 +1331,28 @@ class Window(Adw.ApplicationWindow):
         self._stack.set_visible_child_name("logs")
         self._logs.show_component(name, errors_only)
 
+    def _open_log_window(self, name: str) -> None:
+        """This component's log, in a window of its own, live from now on."""
+        existing = self._log_windows.get(name)
+        if existing is not None:
+            existing.present()
+            return
+        window = LogWindow(self.get_application(), self._project or "pitcrew",
+                           name, self._log_window_closed, self._toast)
+        self._log_windows[name] = window
+        # The frame it missed. Without this the window sits empty until the
+        # next sample, which at a 3-second interval reads as broken.
+        if self._last_components:
+            window.feed(self._last_log_dir, self._last_components, self._last_pattern)
+        window.present()
+
+    def _log_window_closed(self, window: LogWindow) -> None:
+        # By identity, not by the name it was opened with: the picker inside it
+        # may have been pointed somewhere else since.
+        for name, open_window in list(self._log_windows.items()):
+            if open_window is window:
+                del self._log_windows[name]
+
     def _show_doctor(self) -> None:
         if not self._project:
             self._toast("no project selected")
@@ -1536,6 +1563,11 @@ class Window(Adw.ApplicationWindow):
         if self._stream:
             self._stream.stop()
         self._logs.stop()          # its file belongs to the project we are leaving
+        # A detached log belongs to the project it was opened from, and its
+        # component may not even exist in the next one.
+        for window in list(self._log_windows.values()):
+            if window.project != (self._project or "pitcrew"):
+                window.close()
         # A component already crashed in the project you just switched TO is not
         # news — only a crash you were watching happen is.
         self._crashes.reset()
@@ -1610,7 +1642,12 @@ class Window(Adw.ApplicationWindow):
                 series.recolor(colors[name])
             series.push(comp.get("cpu"), comp.get("rss"))
 
-        self._logs.update_sources(state.get("logDir"), components, state.get("errorPattern"))
+        self._last_pattern = state.get("errorPattern")
+        self._logs.update_sources(state.get("logDir"), components, self._last_pattern)
+        # Every detached window gets the same frame. A log pulled into its own
+        # window has to keep moving, or detaching it is how you stop watching.
+        for window in self._log_windows.values():
+            window.feed(state.get("logDir"), components, self._last_pattern)
         self._shells = sorted(state.get("shells") or [])
         # From the stream, not from the directory: a profile holds TARGET
         # WORDS, and only pitcrew can say what "sales" covers today. Reading
@@ -1740,7 +1777,8 @@ class Window(Adw.ApplicationWindow):
                 # buttons hang off a heading, and there is no heading.
                 for comp in comps:
                     row = ComponentRow(comp["name"], colors[comp["name"]],
-                                       self._run_action, self._show_logs_for)
+                                       self._run_action, self._show_logs_for,
+                                       self._open_log_window)
                     row.set_activatable(True)
                     row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
                     group.add(row)
@@ -1762,7 +1800,7 @@ class Window(Adw.ApplicationWindow):
                 self._group_actions(heading, (whole or {}).get(heading, comps)))
             for comp in comps:
                 row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action,
-                                   self._show_logs_for)
+                                   self._show_logs_for, self._open_log_window)
                 row.set_activatable(True)
                 row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
                 group.add(row)

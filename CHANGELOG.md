@@ -11,6 +11,17 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Fixed
+- **The log view went dead after a config save, and stayed dead.** `stop()` is
+  called on it every time the state stream is rebuilt — after saving a config,
+  after changing a sampling setting, on reconnect — and the re-arm that was
+  supposed to pick it up again asked the wrong question: "was I waiting for
+  this file to appear". A view whose tail had been stopped rather than never
+  started was not waiting for anything, so it kept showing the run it had
+  already read and never moved again. Restart a component after that and the
+  log looked frozen, which is indistinguishable from a service that has gone
+  quiet. It now re-arms on the first frame where nothing is reading a log that
+  exists. (`tail -F` itself was fine: it follows both ways pitcrew rotates a
+  log — the rename, and the truncate-in-place when `log_keep` is 0.)
 - **A component row showed nothing for the commands worth reading.** Adw
   renders a row's subtitle as Pango markup, and every real start command has
   `&&` in it — which is not an entity, so the markup failed to parse and the
@@ -72,6 +83,14 @@ field is removed or changes meaning.
   un-bolded itself there.
 
 ### Added
+- **A log can be pulled out into its own window.** The ⧉ button on a component
+  row, or the one in the Logs toolbar for whatever is selected. It is the same
+  view, fed the same frames as the tab, so it keeps following live — a detached
+  log that stopped updating would be worse than not offering one. It keeps the
+  whole toolbar (filter, errors-only, wrap, follow) and its picker, retitling
+  itself if you point it somewhere else. One window per component; they close
+  when you switch project, because a detached log belongs to the project it was
+  opened from.
 - **`pitcrew detect [--json]`.** The guess `init` makes, printed instead of
   written: what pitcrew thinks is in a directory, with the command, port and
   health path it would give each part, and nothing written anywhere. `init` and

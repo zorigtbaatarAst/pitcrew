@@ -966,7 +966,7 @@ class ComponentRow(Adw.ActionRow):
     # separately is worse than none at all.
     W_BADGE, W_MEM, W_CPU, W_PORT, W_AGE, W_NOTE = 8, 16, 5, 7, 6, 10
     W_CAP = 58          # pixels, not characters: it is a bar
-    W_ACTIONS = 11      # the icon buttons at the end, in characters
+    W_ACTIONS = 14      # the icon buttons at the end, in characters
 
     @classmethod
     def header(cls) -> Adw.ActionRow:
@@ -988,12 +988,14 @@ class ComponentRow(Adw.ActionRow):
             row.add_suffix(label)
         return row
 
-    def __init__(self, name: str, color: str, on_action, on_show_logs=None) -> None:
+    def __init__(self, name: str, color: str, on_action, on_show_logs=None,
+                 on_detach_logs=None) -> None:
         # Component names and ports come from a config file, not from us.
         super().__init__(title=name, use_markup=False)
         self._name = name
         self._on_action = on_action
         self._on_show_logs = on_show_logs
+        self._on_detach_logs = on_detach_logs
 
         # STATE, not the series colour. It used to be the latter — the colour
         # this component's line has on the Resources graph — which meant a dot
@@ -1053,6 +1055,17 @@ class ComponentRow(Adw.ActionRow):
         self._errors.connect(
             "clicked", lambda _b: self._on_show_logs and self._on_show_logs(self._name, True))
         box.append(self._errors)
+
+        # Always visible, unlike the error button beside it: the log of a
+        # component that has just crashed is the whole reason you are looking
+        # at this row, and it is one window away rather than a tab away.
+        self._log = Gtk.Button(icon_name="window-new-symbolic",
+                               tooltip_text="Open this log in its own window")
+        self._log.add_css_class("flat")
+        self._log.set_visible(on_detach_logs is not None)
+        self._log.connect(
+            "clicked", lambda _b: self._on_detach_logs and self._on_detach_logs(self._name))
+        box.append(self._log)
 
         self._start = self._button(box, "media-playback-start-symbolic", "start", "Start")
         self._restart = self._button(box, "view-refresh-symbolic", "restart", "Restart")

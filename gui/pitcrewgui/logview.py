@@ -22,9 +22,14 @@ MAX_LINES = 5000          # ceiling per component, so a chatty dev server cannot
 
 
 class LogView(Gtk.Box):
-    def __init__(self, on_error):
+    def __init__(self, on_error, on_detach=None, on_component=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._on_error = on_error
+        # Set by the main window only. A detached window IS the detached view,
+        # so it does not offer to detach itself again.
+        self._on_detach = on_detach
+        # Who is being shown, for a window that has to title itself.
+        self._on_component = on_component
         self._log_dir: str | None = None
         self._pattern: re.Pattern[str] | None = None
         self._all: list[dict] = []       # every component, with its role
@@ -113,6 +118,13 @@ class LogView(Gtk.Box):
         clear = Gtk.Button(label="Clear", tooltip_text="Empty this view (the log file is untouched)")
         clear.connect("clicked", lambda _b: self._clear())
 
+        # A log is something you read WHILE doing something else — restarting
+        # the thing that wrote it, editing the config that starts it. In one
+        # tab of one window it is the only thing you can be looking at.
+        self._detach = Gtk.Button(icon_name="window-new-symbolic",
+                                  tooltip_text="Open this log in its own window")
+        self._detach.connect("clicked", lambda _b: self._detach_current())
+
         bar = Gtk.Box(spacing=8, margin_top=10, margin_bottom=4,
                       margin_start=12, margin_end=12)
         bar.append(self._roles)
@@ -121,9 +133,15 @@ class LogView(Gtk.Box):
         bar.append(self._errors_only)
         bar.append(self._wrap)
         bar.append(self._follow)
+        if self._on_detach is not None:
+            bar.append(self._detach)
         bar.append(clear)
 
         return bar
+
+    def _detach_current(self) -> None:
+        if self._current and self._on_detach is not None:
+            self._on_detach(self._current)
 
     # ── colour ──────────────────────────────────────────────────────────────
     # The sixteen ANSI names come from the active pitcrew theme, so a log reads
@@ -216,17 +234,24 @@ class LogView(Gtk.Box):
         self._retry_waiting()
 
     def _retry_waiting(self) -> None:
-        """Start tailing a log that did not exist when it was selected.
+        """Re-arm the tail whenever there is one to arm and nothing running it.
 
-        Also covers the tailer dying — `tail -F` survives a restart's log
-        rotation, but if it is gone for any other reason a view that never
-        re-arms is indistinguishable from a stopped service.
+        Two ways to end up here. A component selected before it was started has
+        no log file yet, and this picks it up the moment one appears. And the
+        tailer can simply be GONE — `tail -F` survives a restart's log rotation,
+        but `stop()` is called on this view every time the state stream is
+        rebuilt: after a config save, after a sampling change, on reconnect.
+
+        That used to be the end of it. The condition was "was I waiting for this
+        file", and a view whose tail had been stopped rather than never started
+        was not waiting for anything — so it sat there showing the run it had
+        already read, forever, which is indistinguishable from a service that
+        has gone quiet. The condition that matters is simply: nothing is
+        reading, and there is something to read.
         """
         if self._current is None or self._log_dir is None:
             return
         if self._reader is not None and self._reader.running:
-            return
-        if self._waiting != self._current:
             return
         if GLib.file_test(f"{self._log_dir}/{self._current}.log", GLib.FileTest.EXISTS):
             self._open(self._current)
@@ -261,16 +286,24 @@ class LogView(Gtk.Box):
         if name != self._current:
             self._current = name
             self._open(name)
+            if self._on_component is not None:
+                self._on_component(name)
 
-    def show_component(self, name: str, errors_only: bool = False) -> None:
-        """Open one component's log — how the Components view hands off."""
+    def show_component(self, name: str, errors_only: bool = False) -> bool:
+        """Open one component's log — how the Components view hands off.
+
+        False when this view does not (yet) know that component: the caller may
+        be a window opened before the first frame arrived, and it has to know
+        whether to try again.
+        """
         if name in self._names:
             self._roles.set_active_name("all")
         if name not in self._names:
-            return
+            return False
         self._errors_only.set_active(errors_only)
         self._picker.set_selected(self._names.index(name))
         self._selection_changed()
+        return True
 
     def focus_filter(self) -> None:
         self._filter.grab_focus()
@@ -398,3 +431,51 @@ class LogView(Gtk.Box):
         self._buffer.set_text("")
         self._lines = 0
         self._raw.clear()
+
+
+class LogWindow(Adw.Window):
+    """One component's log, in a window of its own.
+
+    The same LogView the Logs tab uses, fed the same frames by the main window
+    — a detached log that stopped updating the moment it was detached would be
+    worse than not offering one. It keeps the whole toolbar (filter, errors
+    only, wrap, follow), because the reason to pull a log out of the tab is to
+    work in it while doing something else to the service that writes it.
+    """
+
+    def __init__(self, application, project: str, component: str,
+                 on_closed, on_error):
+        super().__init__(application=application,
+                         title=f"{component} · {project}",
+                         default_width=1000, default_height=640)
+        self.project = project
+        self.component = component
+        self._on_closed = on_closed
+        # Not bound until the first frame: the picker is built from the stream,
+        # so a window opened before one arrives has nothing to select yet.
+        self._bound = False
+
+        self.view = LogView(on_error, on_component=self._retitle)
+        wrapper = Adw.ToolbarView()
+        wrapper.add_top_bar(Adw.HeaderBar())
+        wrapper.set_content(self.view)
+        self.set_content(wrapper)
+        self.connect("close-request", self._closing)
+
+    def feed(self, log_dir: str | None, components: list[dict],
+             pattern: str | None) -> None:
+        """One frame of the state stream, forwarded from the main window."""
+        self.view.update_sources(log_dir, components, pattern)
+        if not self._bound:
+            self._bound = self.view.show_component(self.component)
+
+    def _retitle(self, component: str) -> None:
+        # The picker is still there, so the window can be pointed somewhere
+        # else. A title naming the log it no longer shows is a lie.
+        self.component = component
+        self.set_title(f"{component} · {self.project}")
+
+    def _closing(self, *_args) -> bool:
+        self.view.stop()
+        self._on_closed(self)
+        return False

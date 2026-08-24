@@ -386,6 +386,92 @@ print('run2' in v._raw)
   assert_eq "$out" "True" "it re-opens by name, so the new run is what you see"
 }
 
+test_a_tail_that_was_stopped_comes_back_on_the_next_frame() {
+  gui_display || return 0
+  # `stop()` is called on this view every time the state stream is rebuilt —
+  # after a config save, after a sampling change, on reconnect. The re-arm
+  # asked "was I waiting for this file to appear", and a view whose tail had
+  # been stopped rather than never started was not waiting for anything. So it
+  # sat there showing the run it had already read, forever: you saved a config,
+  # restarted a component, and the log never moved again.
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+log = d / 'be-api.log'
+log.write_text('run1\n')
+v = LogView(lambda m: None)
+v.update_sources(str(d), COMPS, 'ERROR')
+spin(600)
+v.stop()                                    # what _restart_stream() does
+v.update_sources(str(d), COMPS, 'ERROR')    # and the next frame after it
+spin(800)
+with log.open('a') as f:
+    f.write('after the save\n')
+spin(1500)
+print('after the save' in v._raw)
+v.stop()
+")
+  rm -rf "$dir"
+  assert_eq "$out" "True" "a frame with nothing reading the log arms the tail again"
+}
+
+test_a_log_can_be_pulled_out_into_its_own_window() {
+  gui_display || return 0
+  # A log is read WHILE doing something else to the service that writes it —
+  # restarting it, editing the config that starts it. In one tab of one window
+  # it is the only thing you can be looking at.
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+COMPS = [{'name': 'be-api', 'role': 'be', 'app': 'api'},
+         {'name': 'fe-api', 'role': 'fe', 'app': 'api'}]
+(d / 'be-api.log').write_text('backend line\n')
+(d / 'fe-api.log').write_text('frontend line\n')
+closed = []
+w = pgui.LogWindow(None, 'demo', 'be-api', closed.append, lambda m: None)
+w.feed(str(d), COMPS, 'ERROR')
+spin(700)
+print(w.get_title())
+print('backend line' in w.view._raw)
+with (d / 'be-api.log').open('a') as f:
+    f.write('a later line\n')
+spin(1200)
+print('a later line' in w.view._raw)
+w.view.show_component('fe-api')
+print(w.get_title())
+w._closing()
+print(bool(closed) and closed[0] is w)
+")
+  rm -rf "$dir"
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "be-api · demo" "it opens on the log it was asked for"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "with what is already in the file"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "True" \
+    "and it keeps following it — a detached log that stops is how you stop watching"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "fe-api · demo" \
+    "pointed somewhere else, it says so rather than lying in its title"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "True" "closing it reports itself"
+}
+
+test_a_detached_window_does_not_offer_to_detach_itself() {
+  gui_display || return 0
+  local dir; dir=$(mktemp -d)
+  local out; out=$(_logview_drive "$dir" "
+def labels(widget, found):
+    while widget is not None:
+        name = widget.get_icon_name() if hasattr(widget, 'get_icon_name') else None
+        if name:
+            found.add(name)
+        child = widget.get_first_child() if hasattr(widget, 'get_first_child') else None
+        if child is not None:
+            labels(child, found)
+        widget = widget.get_next_sibling()
+attached, detached = set(), set()
+labels(LogView(lambda m: None, on_detach=lambda n: None).get_first_child(), attached)
+labels(LogView(lambda m: None).get_first_child(), detached)
+print('window-new-symbolic' in attached, 'window-new-symbolic' in detached)
+")
+  rm -rf "$dir"
+  assert_eq "$out" "True False" "the button is where detaching is possible and nowhere else"
+}
+
 test_the_picker_is_not_rebuilt_on_every_frame() {
   gui_display || return 0
   # update_sources compared whole component dicts, which carry live rss/cpu — so
