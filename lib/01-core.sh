@@ -294,6 +294,41 @@ container_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/nu
 
 scope_exists() { [ "$HAS_SYSTEMD" = 1 ] && systemctl --user is-active "$SESSION-$1.scope" >/dev/null 2>&1; }
 
+# The transient scope left over from a component's PREVIOUS run, cleared out of
+# the way so the next one can have the name. Succeeds only when there was
+# something to clear, so the caller can say so.
+#
+# `systemd-run --unit X` REFUSES outright if a unit called X is still loaded:
+#
+#     Failed to start transient scope unit: Unit X.scope was already loaded
+#     or has a fragment file
+#
+# and `reset-failed` — which is all this used to do — only helps if the unit
+# FAILED. A scope routinely outlives the process pitcrew was watching, because
+# it contains the whole cgroup: `./gradlew bootRun` forks a Gradle daemon that
+# stays behind, so the app can exit 1 while the scope stays ACTIVE holding two
+# gigabytes of daemon. From the outside that is a component stuck on "crashed"
+# that will not start again, and the reason is a process nobody can see.
+#
+# Whatever is still in there belongs to the run that just ended — the same
+# thing `pitcrew stop` would have killed — so it goes.
+scope_reclaim() { # $1 comp → 0 when a leftover scope had to be cleared
+  [ "$HAS_SYSTEMD" = 1 ] || return 1
+  local unit="$SESSION-$1.scope"
+  systemctl --user is-active "$unit" >/dev/null 2>&1 || {
+    # Not active, but a failed transient unit holds the name just the same.
+    systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    return 1
+  }
+  systemctl --user stop "$unit" >/dev/null 2>&1 || true
+  # A process that ignores SIGTERM would otherwise hold the name for good, and
+  # every later start would fail with the same opaque message.
+  systemctl --user is-active "$unit" >/dev/null 2>&1 \
+    && systemctl --user kill --signal=SIGKILL "$unit" >/dev/null 2>&1
+  systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+  return 0
+}
+
 strip_ansi() { # logs are raw captures — keep what a terminal would SHOW, not every redraw
   # final \x1b. + tr pass: NOTHING cursor-moving may survive, or the repaint math breaks
   sed -E \

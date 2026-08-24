@@ -11,6 +11,19 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Fixed
+- **A component could get stuck on "crashed" and refuse to start again.**
+  `systemd-run --unit X` refuses outright while a unit called X is still
+  loaded — *"Failed to start transient scope unit: Unit X.scope was already
+  loaded or has a fragment file"* — and the only clean-up before it was
+  `reset-failed`, which helps only if the unit FAILED. A scope routinely
+  outlives the process pitcrew was watching, because it holds the whole
+  cgroup: `./gradlew bootRun` forks a Gradle daemon that stays behind, so the
+  app can exit 1 while its scope stays *active*, holding a couple of gigabytes
+  of daemon nothing on screen accounts for. Pressing start then failed inside
+  the log file, which arrived as one more crash and no explanation. A leftover
+  scope is now stopped (SIGKILL as the backstop) and its name released before
+  the next run, and the clean-up is one line on the way past rather than a
+  surprise in a log.
 - **The log view went dead after a config save, and stayed dead.** `stop()` is
   called on it every time the state stream is rebuilt — after saving a config,
   after changing a sampling setting, on reconnect — and the re-arm that was

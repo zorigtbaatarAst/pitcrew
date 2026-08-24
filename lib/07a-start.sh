@@ -52,6 +52,15 @@ launch_process() { # $1 comp $2 full command (env prefix already folded in)
   rotate_log "$c"
   rm -f "$LOG_DIR/$c.pid" "$LOG_DIR/$c.exit" "$LOG_DIR/.health-$c"
 
+  # Before the wrapper, not inside it: systemd-run refuses to reuse a unit name
+  # that is still loaded, and inside the subshell that refusal goes to the LOG
+  # and comes back as one more crash. Out here it is one line saying what was
+  # cleared. See scope_reclaim for what leaves a scope running behind a process
+  # that has already exited.
+  if scope_reclaim "$c"; then
+    say "  ${GREY}■${RESET} cleared the leftover scope for ${BOLD}$c${RESET} ${GREY}(something outlived its last run)${RESET}"
+  fi
+
   # The command is wrapped rather than exec'd so that something outlives it and
   # can record HOW it ended. Without this a dead service is just an absence:
   # the dashboard can say "crashed" but never "exited 1 at 12:04", which is the
@@ -61,7 +70,6 @@ launch_process() { # $1 comp $2 full command (env prefix already folded in)
   {
     local rc=0
     if [ "$HAS_SYSTEMD" = 1 ]; then
-      systemctl --user reset-failed "$SESSION-$c.scope" 2>/dev/null || true
       systemd-run --user --scope --collect --unit "$SESSION-$c" \
         -p MemoryMax="$(comp_max "$c")" -p MemorySwapMax=2G \
         bash -c "$full_cmd" || rc=$?

@@ -156,5 +156,67 @@ test_a_stopped_component_is_left_alone() {
   assert_eq "$RESTARTS" 0 "no restart when deliberately stopped"
 }
 
+# ── the scope a previous run left behind ────────────────────────────────────
+#
+# `systemd-run --unit X` refuses while a unit called X is still loaded, and a
+# scope outlives the process pitcrew watched whenever that process forked
+# something that stays: `./gradlew bootRun` leaves a Gradle daemon in the
+# cgroup, so the app exits 1, the component reads as "crashed", and the scope
+# goes on holding two gigabytes. Pressing start then failed with
+#
+#     Failed to start transient scope unit: Unit X.scope was already loaded
+#
+# inside the log file, which arrived as one more crash and no explanation.
+
+_systemctl_calls() { # run $1 with systemctl stubbed → CALLS, one per line
+  CALLS=""
+  # shellcheck disable=SC2317
+  systemctl() {
+    CALLS+="$* "
+    case "$*" in
+      *is-active*) return "$STUB_ACTIVE" ;;
+    esac
+    return 0
+  }
+  HAS_SYSTEMD=1 SESSION=proj
+  eval "$1"
+  unset -f systemctl
+}
+
+test_a_scope_that_outlived_its_process_is_cleared_before_the_next_start() {
+  STUB_ACTIVE=0                      # is-active says yes: the daemon is still in it
+  _systemctl_calls 'scope_reclaim be-api && CLEARED=yes'
+  assert_eq "${CLEARED:-no}" "yes" "it reports that there was something to clear"
+  assert_match "$CALLS" 'stop proj-be-api\.scope' "the leftover scope is stopped"
+  assert_match "$CALLS" 'reset-failed proj-be-api\.scope' "and the name is released"
+  CLEARED=""
+}
+
+test_a_scope_whose_processes_ignore_sigterm_is_killed_rather_than_left() {
+  # Still active after `stop` means the name is still taken, and every later
+  # start would fail with the same opaque message.
+  STUB_ACTIVE=0
+  _systemctl_calls 'scope_reclaim be-api'
+  assert_match "$CALLS" 'kill --signal=SIGKILL proj-be-api\.scope' "SIGKILL is the backstop"
+}
+
+test_nothing_is_stopped_when_there_is_no_leftover_scope() {
+  STUB_ACTIVE=1                      # is-active says no
+  _systemctl_calls 'scope_reclaim be-api || NOTHING=yes'
+  assert_eq "${NOTHING:-no}" "yes" "it says so rather than claiming a clean-up"
+  assert_not_match "$CALLS" 'stop ' "a component that is not running is not stopped"
+  NOTHING=""
+}
+
+test_without_systemd_there_is_no_scope_to_reclaim() {
+  CALLS=""
+  # shellcheck disable=SC2317
+  systemctl() { CALLS+="$* "; }
+  HAS_SYSTEMD=0 SESSION=proj
+  scope_reclaim be-api && _t_bad "it claimed to clear a scope on a box with no systemd"
+  assert_empty "$CALLS" "and did not shell out to systemctl to find that out"
+  unset -f systemctl
+}
+
 trap 'rm -rf "$LOG_DIR"' EXIT
 run_tests
