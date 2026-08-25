@@ -305,10 +305,29 @@ fn command_of(proc: &sysinfo::Process) -> String {
     if argv.is_empty() {
         return proc.name().to_string_lossy().into_owned();
     }
-    argv.iter()
+    let joined = argv
+        .iter()
         .map(|a| a.to_string_lossy())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    readable(&joined)
+}
+
+/// One line, and a length a person can actually read.
+///
+/// pitcrew's own wrapper is a multi-line shell script — it has to be, because
+/// something must outlive the service to record how it ended — so the root of
+/// every component's tree has 600 characters of quoted `systemd-run` as its
+/// command. Rendered verbatim that is a process view nobody can use, and in a
+/// GTK label it is 600 characters of nothing.
+fn readable(cmd: &str) -> String {
+    const MAX: usize = 160;
+    let flat: String = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= MAX {
+        return flat;
+    }
+    let kept: String = flat.chars().take(MAX - 1).collect();
+    format!("{kept}…")
 }
 
 #[cfg(test)]
@@ -582,6 +601,19 @@ mod signal_tests {
 
     /// Windows has no SIGTERM that reaches a detached process, and `stop` says
     /// so rather than implying a clean shutdown it did not perform.
+    /// pitcrew's own wrapper is a multi-line shell script, so the root of every
+    /// component's tree would otherwise carry 600 characters of quoted
+    /// `systemd-run` as its command.
+    #[test]
+    fn a_command_is_one_readable_line() {
+        assert_eq!(readable("a  b\n c"), "a b c");
+        let long = "x".repeat(500);
+        let out = readable(&long);
+        assert!(out.chars().count() <= 160, "{}", out.chars().count());
+        assert!(out.ends_with('…'), "a truncation says it was truncated");
+        assert!(!readable("short").ends_with('…'));
+    }
+
     #[test]
     fn graceful_stop_is_advertised_honestly() {
         assert_eq!(graceful_stop_available(), cfg!(unix));

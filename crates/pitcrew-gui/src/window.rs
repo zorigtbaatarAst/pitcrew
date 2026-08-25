@@ -1,115 +1,187 @@
-//! The main window.
+//! The main window: a view stack, a header, and the pump that feeds them.
 //!
 //! Layout constraints inherited from the Python version, each of which cost a
 //! bug before it was a rule:
 //!
 //! * **libadwaita 1.5 is the floor** — what Ubuntu 24.04 LTS ships. A widget
-//!   from a newer version does not raise, GTK *aborts the process*, so reaching
-//!   for something new costs the app the ability to start on the most common
-//!   Linux desktop. `AdwToggleGroup` (1.7) did exactly that once.
-//! * **Nothing with columns or figures goes inside an `AdwPreferencesPage`.**
-//!   That widget carries its own ~600px clamp which cannot be widened, and it
-//!   is what left half of every window empty.
-//! * **Colour means one thing.** Resource meters and status badges draw from
-//!   the same ramp. The last time they did not, a 32%-full meter and a warning
-//!   badge were the same hue.
+//!   from a newer version does not raise, GTK *aborts the process*.
+//! * **Nothing with columns or figures inside an `AdwPreferencesPage`.** That
+//!   widget carries a ~600px clamp which cannot be widened, and it is what left
+//!   half of every window empty.
+//! * **Colour means one thing** — see `widgets::RAMP`.
 
 use adw::prelude::*;
 use gtk::glib;
 use pitcrew_model as pm;
 
-use crate::runner::{Event, Stream};
-use crate::widgets;
+use crate::logview::LogView;
+use crate::runner::{self, Event, Stream};
+use crate::views::{Action, Components, Frame, Overview, Projects, Resources};
 
 pub struct Ui {
     pub window: adw::ApplicationWindow,
-    rows: gtk::ListBox,
+    stack: adw::ViewStack,
+    overview: Overview,
+    components: Components,
+    resources: Resources,
+    projects: Projects,
+    logs: std::rc::Rc<LogView>,
     verdict: gtk::Label,
     verdict_icon: gtk::Image,
     summary: gtk::Label,
-    gauges: widgets::Gauges,
     toasts: adw::ToastOverlay,
-    /// Rebuilt only when the component set changes — replacing every row on
-    /// every frame loses the selection and makes a list flicker at 1Hz.
-    known: std::cell::RefCell<Vec<String>>,
-    cells: std::cell::RefCell<Vec<widgets::ComponentRow>>,
+    banner: adw::Banner,
+    project: Option<String>,
+    log_dir: std::cell::RefCell<String>,
 }
 
 pub fn build(app: &adw::Application, project: Option<String>) -> std::rc::Rc<Ui> {
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .default_width(980)
-        .default_height(680)
+        .default_width(1000)
+        .default_height(720)
         .title("pitcrew")
         .build();
 
+    let overview = Overview::new();
+    let components = Components::new();
+    let resources = Resources::new();
+    let projects = Projects::new();
+    let logs = LogView::new();
+
+    let stack = adw::ViewStack::new();
+    // Overview leads because it answers the question you opened the window to
+    // ask. Components is a list, and a list is evidence, not an answer.
+    stack.add_titled_with_icon(
+        &padded(overview.widget()),
+        Some("overview"),
+        "Overview",
+        "dialog-information-symbolic",
+    );
+    stack.add_titled_with_icon(
+        &padded(components.widget()),
+        Some("components"),
+        "Components",
+        "view-list-symbolic",
+    );
+    stack.add_titled_with_icon(
+        &padded(resources.widget()),
+        Some("resources"),
+        "Resources",
+        "power-profile-performance-symbolic",
+    );
+    // Not padded or clamped: a log wants the whole width it can get.
+    stack.add_titled_with_icon(
+        logs.widget(),
+        Some("logs"),
+        "Logs",
+        "text-x-generic-symbolic",
+    );
+    stack.add_titled_with_icon(
+        &padded(projects.widget()),
+        Some("projects"),
+        "Projects",
+        "folder-symbolic",
+    );
+
     let header = adw::HeaderBar::new();
-    let verdict_icon = gtk::Image::from_icon_name("emblem-ok-symbolic");
+    let switcher = adw::ViewSwitcher::builder()
+        .stack(&stack)
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    header.set_title_widget(Some(&switcher));
+
+    let verdict_icon = gtk::Image::from_icon_name("content-loading-symbolic");
     let verdict = gtk::Label::new(Some("connecting…"));
     verdict.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    verdict.set_max_width_chars(48);
     let verdict_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     verdict_box.append(&verdict_icon);
     verdict_box.append(&verdict);
-    header.set_title_widget(Some(&verdict_box));
+    header.pack_start(&verdict_box);
 
     let summary = gtk::Label::new(None);
     summary.add_css_class("dim-label");
+    summary.add_css_class("numeric");
     header.pack_end(&summary);
 
-    let gauges = widgets::Gauges::new();
-
-    let rows = gtk::ListBox::new();
-    rows.set_selection_mode(gtk::SelectionMode::None);
-    rows.add_css_class("boxed-list");
-
-    // A Box in a Clamp, NOT an AdwPreferencesPage: this view has columns and
-    // figures, and that widget's ~600px clamp cannot be widened.
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
-    content.set_margin_top(18);
-    content.set_margin_bottom(18);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
-    content.append(gauges.widget());
-    content.append(&rows);
-
-    let clamp = adw::Clamp::builder()
-        .maximum_size(1100)
-        .tightening_threshold(700)
-        .child(&content)
-        .build();
-    let scroller = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vexpand(true)
-        .child(&clamp)
-        .build();
+    // A banner, not a toast, for a stream that has stopped: a toast goes away
+    // and this condition does not.
+    let banner = adw::Banner::builder().revealed(false).build();
 
     let toasts = adw::ToastOverlay::new();
-    toasts.set_child(Some(&scroller));
+    toasts.set_child(Some(&stack));
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&header);
+    root.append(&banner);
     root.append(&toasts);
     window.set_content(Some(&root));
 
+    // The switcher is wide-only; below that it belongs at the bottom, where a
+    // thumb can reach it.
+    let bottom = adw::ViewSwitcherBar::builder().stack(&stack).build();
+    root.append(&bottom);
+    let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+        adw::BreakpointConditionLengthType::MaxWidth,
+        620.0,
+        adw::LengthUnit::Px,
+    ));
+    breakpoint.add_setter(&bottom, "reveal", Some(&true.to_value()));
+    breakpoint.add_setter(&switcher, "visible", Some(&false.to_value()));
+    window.add_breakpoint(breakpoint);
+
     let ui = std::rc::Rc::new(Ui {
         window,
-        rows,
+        stack,
+        overview,
+        components,
+        resources,
+        projects,
+        logs,
         verdict,
         verdict_icon,
         summary,
-        gauges,
         toasts,
-        known: std::cell::RefCell::new(Vec::new()),
-        cells: std::cell::RefCell::new(Vec::new()),
+        banner,
+        project,
+        log_dir: std::cell::RefCell::new(String::new()),
     });
 
-    connect(ui.clone(), project);
+    connect(ui.clone());
     ui
 }
 
-/// Start the stream and pump it into the window.
-fn connect(ui: std::rc::Rc<Ui>, project: Option<String>) {
-    let stream = match Stream::start(project.as_deref(), 1.0) {
+/// Padded and clamped. A Box in an `AdwClamp`, never an `AdwPreferencesPage` —
+/// see the note at the top of this file.
+fn padded(child: &impl IsA<gtk::Widget>) -> gtk::Widget {
+    let inner = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    inner.set_margin_top(18);
+    inner.set_margin_bottom(18);
+    inner.set_margin_start(12);
+    inner.set_margin_end(12);
+    inner.append(child);
+    let clamp = adw::Clamp::builder()
+        .maximum_size(1100)
+        .tightening_threshold(760)
+        .child(&inner)
+        .build();
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&clamp)
+        .build()
+        .upcast()
+}
+
+fn connect(ui: std::rc::Rc<Ui>) {
+    // Read once: the registry changes when somebody runs `pitcrew init`, not
+    // once a second.
+    if let Ok(text) = runner::run(&["projects"]) {
+        ui.projects.load(&text);
+    }
+
+    let stream = match Stream::start(ui.project.as_deref(), 1.0) {
         Ok(s) => s,
         Err(e) => {
             ui.fail(&format!("could not start pitcrew: {e}"));
@@ -135,13 +207,12 @@ fn connect(ui: std::rc::Rc<Ui>, project: Option<String>) {
 }
 
 impl Ui {
-    fn update(&self, snap: &pm::Snapshot) {
+    fn update(self: &std::rc::Rc<Self>, snap: &pm::Snapshot) {
         self.window
             .set_title(Some(&format!("{} — pitcrew", snap.project)));
+        *self.log_dir.borrow_mut() = snap.log_dir.clone();
 
-        // The verdict travels WITH the facts. Working it out from the component
-        // list here would be reimplementing the diagnostics layer, and it could
-        // not know what a check added later means.
+        // The verdict travels WITH the facts, so nothing here re-derives it.
         let (icon, css) = match snap.health.verdict {
             pm::Verdict::Crit => ("dialog-error-symbolic", "error"),
             pm::Verdict::Warn => ("dialog-warning-symbolic", "warning"),
@@ -164,26 +235,49 @@ impl Ui {
             "{} up · {} starting · {} crashed · {} down",
             s.up, s.starting, s.crashed, s.down
         ));
-        self.gauges.update(&snap.machine);
 
-        // Rebuild rows only when the SET changes. Replacing them every frame
-        // loses the selection and makes the list flicker once a second.
-        let names: Vec<String> = snap.components.iter().map(|c| c.name.clone()).collect();
-        if *self.known.borrow() != names {
-            while let Some(child) = self.rows.first_child() {
-                self.rows.remove(&child);
+        let frame = Frame { snap };
+        self.overview.update(&frame);
+        self.resources.update(&frame);
+
+        let ui = self.clone();
+        let on_action: std::rc::Rc<dyn Fn(Action)> = std::rc::Rc::new(move |action| ui.act(action));
+        self.components.update(&frame, &on_action);
+
+        // Whatever the log view is following, keep following it.
+        self.logs.poll(&self.log_dir.borrow());
+    }
+
+    /// A button was pressed.
+    fn act(self: &std::rc::Rc<Self>, action: Action) {
+        let (verb, comp) = match &action {
+            Action::Start(c) => ("start", c),
+            Action::Stop(c) => ("stop", c),
+            Action::Restart(c) => ("restart", c),
+            Action::ShowLog(c) => {
+                self.logs.follow(c, &self.log_dir.borrow());
+                self.stack.set_visible_child_name("logs");
+                return;
             }
-            let mut cells = Vec::new();
-            for c in &snap.components {
-                let row = widgets::ComponentRow::new(c);
-                self.rows.append(row.widget());
-                cells.push(row);
-            }
-            *self.cells.borrow_mut() = cells;
-            *self.known.borrow_mut() = names;
+        };
+        // Rendering the CLI's answer, not computing one.
+        let mut args: Vec<&str> = Vec::new();
+        if let Some(p) = &self.project {
+            args.push("-p");
+            args.push(p);
         }
-        for (row, c) in self.cells.borrow().iter().zip(&snap.components) {
-            row.update(c, snap.at);
+        args.push(verb);
+        args.push(comp);
+        match runner::run(&args) {
+            // The next frame will show the result; this only reports what the
+            // command itself said, which is where a refusal lives.
+            Ok(out) => {
+                let line = out.lines().next().unwrap_or("").trim();
+                if !line.is_empty() {
+                    self.notice(line);
+                }
+            }
+            Err(e) => self.notice(&e),
         }
     }
 
@@ -191,10 +285,12 @@ impl Ui {
         self.toasts.add_toast(adw::Toast::new(text));
     }
 
+    /// A condition that will not go away on its own gets a banner, not a toast.
     fn fail(&self, why: &str) {
         self.verdict_icon
             .set_icon_name(Some("dialog-error-symbolic"));
-        self.verdict.set_text(why);
-        self.notice(why);
+        self.verdict.set_text("disconnected");
+        self.banner.set_title(why);
+        self.banner.set_revealed(true);
     }
 }

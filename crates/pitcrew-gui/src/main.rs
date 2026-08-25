@@ -5,8 +5,10 @@
 //! healthy — see [`runner`] for why that boundary is load-bearing rather than
 //! stylistic.
 
+mod logview;
 mod runner;
 mod style;
+mod views;
 mod widgets;
 mod window;
 

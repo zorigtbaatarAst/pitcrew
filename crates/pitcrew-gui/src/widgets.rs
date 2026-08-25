@@ -206,17 +206,42 @@ fn labelled(name: &str) -> (Meter, gtk::Label, gtk::Box) {
     (meter, value, row)
 }
 
+/// A row whose title and subtitle are TEXT, not markup.
+///
+/// `AdwActionRow` renders both as Pango markup by default, and the strings here
+/// come from a config and a process table: every real start command has `&&` in
+/// it, and `pitcrew init <dir>` has angle brackets. Pango does not escape them,
+/// it fails to parse — and a failed parse renders the line EMPTY, which reads
+/// as a bug in pitcrew rather than in the text.
+pub fn action_row() -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_use_markup(false);
+    row
+}
+
+/// The same, for an expandable one.
+pub fn expander_row() -> adw::ExpanderRow {
+    let row = adw::ExpanderRow::new();
+    row.set_use_markup(false);
+    row
+}
+
 /// One component's row.
 pub struct ComponentRow {
     row: adw::ActionRow,
     dot: gtk::Image,
     rss: gtk::Label,
     meter: Meter,
+    name: String,
+    start: gtk::Button,
+    restart: gtk::Button,
+    stop: gtk::Button,
+    logs: gtk::Button,
 }
 
 impl ComponentRow {
     pub fn new(c: &pm::Component) -> ComponentRow {
-        let row = adw::ActionRow::new();
+        let row = action_row();
         row.set_title(&c.name);
 
         let dot = gtk::Image::from_icon_name("media-record-symbolic");
@@ -233,11 +258,51 @@ impl ComponentRow {
         right.append(meter.widget());
         row.add_suffix(&right);
 
+        // Icon buttons, flat, in a linked group: three labelled buttons per row
+        // is a wall of text where the state is what anyone is reading.
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        actions.add_css_class("linked");
+        actions.set_valign(gtk::Align::Center);
+        actions.set_margin_start(12);
+        let start = icon_button("media-playback-start-symbolic", "Start");
+        let restart = icon_button("view-refresh-symbolic", "Restart");
+        let stop = icon_button("media-playback-stop-symbolic", "Stop");
+        let logs = icon_button("text-x-generic-symbolic", "Logs");
+        actions.append(&start);
+        actions.append(&restart);
+        actions.append(&stop);
+        actions.append(&logs);
+        row.add_suffix(&actions);
+
         ComponentRow {
             row,
             dot,
             rss,
             meter,
+            name: c.name.clone(),
+            start,
+            restart,
+            stop,
+            logs,
+        }
+    }
+
+    /// Wire the buttons. Separate from construction so the row can be built
+    /// without a handler in a test.
+    pub fn attach_actions(&self, on: std::rc::Rc<dyn Fn(crate::views::Action)>) {
+        for (button, make) in [
+            (
+                &self.start,
+                Box::new(crate::views::Action::Start)
+                    as Box<dyn Fn(String) -> crate::views::Action>,
+            ),
+            (&self.restart, Box::new(crate::views::Action::Restart)),
+            (&self.stop, Box::new(crate::views::Action::Stop)),
+            (&self.logs, Box::new(crate::views::Action::ShowLog)),
+        ] {
+            let name = self.name.clone();
+            let on = on.clone();
+            button.connect_clicked(move |_| on(make(name.clone())));
         }
     }
 
@@ -285,7 +350,28 @@ impl ComponentRow {
             _ => 0.0,
         };
         self.meter.set(fraction);
+
+        // A stopped component cannot be stopped and a running one does not need
+        // starting. Greying the wrong one out beats a button that does nothing
+        // and says nothing about why.
+        let running = c.state.is_running();
+        self.start.set_sensitive(!running);
+        // Restart is stop-then-start, so it needs something to stop. A crashed
+        // component counts: its pidfile is still there and the port may not be.
+        self.restart
+            .set_sensitive(running || c.state == pm::State::Crashed);
+        self.stop
+            .set_sensitive(running || c.state == pm::State::Crashed);
+        // There is no log to read for a component that has never run.
+        self.logs.set_sensitive(true);
     }
+}
+
+fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
+    let b = gtk::Button::from_icon_name(icon);
+    b.set_tooltip_text(Some(tooltip));
+    b.add_css_class("flat");
+    b
 }
 
 pub fn state_word(s: pm::State) -> &'static str {

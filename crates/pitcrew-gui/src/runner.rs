@@ -111,6 +111,27 @@ impl Drop for Stream {
     }
 }
 
+/// Run a one-shot command and return its stdout.
+///
+/// For the answers the stream does not carry — `projects`, and the start/stop
+/// verbs. This is still rendering the CLI's answer, not computing one: the
+/// GUI never decides what a command should do, only asks for it.
+pub fn run(args: &[&str]) -> Result<String, String> {
+    let out = Command::new(cli_path())
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run pitcrew: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    // A refusal goes to stderr and is the thing worth showing. A non-zero exit
+    // WITH output is not a failure here — `check` and `doctor` both exit
+    // non-zero to be usable as gates while still saying something useful.
+    if stdout.trim().is_empty() && !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(stdout)
+}
+
 /// Where the CLI is.
 ///
 /// `$PITCREW_BIN` first so a checkout can point the app at the binary it just
