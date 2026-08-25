@@ -79,10 +79,6 @@ impl LogDir {
             .unwrap_or(false)
     }
 
-    pub fn write_pid(&self, comp: &str, pid: u32) -> std::io::Result<()> {
-        std::fs::write(self.pidfile(comp), format!("{pid}\n"))
-    }
-
     /// Remove the pidfile. This is what makes a clean stop distinguishable
     /// from a crash, so it must happen on every successful stop.
     pub fn clear_pid(&self, comp: &str) {
@@ -145,7 +141,7 @@ mod tests {
     fn a_pid_round_trips_and_clearing_removes_it() {
         let l = tmp("pid");
         assert_eq!(l.pid("be-a"), None, "no pidfile means down");
-        l.write_pid("be-a", 4242).unwrap();
+        std::fs::write(l.pidfile("be-a"), "4242\n").unwrap();
         assert_eq!(l.pid("be-a"), Some(4242));
         l.clear_pid("be-a");
         assert_eq!(l.pid("be-a"), None);
@@ -191,7 +187,7 @@ mod tests {
     #[test]
     fn a_pidfile_older_than_the_boot_is_recognised_as_stale() {
         let l = tmp("boot");
-        l.write_pid("be-a", 1).unwrap();
+        std::fs::write(l.pidfile("be-a"), "1\n").unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

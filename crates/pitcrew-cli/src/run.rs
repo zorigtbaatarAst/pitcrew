@@ -12,7 +12,7 @@ use pitcrew_platform::{caps, process};
 use crate::project::{self, Session};
 
 /// Build a launcher for a session, with the caps already resolved.
-fn launcher(s: &Session) -> Launcher<'_> {
+pub fn launcher_for(s: &Session) -> Launcher<'_> {
     let overrides = s.limits();
     let p = &s.loaded.project;
     let mut caps_map = HashMap::new();
@@ -60,7 +60,7 @@ pub fn start(dir: Option<&Path>, name: Option<&str>, words: &[String]) -> ExitCo
         eprintln!("warn   deps are not ported yet (phase 4) — nothing was done for them");
     }
 
-    let l = launcher(&s);
+    let l = launcher_for(&s);
     let mut failed = false;
     for name in &picked.components {
         let Some(c) = s.loaded.project.component(name) else {
@@ -100,7 +100,7 @@ pub fn stop(dir: Option<&Path>, name: Option<&str>, words: &[String]) -> ExitCod
         eprintln!("warn   deps are not ported yet (phase 4) — nothing was done for them");
     }
 
-    let l = launcher(&s);
+    let l = launcher_for(&s);
     let mut sampler = process::Sampler::new();
     let table = sampler.sample().table;
     for name in &picked.components {

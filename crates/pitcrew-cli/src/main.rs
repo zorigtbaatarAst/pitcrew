@@ -5,6 +5,7 @@
 //! something surprising — errors never pass silently, including this one.
 
 mod check;
+mod dashboard;
 mod doctor;
 mod project;
 mod report;
@@ -78,6 +79,8 @@ enum Command {
     Projects,
     /// Each component's RAM cap, and where it came from.
     Limits,
+    /// Pick the project a bare command means from outside any checkout.
+    Use { name: String },
     /// Saved sets of targets.
     Profile {
         #[command(subcommand)]
@@ -94,9 +97,9 @@ enum ProfileAction {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
+    // A bare `pitcrew` opens the dashboard, which is what the tool is for.
     let Some(command) = cli.command else {
-        eprintln!("pitcrew: the dashboard is not ported yet (phase 5). Try --help.");
-        return std::process::ExitCode::FAILURE;
+        return dashboard::run(cli.dir.as_deref(), cli.project.as_deref(), 1.0);
     };
 
     match command {
@@ -112,6 +115,7 @@ fn main() -> std::process::ExitCode {
         Command::Ports => report::ports(),
         Command::Projects => report::projects(),
         Command::Limits => report::caps(cli.dir.as_deref(), cli.project.as_deref()),
+        Command::Use { name } => report::use_project(&name),
         Command::Profile { action } => match action {
             None | Some(ProfileAction::List) => {
                 report::profiles(cli.dir.as_deref(), cli.project.as_deref())

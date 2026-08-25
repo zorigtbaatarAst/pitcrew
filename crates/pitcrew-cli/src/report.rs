@@ -183,6 +183,31 @@ pub fn caps(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `pitcrew use <name>` — pick the project a bare command means from outside
+/// any checkout.
+///
+/// Last in the resolution order, so it never overrides a config you are
+/// standing in: a repo that ships one is making a deliberate statement about
+/// how it should be run.
+pub fn use_project(name: &str) -> ExitCode {
+    let home = registry::home();
+    let Some(entry) = registry::get(&home, name) else {
+        let known: Vec<String> = registry::list(&home).into_iter().map(|e| e.name).collect();
+        return fail(&if known.is_empty() {
+            format!("no project '{name}', and nothing is registered — try: pitcrew init <dir>")
+        } else {
+            format!("no project '{name}' (registered: {})", known.join(" "))
+        });
+    };
+    match registry::set_current(&home, name) {
+        Ok(()) => {
+            println!("ok     now using {} · {}", entry.name, entry.root.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e),
+    }
+}
+
 fn fail(msg: &str) -> ExitCode {
     eprintln!("error  {msg}");
     ExitCode::FAILURE

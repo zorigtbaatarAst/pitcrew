@@ -9,4 +9,8 @@ description = "The pitcrew JSON contract, as types."
 
 [dependencies]
 serde = { workspace = true }
+
+# Only the contract tests serialise; the types themselves need nothing but the
+# derive. Keeping it here means a consumer of this crate does not pull it in.
+[dev-dependencies]
 serde_json = { workspace = true }

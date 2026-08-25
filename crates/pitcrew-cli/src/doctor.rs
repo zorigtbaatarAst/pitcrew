@@ -13,7 +13,7 @@
 //! config that can define them is a config you already trusted enough to
 //! launch services from.
 
-use pitcrew_platform::{caps::Enforcement, memory, ports, process::Sampler, Os};
+use pitcrew_platform::{caps::Enforcement, memory, ports, process, process::Sampler, Os};
 
 /// One line of the report, and whether it is a problem.
 pub struct Check {
@@ -148,6 +148,28 @@ pub fn run() -> Vec<Check> {
         },
         line: format!("caps   {}", caps.explain()),
     });
+
+    // Windows has no SIGTERM that reaches a detached process, so `stop`
+    // terminates rather than asking. Saying so beats an identical-looking
+    // `stop` implying a clean shutdown it did not perform.
+    if !process::graceful_stop_available() {
+        out.push(Check {
+            level: Level::Warn,
+            line: "stop   no graceful signal on this platform — stop terminates \
+                   rather than asking, so a service gets no chance to flush"
+                .into(),
+        });
+    }
+    // A start command is a POSIX shell string; on Windows it goes to cmd.exe,
+    // where `&&` works and a `{ ...; }` grouping does not.
+    if !pitcrew_platform::spawn::posix_shell() {
+        out.push(Check {
+            level: Level::Warn,
+            line: "shell  start commands run under cmd.exe here — a config written \
+                   for a POSIX shell may not run unchanged"
+                .into(),
+        });
+    }
 
     let (boot, now) = (pitcrew_platform::boot_time(), pitcrew_platform::now());
     out.push(Check {
