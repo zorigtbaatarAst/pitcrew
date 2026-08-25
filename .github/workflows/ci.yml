@@ -218,6 +218,35 @@ jobs:
       - name: gui tests
         run: bash test/run.sh gui
 
+  # The Rust port, alongside the bash tree rather than instead of it: both
+  # implementations coexist until the port reaches parity, and this job is what
+  # says the contract types still match what bash actually emits.
+  #
+  # The parity gate (crates/pitcrew-model/tests/contract.rs) round-trips real
+  # captured `status --json` output through the Rust types. A field bash adds
+  # and Rust does not model fails here, naming the JSON path — which is the
+  # whole point of porting the contract before porting anything that produces it.
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      # -D warnings, because a lint that is only ever a notice is a lint nobody
+      # reads — the same bargain shellcheck --severity=warning already makes here.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
   # There is no third Windows job, and the two above do not cover integration:
   # a real stack of real services running on a real box is still untested.
   #

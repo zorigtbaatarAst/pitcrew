@@ -1,0 +1,41 @@
+# pitcrew — cargo workspace.
+#
+# Crates are added as their phase begins rather than all up front; an empty
+# crate that does nothing for three months is clutter, and this codebase has a
+# standing rule against speculative structure (AGENTS.md, "the one extension
+# point").
+#
+# Planned, in phase order:
+#   pitcrew-model     the JSON contract types                    (phase 0) ✓
+#   pitcrew-cli       clap dispatch, the `pitcrew` binary        (phase 0) ✓
+#   pitcrew-platform  processes, ports, memory, RAM caps         (phase 1) ✓
+#   pitcrew-core      config, diagnostics, lifecycle, formatting (phase 2-4)
+#   pitcrew-tui       ratatui dashboard                          (phase 5)
+#   pitcrew-gui       gtk4-rs + libadwaita desktop app           (phase 6)
+[workspace]
+resolver = "2"
+members = [
+    "crates/pitcrew-model",
+    "crates/pitcrew-cli",
+    "crates/pitcrew-platform",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"   # floor set by sysinfo 0.39
+license = "MIT"
+repository = "https://github.com/zorigtbaatar/pitcrew"
+
+[workspace.dependencies]
+pitcrew-model = { path = "crates/pitcrew-model" }
+pitcrew-platform = { path = "crates/pitcrew-platform" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The dashboard reads its own numbers off this machine while the machine is
+# busy running six JVMs. Optimising the release build is not a nicety.
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

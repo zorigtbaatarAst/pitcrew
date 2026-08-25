@@ -1,5 +1,5 @@
 # pitcrew — development tasks. The tool itself needs none of this to run.
-.PHONY: help test lint check setup install install-gui gui-deps
+.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint
 
 help:
 	@echo "make setup   fresh clone -> working tool (add YES=1 to install packages)"
@@ -11,6 +11,9 @@ help:
 	@echo "make gui-deps     show what the desktop app needs on this OS (add YES=1 to install)"
 	@echo
 	@echo "make test T=meters   run only test files matching 'meters'"
+	@echo
+	@echo "make rust      the Rust port: fmt check, clippy, tests"
+	@echo "make rust-test cargo test --workspace"
 
 test:
 	@bash test/run.sh $(T)
@@ -32,3 +35,16 @@ install-gui:
 # YES=1 opts in to running the privileged install; without it this only reports.
 gui-deps:
 	@./gui/install-deps.sh $(if $(YES),--yes,)
+
+# ── the Rust port ───────────────────────────────────────────────────────────
+# Runs alongside `make check`, not instead of it: both implementations are live
+# until the port reaches parity. Needs rustfmt and clippy — on Fedora those are
+# separate packages (`rustfmt`, `clippy`), or `rustup component add` elsewhere.
+rust: rust-lint rust-test
+
+rust-test:
+	@cargo test --workspace
+
+rust-lint:
+	@cargo fmt --all -- --check
+	@cargo clippy --workspace --all-targets -- -D warnings

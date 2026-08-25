@@ -138,6 +138,50 @@ attribute, and most are pinned by a test.
    `model.fix_action` against a whitelist of verbs and run as **argv**, never
    through a shell: plugins write that field.
 
+
+## The Rust port
+
+There is a Rust rewrite in progress under `crates/`. **Both implementations are
+live**: `bin/pitcrew` + `lib/` is still the working tool, and the Rust tree is
+built up phase by phase behind it. Do not delete bash files as their Rust
+counterpart lands — the parity check depends on being able to run both.
+
+```
+crates/pitcrew-model/     the JSON contract, as serde types            done
+crates/pitcrew-platform/  processes, ports, memory, RAM caps           done
+crates/pitcrew-cli/       clap surface; `doctor` env checks only       partial
+```
+
+Phases still to come: config + model (2), lifecycle (3), diagnostics and JSON
+output (4), TUI (5), GTK GUI (6), distribution (7). The plan lives outside the
+repo; the phase numbering in the code comments refers to it.
+
+Three things to know before touching any of it:
+
+1. **`crates/pitcrew-model/tests/contract.rs` is the parity gate.**
+   `tests/golden/*.status.json` is real captured output from the bash tree. The
+   test round-trips it through the Rust types and deep-compares, so a field bash
+   emits that Rust does not model fails by name and JSON path. Refresh the
+   golden files by re-running `./bin/pitcrew -C <fixture> status --json`.
+
+2. **The no-forks-per-frame rule (constraint 4) does not apply to the Rust
+   tree** — but the behaviour it forced still does. Batched dependency checks,
+   throttled health probes, incremental log reads and slow-clock swap sampling
+   were all good decisions that a fast language no longer forces. Re-derive them
+   deliberately; the naive "poll everything every frame" version is fast enough
+   to ship and measurably worse for the machine being monitored.
+
+3. **`crates/pitcrew-platform` inherits constraint 5 verbatim.** A
+   `cfg(target_os)` anywhere outside that crate is a bug, for the same reason a
+   `Darwin` case outside `lib/00-platform.sh` is.
+
+New in the port, and not available from bash: **RAM caps are enforced on
+Windows** via a named Job Object (`caps::apply_job_object`), which is the direct
+analogue of the systemd scope — `stop` re-opens it by name and terminates the
+whole job. That code is compile-verified in CI on `windows-latest` and has not
+been run against a real capped runaway process. macOS still cannot enforce a cap
+and `Enforcement::explain()` says so.
+
 ## Layout
 
 ```
