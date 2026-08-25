@@ -40,6 +40,8 @@
 pub mod caps;
 pub mod memory;
 pub mod ports;
+#[cfg(target_os = "linux")]
+mod proc_linux;
 pub mod process;
 pub mod spawn;
 

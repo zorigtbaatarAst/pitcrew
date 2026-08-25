@@ -87,12 +87,16 @@ impl Collector {
         //
         // The pid liveness test is `kill(pid, 0)`: one syscall per component,
         // against 750 file reads.
-        let anything_alive = p
+        // Only the roots this project started. Nothing here ever asks about a
+        // process outside a component's tree, so sweeping the machine to find
+        // four of them is work with no answer attached to it.
+        let roots: Vec<u32> = p
             .components()
             .filter_map(|c| logs.pid(&c.name))
-            .any(process::is_alive);
-        let sample = if anything_alive {
-            self.sampler.sample()
+            .filter(|pid| process::is_alive(*pid))
+            .collect();
+        let sample = if !roots.is_empty() {
+            self.sampler.sample_trees(&roots)
         } else {
             // Still advances the CPU baseline's clock, so the first frame after
             // something starts is not differencing against a stale window.

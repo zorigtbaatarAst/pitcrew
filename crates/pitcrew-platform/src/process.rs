@@ -36,6 +36,15 @@ pub struct ProcessTable {
 }
 
 impl ProcessTable {
+    /// Assemble one from parts. For a collector that built the maps itself —
+    /// see `proc_linux`, which walks only the trees it was asked for.
+    pub fn from_parts(
+        procs: HashMap<u32, ProcInfo>,
+        children: HashMap<u32, Vec<u32>>,
+    ) -> ProcessTable {
+        ProcessTable { procs, children }
+    }
+
     pub fn get(&self, pid: u32) -> Option<&ProcInfo> {
         self.procs.get(&pid)
     }
@@ -165,6 +174,57 @@ impl Sampler {
             prev: HashMap::new(),
             prev_at: Instant::now(),
             primed: false,
+        }
+    }
+
+    /// Refresh only the trees rooted at `roots`, where the platform can.
+    ///
+    /// A dashboard frame wants four processes, not seven hundred. On Linux the
+    /// kernel publishes the child list, so the walk costs one read per process
+    /// IN THE TREE; everywhere else this falls back to the full sweep, which
+    /// produces the same numbers more slowly.
+    pub fn sample_trees(&mut self, roots: &[u32]) -> Sample {
+        #[cfg(target_os = "linux")]
+        {
+            if crate::proc_linux::available() {
+                let table = crate::proc_linux::read_trees(roots);
+                let cpu = self.rates(&table);
+                return Sample { table, cpu };
+            }
+        }
+        let _ = roots;
+        self.sample()
+    }
+
+    /// Turn the cumulative counters in a table into rates over the window since
+    /// the last sample, and roll the window forward.
+    fn rates(&mut self, table: &ProcessTable) -> HashMap<u32, f64> {
+        let now = Instant::now();
+        let window_ms = now.duration_since(self.prev_at).as_secs_f64() * 1000.0;
+        let mut cpu = HashMap::new();
+        let mut next_prev = HashMap::with_capacity(table.len());
+        for p in table.iter() {
+            if let Some(&was) = self.prev.get(&p.pid) {
+                // Saturating: a pid recycled between samples belongs to a
+                // different process whose counter starts near zero, and a
+                // negative rate drawn as a bar is worse than no rate at all.
+                let delta = p.cpu_ms.saturating_sub(was) as f64;
+                if window_ms > 0.0 {
+                    cpu.insert(p.pid, (delta / window_ms) * 100.0);
+                }
+            }
+            next_prev.insert(p.pid, p.cpu_ms);
+        }
+        // Rebuilt, never updated in place: a map only ever inserted into
+        // accumulates every pid the machine has used since the dashboard opened.
+        self.prev = next_prev;
+        self.prev_at = now;
+        let primed = self.primed;
+        self.primed = true;
+        if primed {
+            cpu
+        } else {
+            HashMap::new()
         }
     }
 
@@ -310,7 +370,7 @@ fn command_of(proc: &sysinfo::Process) -> String {
         .map(|a| a.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ");
-    readable(&joined)
+    readable_cmd(&joined)
 }
 
 /// One line, and a length a person can actually read.
@@ -320,7 +380,7 @@ fn command_of(proc: &sysinfo::Process) -> String {
 /// every component's tree has 600 characters of quoted `systemd-run` as its
 /// command. Rendered verbatim that is a process view nobody can use, and in a
 /// GTK label it is 600 characters of nothing.
-fn readable(cmd: &str) -> String {
+pub(crate) fn readable_cmd(cmd: &str) -> String {
     const MAX: usize = 160;
     let flat: String = cmd.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= MAX {
@@ -606,12 +666,12 @@ mod signal_tests {
     /// `systemd-run` as its command.
     #[test]
     fn a_command_is_one_readable_line() {
-        assert_eq!(readable("a  b\n c"), "a b c");
+        assert_eq!(readable_cmd("a  b\n c"), "a b c");
         let long = "x".repeat(500);
-        let out = readable(&long);
+        let out = readable_cmd(&long);
         assert!(out.chars().count() <= 160, "{}", out.chars().count());
         assert!(out.ends_with('…'), "a truncation says it was truncated");
-        assert!(!readable("short").ends_with('…'));
+        assert!(!readable_cmd("short").ends_with('…'));
     }
 
     #[test]
