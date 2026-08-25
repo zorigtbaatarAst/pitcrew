@@ -198,6 +198,10 @@ impl Sampler {
 
     /// Turn the cumulative counters in a table into rates over the window since
     /// the last sample, and roll the window forward.
+    ///
+    /// Linux-only because the fast path is: everywhere else `sample()` computes
+    /// the rates as it builds the table, and this would be dead code.
+    #[cfg(target_os = "linux")]
     fn rates(&mut self, table: &ProcessTable) -> HashMap<u32, f64> {
         let now = Instant::now();
         let window_ms = now.duration_since(self.prev_at).as_secs_f64() * 1000.0;
