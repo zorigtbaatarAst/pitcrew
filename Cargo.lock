@@ -452,9 +452,17 @@ name = "pitcrew-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "pitcrew-core",
  "pitcrew-model",
  "pitcrew-platform",
  "serde_json",
+]
+
+[[package]]
+name = "pitcrew-core"
+version = "0.1.0"
+dependencies = [
+ "pitcrew-model",
 ]
 
 [[package]]

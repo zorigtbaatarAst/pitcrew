@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 pitcrew-model = { workspace = true }
+pitcrew-core = { workspace = true }
 pitcrew-platform = { workspace = true }
 serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }

@@ -149,10 +149,12 @@ counterpart lands — the parity check depends on being able to run both.
 ```
 crates/pitcrew-model/     the JSON contract, as serde types            done
 crates/pitcrew-platform/  processes, ports, memory, RAM caps           done
-crates/pitcrew-cli/       clap surface; `doctor` env checks only       partial
+crates/pitcrew-core/      YAML front end, config model, validation        partial
+crates/pitcrew-cli/       clap surface; `doctor` env checks, `check`      partial
 ```
 
-Phases still to come: config + model (2), lifecycle (3), diagnostics and JSON
+Phases still to come: the rest of config (targets, profiles, limits, registry,
+detect, init), lifecycle (3), diagnostics and JSON
 output (4), TUI (5), GTK GUI (6), distribution (7). The plan lives outside the
 repo; the phase numbering in the code comments refers to it.
 
@@ -171,7 +173,17 @@ Three things to know before touching any of it:
    deliberately; the naive "poll everything every frame" version is fast enough
    to ship and measurably worse for the machine being monitored.
 
-3. **`crates/pitcrew-platform` inherits constraint 5 verbatim.** A
+3. **The YAML parser is hand-written on purpose, and its refusals are the
+   feature.** `crates/pitcrew-core/src/yaml.rs` implements the same narrow
+   subset `lib/18-yaml.sh` does, for the same reason: a general YAML parser
+   reads `port:8080` as the plain scalar `"port:8080"`, which is a typo that
+   then renders as a component with no port and no complaint. Both parsers are
+   verified byte-identical on `test/fixture-yaml/pitcrew.yaml` and
+   `examples/pitcrew.yaml` — `cargo run -p pitcrew-core --example dump -- <file>`
+   emits the same flattened `path=value` lines as `yaml_parse`, so a divergence
+   is one `diff` away. Keep it that way while both exist.
+
+4. **`crates/pitcrew-platform` inherits constraint 5 verbatim.** A
    `cfg(target_os)` anywhere outside that crate is a bug, for the same reason a
    `Darwin` case outside `lib/00-platform.sh` is.
 

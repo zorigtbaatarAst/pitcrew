@@ -4,6 +4,7 @@
 //! phase lands (see the plan). Until then each one says so rather than doing
 //! something surprising — errors never pass silently, including this one.
 
+mod check;
 mod doctor;
 
 use clap::{Parser, Subcommand};
@@ -54,6 +55,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Load a config and report what is wrong with it.
+    Check {
+        /// A config file or a project directory. Defaults to walking up from here.
+        target: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> std::process::ExitCode {
@@ -69,8 +75,34 @@ fn main() -> std::process::ExitCode {
         // Its project-specific half arrives with the config model in phase 2,
         // and the report says so.
         Command::Doctor { json } => cmd_doctor(json),
+        Command::Check { target } => cmd_check(target.as_deref(), cli.dir.as_deref()),
         Command::Status { .. } | Command::Json { .. } | Command::Diagnose { .. } => {
             eprintln!("pitcrew: not ported yet — phase 4 (diagnostics and JSON output).");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Exits non-zero on anything worth a person's attention, so this works as a
+/// pre-commit hook without a wrapper deciding what counts.
+fn cmd_check(
+    target: Option<&std::path::Path>,
+    dir: Option<&std::path::Path>,
+) -> std::process::ExitCode {
+    match check::check(target.or(dir)) {
+        check::Outcome::Clean(summary) => {
+            println!("ok     {summary}");
+            std::process::ExitCode::SUCCESS
+        }
+        check::Outcome::Warned { summary, warnings } => {
+            println!("ok     {summary}");
+            for w in &warnings {
+                println!("warn   {w}");
+            }
+            std::process::ExitCode::FAILURE
+        }
+        check::Outcome::Refused(e) => {
+            eprintln!("error  {e}");
             std::process::ExitCode::FAILURE
         }
     }

@@ -1,0 +1,11 @@
+[package]
+name = "pitcrew-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The pitcrew config model, and the front ends onto it."
+
+[dependencies]
+pitcrew-model = { workspace = true }

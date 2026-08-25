@@ -9,7 +9,7 @@
 #   pitcrew-model     the JSON contract types                    (phase 0) ✓
 #   pitcrew-cli       clap dispatch, the `pitcrew` binary        (phase 0) ✓
 #   pitcrew-platform  processes, ports, memory, RAM caps         (phase 1) ✓
-#   pitcrew-core      config, diagnostics, lifecycle, formatting (phase 2-4)
+#   pitcrew-core      config, diagnostics, lifecycle, formatting (phase 2-4) ~
 #   pitcrew-tui       ratatui dashboard                          (phase 5)
 #   pitcrew-gui       gtk4-rs + libadwaita desktop app           (phase 6)
 [workspace]
@@ -18,6 +18,7 @@ members = [
     "crates/pitcrew-model",
     "crates/pitcrew-cli",
     "crates/pitcrew-platform",
+    "crates/pitcrew-core",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ repository = "https://github.com/zorigtbaatar/pitcrew"
 [workspace.dependencies]
 pitcrew-model = { path = "crates/pitcrew-model" }
 pitcrew-platform = { path = "crates/pitcrew-platform" }
+pitcrew-core = { path = "crates/pitcrew-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
