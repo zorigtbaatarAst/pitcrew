@@ -164,21 +164,40 @@ fn walk(root: &Path, base: &Path, budget: u8, out: &mut Detected, ports: &mut Ve
             continue;
         }
 
-        // `sales/backend` and `sales/frontend` are two ROLES of one app.
-        if let Some(role) = role_of_dir(&name) {
-            if let Some(kind) = kind_of(&dir) {
-                if runnable(&dir, kind) {
-                    let app = dir
-                        .parent()
-                        .map(name_of)
-                        .filter(|p| p != &name_of(root))
-                        .unwrap_or_else(|| name_of(root));
-                    push(root, &dir, app, Some(role.to_string()), kind, out, ports);
+        // Does it HOLD role directories? Then it is the app and they are its
+        // roles. A role name only means a role when it is inside something: a
+        // top-level `api/` is an app called api, not the backend of the
+        // repository.
+        let mut found_roles = false;
+        if let Ok(inner) = std::fs::read_dir(&dir) {
+            let mut subs: Vec<PathBuf> = inner
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
+            subs.sort();
+            for sub in subs {
+                let Some(role) = role_of_dir(&name_of(&sub)) else {
                     continue;
-                }
+                };
+                let Some(kind) = kind_of(&sub) else { continue };
+                push(
+                    root,
+                    &sub,
+                    name.clone(),
+                    Some(role.into()),
+                    kind,
+                    out,
+                    ports,
+                );
+                found_roles = true;
             }
         }
+        if found_roles {
+            continue;
+        }
 
+        // Is this directory itself startable?
         if let Some(kind) = kind_of(&dir) {
             if runnable(&dir, kind) {
                 push(root, &dir, name.clone(), None, kind, out, ports);
@@ -187,6 +206,11 @@ fn walk(root: &Path, base: &Path, budget: u8, out: &mut Detected, ports: &mut Ve
                 continue;
             }
         }
+
+        // Not an app and not a set of roles, so it may be a directory that
+        // merely GROUPS apps: apis/, apps/, packages/, services/. Rather than
+        // matching a list of names it might be called, look inside — a name
+        // list only ever knows the repositories it was written against.
         walk(root, &dir, budget - 1, out, ports);
     }
 }
@@ -643,10 +667,13 @@ fn command(root: &Path, d: &Path, kind: Kind, port: Option<u16>) -> String {
         .unwrap_or_default();
     let rel = rel.trim_matches('/').to_string();
 
-    // `pf_runnable`, not an executable-bit test: Windows has no execute bit, so
-    // `[ -x gradlew ]` is false for a wrapper that runs perfectly — and every
-    // Windows repo got told to use a system gradle instead of the one it ships.
-    let has = |f: &str| root.join(f).is_file();
+    // A wrapper has to be RUNNABLE, not merely present: on Unix `./gradlew`
+    // without the execute bit fails, and generating a command that cannot work
+    // is worse than falling back to the system tool. Windows has no execute
+    // bit at all, so there existence IS the question — checking for one is how
+    // every Windows repo got told to use a system gradle instead of the
+    // wrapper it ships.
+    let has = |f: &str| runnable_file(&root.join(f));
 
     match kind {
         Kind::Gradle => {
@@ -710,6 +737,22 @@ fn command(root: &Path, d: &Path, kind: Kind, port: Option<u16>) -> String {
                 "bundle exec ruby main.rb".into()
             }
         }
+    }
+}
+
+/// Can this file be executed as a command?
+fn runnable_file(p: &Path) -> bool {
+    if !p.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 

@@ -171,6 +171,17 @@ PATH=/tmp/bin:$PATH bash test/run.sh gui     # 108 run, 0 failed
 Keep that working. It is the only end-to-end check that both implementations
 still mean the same thing, and it costs one symlink.
 
+**`make compare` runs every parity check at once** — `test/compare.sh`. Five of
+them: the YAML parser byte for byte, the JSON contract by key set AND value,
+`init` output byte for byte, the Python GUI suite against the Rust binary, and
+the command surface. It uses only the fixtures, so it says the same thing on
+any machine, and it exits non-zero on a difference.
+
+Run it before believing the port is still correct. It found two real detection
+bugs the first time it ran: a role name being treated as a role at the top
+level (which collapses two apps into one) and a `gradlew` without the execute
+bit being used anyway (which generates a command that simply fails).
+
 Phases still to come: config detection and `init` (the rest of 2), diagnostics
 and JSON
 output (4), TUI (5), GTK GUI (6), distribution (7). The plan lives outside the

@@ -11,6 +11,18 @@ use std::path::{Path, PathBuf};
 
 use pitcrew_core::detect::{self, Kind};
 
+fn make_executable(p: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(p).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(p, perms).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = p;
+}
+
 fn write(root: &Path, rel: &str, body: &str) {
     let p = root.join(rel);
     fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -23,7 +35,11 @@ fn monorepo(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
 
+    // Executable, like a real one: `./gradlew` without the bit simply fails,
+    // and detection is right to fall back to the system tool when it is
+    // missing — there is a test for that below.
     write(&root, "gradlew", "#!/bin/sh\n");
+    make_executable(&root.join("gradlew"));
     write(
         &root,
         "settings.gradle.kts",
@@ -241,4 +257,50 @@ fn the_scan_is_deterministic() {
     for _ in 0..3 {
         assert_eq!(detect::scan(&root).apps(), first);
     }
+}
+
+/// A wrapper that is not executable cannot be run as `./gradlew`, so a command
+/// naming it would simply fail. Falling back to the system tool is the honest
+/// answer — and on Windows there is no execute bit, so there its presence IS
+/// the whole question.
+#[cfg(unix)]
+#[test]
+fn a_wrapper_without_the_execute_bit_is_not_used() {
+    let root = monorepo("nonexec");
+    let mut perms = fs::metadata(root.join("gradlew")).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o644);
+    fs::set_permissions(root.join("gradlew"), perms).unwrap();
+
+    let d = detect::scan(&root);
+    let be = d
+        .components
+        .iter()
+        .find(|c| c.app == "sales" && c.role == "be")
+        .unwrap();
+    assert_eq!(
+        be.cmd, "gradle bootRun",
+        "a command naming ./gradlew would fail"
+    );
+}
+
+/// A role name only means a role when it is INSIDE an app directory. A
+/// top-level `api/` is an app called api, not the backend of the repository —
+/// and reading it the other way collapses two apps into one.
+#[test]
+fn a_top_level_role_name_is_an_app_not_a_role() {
+    let root = monorepo("toplevel");
+    write(
+        &root,
+        "api/build.gradle.kts",
+        "plugins {\n  id(\"org.springframework.boot\")\n}\n",
+    );
+    write(
+        &root,
+        "web/package.json",
+        "{\"scripts\":{\"dev\":\"next dev\"},\"dependencies\":{\"next\":\"14\"}}",
+    );
+    let apps = detect::scan(&root).apps();
+    assert!(apps.contains(&"api".to_string()), "{apps:?}");
+    assert!(apps.contains(&"web".to_string()), "{apps:?}");
 }
