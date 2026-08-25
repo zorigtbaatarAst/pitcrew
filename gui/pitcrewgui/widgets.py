@@ -958,6 +958,17 @@ class ProcessTree(Gtk.Box):
         return box
 
 
+def set_row_compact(row, compact: bool) -> None:
+    """Show or hide a row's expendable columns.
+
+    A function rather than a method because the header is a plain
+    `AdwActionRow` built by a classmethod, not a ComponentRow, and it has to
+    lose exactly the same columns at exactly the same width.
+    """
+    for widget in getattr(row, "_optional", ()):
+        widget.set_visible(not compact)
+
+
 class ComponentRow(Adw.ActionRow):
     """One component: state, what it is using, and the buttons that act on it."""
 
@@ -967,6 +978,17 @@ class ComponentRow(Adw.ActionRow):
     W_BADGE, W_MEM, W_CPU, W_PORT, W_AGE, W_NOTE = 8, 16, 5, 7, 6, 10
     W_CAP = 58          # pixels, not characters: it is a bar
     W_ACTIONS = 14      # the icon buttons at the end, in characters
+
+    def set_compact(self, compact: bool) -> None:
+        """Drop the columns a narrow window has no room for.
+
+        A row whose columns are fixed so they line up cannot shrink — that is
+        the whole point of the fixed widths — so the only way down is to lose
+        one. Filtering a layout built for eight columns is not the same as
+        drawing a narrower one, but a table that runs off the right-hand edge
+        is not a narrower one either.
+        """
+        set_row_compact(self, compact)
 
     @classmethod
     def header(cls) -> Adw.ActionRow:
@@ -979,6 +1001,10 @@ class ComponentRow(Adw.ActionRow):
         row = Adw.ActionRow(title="component", use_markup=False)
         row.add_css_class("table-head")
         row.set_activatable(False)
+        # Kept in the same order as the row's own columns, and the same three
+        # marked expendable — a header that keeps a column its rows have
+        # dropped is worse than no header at all.
+        optional = []
         for text, chars in (("state", cls.W_BADGE), ("memory / cap", cls.W_MEM),
                             ("", cls.W_CAP // 8), ("cpu", cls.W_CPU),
                             ("port", cls.W_PORT), ("up", cls.W_AGE),
@@ -986,6 +1012,9 @@ class ComponentRow(Adw.ActionRow):
             label = Gtk.Label(label=text, valign=Gtk.Align.CENTER, width_chars=chars,
                               xalign=0 if text == "state" else 1)
             row.add_suffix(label)
+            if chars in (cls.W_CPU, cls.W_AGE, cls.W_NOTE) and text != "port":
+                optional.append(label)
+        row._optional = tuple(optional)
         return row
 
     def __init__(self, name: str, color: str, on_action, on_show_logs=None,
@@ -1027,6 +1056,13 @@ class ComponentRow(Adw.ActionRow):
         self._note = self._column(self.W_NOTE)  # exit code, restarts — the exceptions
         for widget in (self._mem, self._cap, self._cpu, self._port, self._age, self._note):
             self.add_suffix(widget)
+
+        # Dropped first in a narrow window, cheapest loss first — the same
+        # priority the terminal dashboard's layout_for_width uses, and for the
+        # same reason. `up` is derivable from watching, `cpu` is what the
+        # graphs are for, and memory is what people came to look at, so it
+        # stays until there is nothing left to give.
+        self._optional = (self._age, self._cpu, self._note)
 
         # A gradle backend sits in `starting` for a minute. Something has to
         # move, or you cannot tell waiting from stuck.

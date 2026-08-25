@@ -102,6 +102,22 @@ attribute, and most are pinned by a test.
    has before reaching for something new; `AdwToggleGroup` (1.7) cost the app
    the ability to start on the most common Linux desktop.
 
+   **A `Gtk.Stack` sizes to its LARGEST child unless told otherwise.** Both
+   stacks here set `hhomogeneous` false, because the Logs toolbar — a row of
+   controls that cannot wrap, and the widest thing in the app — was setting the
+   minimum width of every other page. Projects needs 127px and was being given
+   854, so a narrow window clipped rows that had room to shrink.
+
+   **The component table cannot shrink, so it drops columns instead.** Its
+   widths are fixed precisely so the columns line up, which means the only way
+   down is to lose one — `set_row_compact` drops `up`, `cpu` and the note
+   column, cheapest loss first, the same priority `layout_for_width` uses in
+   the terminal. The header drops the same three: one that keeps a column its
+   rows have lost is worse than no header, because every figure below it is
+   then labelled with the wrong name. `test_every_page_fits_a_small_window`
+   pins the whole thing at 640px, which is a half-screen window on a 1280
+   laptop — how a monitoring tool is actually used.
+
    **Do not put a view inside `AdwPreferencesPage` if it has columns or
    figures.** That widget carries its own ~600px clamp which cannot be widened,
    and it is what left half of every window empty. Use a Box in an `Adw.Clamp`

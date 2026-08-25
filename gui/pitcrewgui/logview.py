@@ -97,7 +97,11 @@ class LogView(Gtk.Box):
         # A tailer without a filter is half a tool: the line you want is one of
         # four hundred. Filtering hides lines as they arrive rather than
         # re-reading the file, so it works on a live tail.
-        self._filter = Gtk.SearchEntry(placeholder_text="Filter lines", width_chars=18)
+        # Eighteen characters was a floor, not a size: it grows to fill the bar
+        # anyway, and the only thing the number did was stop the whole window
+        # from being resized narrow. Eight still shows enough of what you typed.
+        self._filter = Gtk.SearchEntry(placeholder_text="Filter lines", width_chars=8,
+                                       hexpand=True)
         self._filter.connect("search-changed", lambda _e: self._refilter())
 
         self._errors_only = Gtk.ToggleButton(icon_name="dialog-warning-symbolic",
@@ -127,6 +131,11 @@ class LogView(Gtk.Box):
 
         bar = Gtk.Box(spacing=8, margin_top=10, margin_bottom=4,
                       margin_start=12, margin_end=12)
+        # The role filter is the first thing to go in a narrow window: the
+        # picker beside it already selects a component outright, so this is a
+        # shortcut rather than the only way through. Hidden by the breakpoint
+        # in window.py, which is where every other width decision lives.
+        self._roles.set_visible(True)
         bar.append(self._roles)
         bar.append(self._picker)
         bar.append(self._filter)
@@ -138,6 +147,15 @@ class LogView(Gtk.Box):
         bar.append(clear)
 
         return bar
+
+    def role_filter(self) -> Gtk.Widget:
+        """The role segmented control, for the window's narrow breakpoint.
+
+        Exposed rather than reached into: which control is expendable at a
+        given width is this view's business, and the window only needs to know
+        that there is one.
+        """
+        return self._roles
 
     def _detach_current(self) -> None:
         if self._current and self._on_detach is not None:

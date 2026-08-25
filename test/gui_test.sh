@@ -730,6 +730,66 @@ print('overview' in [w._stack.get_visible_child_name() or '', 'overview'])
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "2 1 1" "findings, recovery candidates, consumers"
 }
 
+test_every_page_fits_a_small_window() {
+  gui_available || return 0
+  # A Gtk.Stack sizes to its LARGEST child unless told otherwise, so the Logs
+  # toolbar — the widest thing in the app at 854px — was setting the minimum
+  # width of every other page. Projects needs 127 and was being given 854,
+  # which is why a narrow window clipped rows that had room to shrink.
+  #
+  # 640 is not arbitrary: it is a half-screen window on a 1280 laptop, which is
+  # how a monitoring tool is actually used — beside the thing being monitored.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw, Gtk
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+w.present()
+w._set_compact(True)
+w._logs.role_filter().set_visible(False)
+worst = 0
+for page in ('overview', 'components', 'resources', 'logs', 'projects'):
+    child = w._stack.get_child_by_name(page)
+    worst = max(worst, child.measure(Gtk.Orientation.HORIZONTAL, -1)[0])
+print(worst <= 640, worst)
+")
+  assert_match "$out" "^True " "no page needs more than 640px once narrowed: $out"
+}
+
+test_the_stack_does_not_charge_every_page_for_the_widest_one() {
+  gui_available || return 0
+  # The fix for the above, asserted directly: without it the stack reports the
+  # widest child whatever is on screen, and a page that could shrink never
+  # gets the chance.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+print(w._stack.get_hhomogeneous(), w._body.get_hhomogeneous())
+")
+  assert_eq "$out" "False False" "each page is measured on its own"
+}
+
+test_the_header_loses_the_same_columns_its_rows_do() {
+  gui_available || return 0
+  # A header that keeps a column its rows have dropped is worse than no header:
+  # every figure below it is then labelled with the wrong name.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+from pitcrewgui.widgets import ComponentRow, set_row_compact
+head = ComponentRow.header()
+row = ComponentRow('be-a', '#3fb950', lambda *a: None, lambda *a: None, lambda *a: None)
+set_row_compact(head, True)
+row.set_compact(True)
+print(len(head._optional), len(row._optional))
+print(all(not w.get_visible() for w in head._optional))
+print(all(not w.get_visible() for w in row._optional))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "3 3" "the same three columns"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "gone from the header"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "True" "and from the rows"
+}
+
 test_one_ramp_means_one_ramp() {
   gui_available || return 0
   # AGENTS.md says resource meters and status badges draw from the same ramp,

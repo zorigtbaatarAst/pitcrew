@@ -53,6 +53,7 @@ from .widgets import (
     SegmentedControl,
     ShareChart,
     human_age,
+    set_row_compact,
 )
 
 # How wide the content column is allowed to get. Wide enough for the
@@ -97,6 +98,12 @@ class Window(Adw.ApplicationWindow):
         self._crashes.enabled = settings["notify"] == "crash"
 
         self._stack = Adw.ViewStack()
+        # A stack sizes to its LARGEST child unless told otherwise, so the Logs
+        # page's toolbar — the widest thing in the app — set the minimum width
+        # of every other page. Projects needs 127px and was being given 854,
+        # which is why a narrow window clipped rows that had room to shrink.
+        self._stack.set_hhomogeneous(False)
+        self._stack.set_vhomogeneous(False)
         # Overview leads because it answers the question you opened the window
         # to ask. Components is a list, and a list is evidence, not an answer.
         self._stack.add_titled_with_icon(
@@ -134,6 +141,10 @@ class Window(Adw.ApplicationWindow):
         # which is more use than a status page that throws it away.
         self._welcome = self._build_welcome()
         self._body = Gtk.Stack()
+        # Same reason: the welcome page must not be held to the width of the
+        # live one, or a fresh install cannot be resized either.
+        self._body.set_hhomogeneous(False)
+        self._body.set_vhomogeneous(False)
         self._body.add_named(self._welcome, "welcome")
         self._body.add_named(self._stack, "live")
         self._body.set_visible_child_name("welcome")
@@ -158,6 +169,21 @@ class Window(Adw.ApplicationWindow):
         breakpoint_.add_setter(self._columns, "orientation", Gtk.Orientation.VERTICAL)
         breakpoint_.add_setter(self._left, "width-request", -1)
         self.add_breakpoint(breakpoint_)
+
+        # The Logs toolbar is the widest thing in the app — a row of controls
+        # that cannot wrap. Below this the role filter goes: the picker next to
+        # it selects a component outright, so the roles are a shortcut rather
+        # than the only way through, and losing a shortcut beats a toolbar that
+        # runs off the edge of the window.
+        narrow = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 700px"))
+        narrow.add_setter(self._logs.role_filter(), "visible", False)
+        # The component table's columns are fixed so they line up, so the only
+        # way to make it narrower is to lose one. Rows come and go, so this is
+        # a signal rather than a setter on a fixed set of objects.
+        narrow.connect("apply", lambda _b: self._set_compact(True))
+        narrow.connect("unapply", lambda _b: self._set_compact(False))
+        self.add_breakpoint(narrow)
 
         self._install_shortcuts()
         if settings["tab"] in ("overview", "components", "resources", "logs", "projects"):
@@ -186,6 +212,9 @@ class Window(Adw.ApplicationWindow):
         # Rebuilding the list is only correct-and-cheap because it happens when
         # the SHAPE changes, not every frame. This is that shape.
         self._layout_key: tuple | None = None
+        # Set by the narrow breakpoint. Read when a row is built, so one made
+        # while the window is already narrow does not flash wide for a frame.
+        self._compact = False
         # Until the first sample lands there is nothing to draw and no error to
         # report. An empty list looks identical to a broken app, and a stream
         # interval of 10s means someone stares at it for ten seconds.
@@ -1031,6 +1060,18 @@ class Window(Adw.ApplicationWindow):
         box.append(scroller)
         return box
 
+    def _set_compact(self, compact: bool) -> None:
+        """Tell every component row how much room it has.
+
+        Remembered as well as applied: rows are rebuilt when the shape of the
+        list changes, and a row built while the window is narrow has to arrive
+        already narrow rather than flashing wide for a frame.
+        """
+        self._compact = compact
+        set_row_compact(self._comp_header, compact)
+        for row in self._rows.values():
+            row.set_compact(compact)
+
     def _filter_changed(self) -> None:
         self._layout_key = None            # the visible set changed; rebuild
         if self._last_components:
@@ -1859,6 +1900,7 @@ class Window(Adw.ApplicationWindow):
                                        self._run_action, self._show_logs_for,
                                        self._open_log_window)
                     row.set_activatable(True)
+                    row.set_compact(self._compact)
                     row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
                     group.add(row)
                     self._rows[comp["name"]] = row
@@ -1881,6 +1923,7 @@ class Window(Adw.ApplicationWindow):
                 row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action,
                                    self._show_logs_for, self._open_log_window)
                 row.set_activatable(True)
+                row.set_compact(self._compact)
                 row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
                 group.add(row)
                 self._rows[comp["name"]] = row
