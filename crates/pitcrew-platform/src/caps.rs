@@ -218,13 +218,16 @@ pub fn apply_job_object(pid: u32, name: &str, max_bytes: u64) -> std::io::Result
 pub fn terminate_job_object(name: &str) -> std::io::Result<bool> {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::JobObjects::{
-        OpenJobObjectW, TerminateJobObject, JOB_OBJECT_ALL_ACCESS,
-    };
+    use windows::Win32::System::JobObjects::{OpenJobObjectW, TerminateJobObject};
+    use windows::Win32::System::SystemServices::JOB_OBJECT_TERMINATE;
 
     let wide = HSTRING::from(name);
     unsafe {
-        let Ok(job) = OpenJobObjectW(JOB_OBJECT_ALL_ACCESS, false, &wide) else {
+        // The one right this needs, rather than ALL_ACCESS. Terminating is the
+        // whole job here, and asking for query and set-attributes as well would
+        // make the open fail against a job pitcrew did not create — which is
+        // precisely the case `stop` has to survive.
+        let Ok(job) = OpenJobObjectW(JOB_OBJECT_TERMINATE, false, &wide) else {
             return Ok(false);
         };
         let result = TerminateJobObject(job, 0).map_err(std::io::Error::other);
