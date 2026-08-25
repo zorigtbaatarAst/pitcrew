@@ -2,7 +2,10 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # The Rust port lives on a long-running branch for months, and the whole
+    # point of its Windows job is that nobody here can compile that path
+    # locally. A branch CI does not watch is a branch where that code rots.
+    branches: [main, 'rust-**']
   pull_request:
 
 jobs:
