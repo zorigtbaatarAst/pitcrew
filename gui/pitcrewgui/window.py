@@ -161,6 +161,23 @@ class Window(Adw.ApplicationWindow):
         self._toasts.set_child(view)
         self.set_content(self._toasts)
 
+        self._install_breakpoints()
+        self._install_shortcuts()
+        if settings["tab"] in ("overview", "components", "resources", "logs", "projects"):
+            self._stack.set_visible_child_name(settings["tab"])
+        # Before the stream has had a chance to fail. On a fresh install there
+        # is nothing to stream FROM, and waiting for the failure to say so
+        # means a second of "Starting up" that is not true.
+        self._update_welcome()
+        self._restart_stream()
+
+    def _install_breakpoints(self) -> None:
+        """Every width decision in one place.
+
+        Scattered through a constructor that also builds five pages, these read
+        as incidental; together they are the app's whole responsive behaviour,
+        and the order they fire in matters.
+        """
         # Two columns above ~880px, stacked below it. Without this the Overview
         # is unusable in a half-screen window: two 440px columns of meters and
         # findings both truncate rather than one of them wrapping.
@@ -184,15 +201,6 @@ class Window(Adw.ApplicationWindow):
         narrow.connect("apply", lambda _b: self._set_compact(True))
         narrow.connect("unapply", lambda _b: self._set_compact(False))
         self.add_breakpoint(narrow)
-
-        self._install_shortcuts()
-        if settings["tab"] in ("overview", "components", "resources", "logs", "projects"):
-            self._stack.set_visible_child_name(settings["tab"])
-        # Before the stream has had a chance to fail. On a fresh install there
-        # is nothing to stream FROM, and waiting for the failure to say so
-        # means a second of "Starting up" that is not true.
-        self._update_welcome()
-        self._restart_stream()
 
     def _init_state(self) -> None:
         """Everything the frame loop reads, in one place rather than scattered
