@@ -6,6 +6,8 @@
 
 mod check;
 mod doctor;
+mod project;
+mod report;
 
 use clap::{Parser, Subcommand};
 
@@ -60,6 +62,25 @@ enum Command {
         /// A config file or a project directory. Defaults to walking up from here.
         target: Option<std::path::PathBuf>,
     },
+    /// Every URL this project serves.
+    Urls,
+    /// Which port belongs to what, across every registered project.
+    Ports,
+    /// Projects pitcrew knows about.
+    Projects,
+    /// Each component's RAM cap, and where it came from.
+    Limits,
+    /// Saved sets of targets.
+    Profile {
+        #[command(subcommand)]
+        action: Option<ProfileAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileAction {
+    /// Show every profile and what it covers today.
+    List,
 }
 
 fn main() -> std::process::ExitCode {
@@ -75,7 +96,19 @@ fn main() -> std::process::ExitCode {
         // Its project-specific half arrives with the config model in phase 2,
         // and the report says so.
         Command::Doctor { json } => cmd_doctor(json),
-        Command::Check { target } => cmd_check(target.as_deref(), cli.dir.as_deref()),
+        Command::Check { target } => cmd_check(
+            target.as_deref().or(cli.dir.as_deref()),
+            cli.project.as_deref(),
+        ),
+        Command::Urls => report::urls(cli.dir.as_deref(), cli.project.as_deref()),
+        Command::Ports => report::ports(),
+        Command::Projects => report::projects(),
+        Command::Limits => report::caps(cli.dir.as_deref(), cli.project.as_deref()),
+        Command::Profile { action } => match action {
+            None | Some(ProfileAction::List) => {
+                report::profiles(cli.dir.as_deref(), cli.project.as_deref())
+            }
+        },
         Command::Status { .. } | Command::Json { .. } | Command::Diagnose { .. } => {
             eprintln!("pitcrew: not ported yet — phase 4 (diagnostics and JSON output).");
             std::process::ExitCode::FAILURE
@@ -85,11 +118,8 @@ fn main() -> std::process::ExitCode {
 
 /// Exits non-zero on anything worth a person's attention, so this works as a
 /// pre-commit hook without a wrapper deciding what counts.
-fn cmd_check(
-    target: Option<&std::path::Path>,
-    dir: Option<&std::path::Path>,
-) -> std::process::ExitCode {
-    match check::check(target.or(dir)) {
+fn cmd_check(target: Option<&std::path::Path>, name: Option<&str>) -> std::process::ExitCode {
+    match check::check(target, name) {
         check::Outcome::Clean(summary) => {
             println!("ok     {summary}");
             std::process::ExitCode::SUCCESS

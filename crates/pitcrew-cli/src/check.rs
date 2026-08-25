@@ -8,9 +8,11 @@
 //!   Also exits non-zero, so this can be a pre-commit hook, but the summary
 //!   still prints because a config that is 90% right starts the 90%.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use pitcrew_core::{find, load, model::Format, validate};
+use pitcrew_core::{load, model::Format, validate};
+
+use crate::project;
 
 pub enum Outcome {
     /// Nothing to say. The config loads and nothing looks wrong.
@@ -24,8 +26,8 @@ pub enum Outcome {
     Refused(String),
 }
 
-pub fn check(target: Option<&Path>) -> Outcome {
-    let found = match locate(target) {
+pub fn check(target: Option<&Path>, name: Option<&str>) -> Outcome {
+    let found = match project::locate(target, name) {
         Ok(f) => f,
         Err(e) => return Outcome::Refused(e),
     };
@@ -79,45 +81,6 @@ pub fn check(target: Option<&Path>) -> Outcome {
     }
 }
 
-/// `-C <dir>`, an explicit path, `$PITCREW_CONFIG`, then walking up from here.
-///
-/// The registry and `pitcrew use` come with phase 2's remaining pieces; until
-/// then the message says which routes were actually tried, rather than implying
-/// it looked everywhere.
-fn locate(target: Option<&Path>) -> Result<find::Found, String> {
-    if let Some(t) = target {
-        if t.is_dir() {
-            return find::in_dir(t).ok_or_else(|| format!("no config in {}", t.display()));
-        }
-        if t.is_file() {
-            let dir = t.parent().unwrap_or(Path::new("."));
-            let format = find::CONFIG_NAMES
-                .iter()
-                .find(|(n, _)| t.file_name().is_some_and(|f| f == *n))
-                .map(|(_, f)| *f)
-                .unwrap_or(Format::Yaml);
-            return Ok(find::Found {
-                root: find::declared_root(t).unwrap_or_else(|| dir.to_path_buf()),
-                file: t.to_path_buf(),
-                format,
-                shadowed: None,
-            });
-        }
-        return Err(format!("no such config: {}", t.display()));
-    }
-
-    if let Some(env) = std::env::var_os("PITCREW_CONFIG") {
-        let p = PathBuf::from(env);
-        if p.is_file() {
-            return locate(Some(&p));
-        }
-    }
-
-    let here = std::env::current_dir().map_err(|e| e.to_string())?;
-    find::walk_up(&here)
-        .ok_or_else(|| "no config here — write a pitcrew.yaml, or: pitcrew init <dir>".to_string())
-}
-
 fn plural(n: usize) -> &'static str {
     if n == 1 {
         ""
@@ -129,6 +92,7 @@ fn plural(n: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("pitcrew-check-{}-{name}", std::process::id()));
@@ -145,7 +109,7 @@ mod tests {
             "name: demo\napps:\n  api:\n    be:\n      cmd: \"true\"\n      port: 1\n",
         )
         .unwrap();
-        match check(Some(&d)) {
+        match check(Some(&d), None) {
             Outcome::Clean(s) => {
                 assert!(s.contains("demo"), "{s}");
                 assert!(s.contains("1 app, 1 component"), "{s}");
@@ -161,7 +125,7 @@ mod tests {
     fn a_broken_config_is_refused_with_a_line() {
         let d = tmp("broken");
         std::fs::write(d.join("pitcrew.yaml"), "name: ok\nport:8080\n").unwrap();
-        match check(Some(&d)) {
+        match check(Some(&d), None) {
             Outcome::Refused(e) => assert!(e.contains("line 2"), "{e}"),
             _ => panic!("should have been refused"),
         }
@@ -176,7 +140,7 @@ mod tests {
             "apps:\n  a:\n    be:\n      cmd: x\n      port: 80\n    fe:\n      cmd: y\n      port: 80\n",
         )
         .unwrap();
-        match check(Some(&d)) {
+        match check(Some(&d), None) {
             Outcome::Warned { summary, warnings } => {
                 assert!(warnings
                     .iter()
@@ -199,7 +163,7 @@ mod tests {
     fn the_bash_format_is_refused_with_the_reason_and_the_way_out() {
         let d = tmp("sh");
         std::fs::write(d.join("pitcrew.config.sh"), "PITCREW_APPS=(a)\n").unwrap();
-        match check(Some(&d)) {
+        match check(Some(&d), None) {
             Outcome::Refused(e) => {
                 assert!(e.contains("shell script"), "{e}");
                 assert!(e.contains("pitcrew migrate"), "{e}");
@@ -211,7 +175,7 @@ mod tests {
     #[test]
     fn a_missing_config_says_where_it_looked() {
         let d = tmp("empty");
-        match check(Some(&d)) {
+        match check(Some(&d), None) {
             Outcome::Refused(e) => assert!(e.contains("no config in"), "{e}"),
             _ => panic!("should have been refused"),
         }

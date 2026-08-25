@@ -7,7 +7,11 @@
 //! they did.
 
 pub mod find;
+pub mod limits;
 pub mod load;
 pub mod model;
+pub mod profiles;
+pub mod registry;
+pub mod targets;
 pub mod validate;
 pub mod yaml;

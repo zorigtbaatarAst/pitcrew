@@ -149,12 +149,14 @@ counterpart lands — the parity check depends on being able to run both.
 ```
 crates/pitcrew-model/     the JSON contract, as serde types            done
 crates/pitcrew-platform/  processes, ports, memory, RAM caps           done
-crates/pitcrew-core/      YAML front end, config model, validation        partial
-crates/pitcrew-cli/       clap surface; `doctor` env checks, `check`      partial
+crates/pitcrew-core/      YAML, config model, validation, targets,        partial
+                          profiles, limits, registry
+crates/pitcrew-cli/       check · urls · ports · projects · limits ·      partial
+                          profile list · doctor (environment half)
 ```
 
-Phases still to come: the rest of config (targets, profiles, limits, registry,
-detect, init), lifecycle (3), diagnostics and JSON
+Phases still to come: config detection and `init` (the rest of 2), lifecycle
+(3), diagnostics and JSON
 output (4), TUI (5), GTK GUI (6), distribution (7). The plan lives outside the
 repo; the phase numbering in the code comments refers to it.
 
