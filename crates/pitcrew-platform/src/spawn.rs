@@ -11,6 +11,9 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+// Only the Unix launcher builds a shell wrapper; the Windows one writes the
+// pidfile directly, so this would be dead code there.
+#[cfg(unix)]
 use crate::shell_quote as quote;
 
 /// Launch `script` so that it survives this process, and report the pid of the
