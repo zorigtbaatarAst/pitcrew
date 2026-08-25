@@ -122,9 +122,25 @@ class Window(Adw.ApplicationWindow):
         self._banner.set_button_label("Retry")
         self._banner.connect("button-clicked", lambda _b: self._restart_stream())
 
+        # Before the first frame there is nothing to show, and five empty pages
+        # behind a switcher is a window that looks broken rather than one that
+        # has not been told anything yet. The banner alone was the whole answer
+        # for a brand-new install: a strip of text across an empty window,
+        # which is the right weight for a transient failure and the wrong one
+        # for "you have not set anything up".
+        #
+        # Swapped out on the first frame and never swapped back — a stream that
+        # drops later has a banner AND a window full of the last known state,
+        # which is more use than a status page that throws it away.
+        self._welcome = self._build_welcome()
+        self._body = Gtk.Stack()
+        self._body.add_named(self._welcome, "welcome")
+        self._body.add_named(self._stack, "live")
+        self._body.set_visible_child_name("welcome")
+
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(self._banner)
-        content.append(self._stack)
+        content.append(self._body)
 
         view = Adw.ToolbarView()
         view.add_top_bar(header)
@@ -146,6 +162,10 @@ class Window(Adw.ApplicationWindow):
         self._install_shortcuts()
         if settings["tab"] in ("overview", "components", "resources", "logs", "projects"):
             self._stack.set_visible_child_name(settings["tab"])
+        # Before the stream has had a chance to fail. On a fresh install there
+        # is nothing to stream FROM, and waiting for the failure to say so
+        # means a second of "Starting up" that is not true.
+        self._update_welcome()
         self._restart_stream()
 
     def _init_state(self) -> None:
@@ -564,6 +584,58 @@ class Window(Adw.ApplicationWindow):
                               tooltip_text="Main menu")
 
     # ── overview ────────────────────────────────────────────────────────────
+    def _build_welcome(self) -> Gtk.Widget:
+        """What the window says before it has been told anything.
+
+        Three different situations arrive here and they want different words:
+        nothing is registered at all, a project is selected but its config
+        cannot be read, or the stream simply has not produced a frame yet. The
+        third is a fraction of a second and needs no button; the first is
+        somebody's first minute with the tool and needs the only one that
+        matters.
+        """
+        self._welcome_page = Adw.StatusPage(
+            icon_name="application-x-executable-symbolic",
+            title="Starting up",
+            description="Waiting for the first frame…")
+        self._welcome_button = Gtk.Button(halign=Gtk.Align.CENTER)
+        self._welcome_button.add_css_class("suggested-action")
+        self._welcome_button.add_css_class("pill")
+        self._welcome_button.set_child(Adw.ButtonContent(
+            icon_name="folder-open-symbolic", label="Add a project…"))
+        self._welcome_button.connect("clicked", lambda _b: self._add_project())
+        self._welcome_button.set_visible(False)
+        self._welcome_page.set_child(self._welcome_button)
+        return self._welcome_page
+
+    def _update_welcome(self, message: str | None = None) -> None:
+        """Say which of the three situations this is, and offer the way out.
+
+        Called on a stream failure and once at startup. Never after a frame has
+        arrived: past that point the window has real content and a failure is
+        the banner's job.
+        """
+        if self._have_frame:
+            return
+        if not known_projects():
+            # Somebody's first minute. `pitcrew init` is the only thing that
+            # helps, and naming the command is not the same as offering it.
+            self._welcome_page.set_icon_name("folder-new-symbolic")
+            self._welcome_page.set_title("No projects yet")
+            self._welcome_page.set_description(
+                "pitcrew reads a repository and works out what it is — which "
+                "directories are services, how to start them, and which ports "
+                "they will use.")
+            self._welcome_button.set_visible(True)
+            return
+        if message:
+            self._welcome_page.set_icon_name("dialog-warning-symbolic")
+            self._welcome_page.set_title("Nothing to show")
+            # The CLI's own words: it knows why better than this does, and it
+            # is the same sentence the terminal would have printed.
+            self._welcome_page.set_description(ansi.plain(message))
+            self._welcome_button.set_visible(True)
+
     def _build_verdict_banner(self) -> None:
         """The verdict is a BANNER, not a card.
 
@@ -1609,10 +1681,17 @@ class Window(Adw.ApplicationWindow):
         # escaping turned `pitcrew init <dir>` into a literal `&lt;dir&gt;`.
         self._banner.set_title(ansi.plain(message))
         self._banner.set_revealed(True)
+        # Before the first frame the banner is a strip across an empty window,
+        # which is the right weight for "the stream hiccuped" and the wrong one
+        # for "you have not set anything up".
+        self._update_welcome(message)
 
     # ── rendering ───────────────────────────────────────────────────────────
     def _on_state(self, state: dict) -> None:
         self._banner.set_revealed(False)
+        if not self._have_frame:
+            # First frame: there is something to look at now.
+            self._body.set_visible_child_name("live")
         self._have_frame = True
         self._last_state = state
         components = state.get("components", [])

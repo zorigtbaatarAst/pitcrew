@@ -730,6 +730,115 @@ print('overview' in [w._stack.get_visible_child_name() or '', 'overview'])
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "2 1 1" "findings, recovery candidates, consumers"
 }
 
+test_one_ramp_means_one_ramp() {
+  gui_available || return 0
+  # AGENTS.md says resource meters and status badges draw from the same ramp,
+  # and that is the kind of invariant that decays silently — it was lost once
+  # already to a stock LevelBar whose "high" offset painted orange, which made
+  # a 32%-full meter and a warning badge the same hue.
+  #
+  # Three states ARE the ramp and must stay it. Two deliberately are not:
+  # `external` is a distinct state rather than a severity, and `down` is not a
+  # level of anything. Pinned in both directions so a future edit has to be a
+  # decision rather than an accident.
+  local out; out=$(_settings_drive "
+from pitcrewgui.model import STATE_STYLE, RAMP, VERDICT_STYLE
+print(STATE_STYLE['up'][1] == RAMP['ok'])
+print(STATE_STYLE['starting'][1] == RAMP['warn'])
+print(STATE_STYLE['crashed'][1] == RAMP['crit'])
+print(all(VERDICT_STYLE[k][0] == RAMP[k] for k in ('ok', 'warn', 'crit')))
+print(STATE_STYLE['external'][1] not in RAMP.values())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "up is the ramp's ok"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "True" "starting is its warn"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "True" "crashed is its crit"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "True" "and the verdict draws from it too"
+  assert_eq "$(printf '%s' "$out" | sed -n 5p)" "True" \
+    "external is a state, not a severity — deliberately outside the ramp"
+}
+
+test_nothing_to_say_is_one_grey() {
+  gui_available || return 0
+  # A stopped component's dot and a calm meter both mean "nothing to say", and
+  # they were two different greys — #57606a against #6e7681. Close enough to
+  # look like a rendering artefact and far enough to be one more colour to
+  # explain.
+  local out; out=$(_settings_drive "
+from pitcrewgui.model import STATE_STYLE, RAMP, UNKNOWN_STYLE
+print(STATE_STYLE['down'][1] == RAMP['calm'], UNKNOWN_STYLE[1] == RAMP['calm'])
+")
+  assert_eq "$out" "True True" "one grey for nothing-to-say"
+}
+
+test_a_fresh_install_is_told_what_to_do_rather_than_shown_five_empty_pages() {
+  gui_available || return 0
+  # A brand-new install has nothing to stream FROM, and five empty pages behind
+  # a switcher looks like a broken app rather than one that has not been set up.
+  # The banner alone was the whole answer: the right weight for a transient
+  # failure and the wrong one for somebody's first minute.
+  local home; home=$(mktemp -d); mkdir -p "$home/projects"
+  local out; out=$(PITCREW_HOME="$home" _settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', None, Settings(pathlib.Path('$(mktemp -d)/gui')))
+print(w._body.get_visible_child_name())
+print(w._welcome_page.get_title())
+print(w._welcome_button.get_visible())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "welcome" "not the empty pages"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "No projects yet" "says so"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "True" "and offers the only thing that helps"
+}
+
+test_a_failure_before_the_first_frame_uses_the_clis_own_words() {
+  gui_available || return 0
+  # pitcrew knows why better than the GUI does, and it is the same sentence the
+  # terminal would have printed. The `<dir>` in it is why the status page must
+  # not parse markup either.
+  # With a project registered: "no projects at all" takes precedence over any
+  # message, because "Add a project" is more actionable than a raw error, and
+  # this test is about the OTHER branch.
+  local home; home=$(mktemp -d); mkdir -p "$home/projects"
+  printf 'root: /tmp\n' > "$home/projects/demo.yaml"
+  local out; out=$(PITCREW_HOME="$home" _settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', 'demo', Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._fail('no config here — write a pitcrew.yaml, or: pitcrew init <dir>')
+print(w._body.get_visible_child_name())
+print(w._welcome_page.get_title())
+print(w._welcome_page.get_description())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "welcome" "the whole window, not a strip"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "Nothing to show" ""
+  assert_match "$(printf '%s' "$out" | sed -n 3p)" "pitcrew init <dir>" \
+    "the angle brackets survive — the status page is text, not markup"
+}
+
+test_a_stream_that_drops_later_keeps_the_last_known_state() {
+  gui_available || return 0
+  # Swapped out on the first frame and never swapped back. A failure after that
+  # has a banner AND a window full of the last thing that was true, which is
+  # more use than a status page that throws it away.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw
+Adw.init()
+w = pgui.Window('/bin/true', 'demo', Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._on_state({'components': [], 'at': 0, 'logDir': '', 'errorPattern': '',
+  'machine': {'memTotal': 1, 'memUsed': 0, 'cpuPercent': 0, 'swapTotal': 0, 'swapUsed': 0},
+  'health': {'verdict': 'ok', 'headline': '', 'deep': False,
+             'counts': {'crit': 0, 'warn': 0, 'info': 0}, 'findings': [],
+             'recoverable': {'components': [], 'protected': [], 'bytes': 0}},
+  'summary': {'up': 0, 'starting': 0, 'crashed': 0, 'external': 0, 'down': 0},
+  'deps': [], 'profiles': []})
+print(w._body.get_visible_child_name())
+w._fail('the stream ended')
+print(w._body.get_visible_child_name(), w._banner.get_revealed())
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "live" "the first frame swaps it in"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "live True" "and a later failure is the banner's job"
+}
+
 test_a_full_run_adds_to_the_stream_rather_than_replacing_it() {
   gui_available || return 0
   # The stream carries the cheap checks; `pitcrew diagnose` also runs the slow

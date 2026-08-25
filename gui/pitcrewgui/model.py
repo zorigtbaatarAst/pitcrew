@@ -27,9 +27,13 @@ STATE_STYLE = {
     "starting": ("warning",   "#d29922"),
     "crashed":  ("error",     "#f85149"),
     "external": ("accent",    "#3584e4"),
-    "down":     ("dim-label", "#57606a"),
+    # The same grey the meters call "calm" — see RAMP below. A stopped
+    # component and a meter with nothing to say mean the same thing, and they
+    # were two greys close enough to look like a rendering artefact and far
+    # enough to be one more colour to explain.
+    "down":     ("dim-label", "#6e7681"),
 }
-UNKNOWN_STYLE = ["dim-label", "#57606a"]
+UNKNOWN_STYLE = ["dim-label", "#6e7681"]
 
 # Worst first. The same order lib/05a-dashboard.sh's _state_rank uses, because
 # the desktop app and the terminal dashboard putting "what needs you" in two

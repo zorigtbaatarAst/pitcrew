@@ -115,6 +115,21 @@ attribute, and most are pinned by a test.
    introduce a second palette; the last one (stock LevelBar orange) made a
    32%-full meter and a warning badge the same hue.
 
+   `test_one_ramp_means_one_ramp` pins that in both directions — the three
+   states that ARE the ramp, and `external`, which deliberately is not because
+   it is a state rather than a severity. A future edit to either has to be a
+   decision rather than an accident.
+
+   **Before the first frame the window shows an `AdwStatusPage`, not five empty
+   pages.** Three situations arrive there and want different words: nothing
+   registered at all (the only case with a button — `pitcrew init` is the only
+   thing that helps), a project whose config cannot be read (the CLI's own
+   sentence, which is why that page must not parse markup either — it contains
+   `<dir>`), and the fraction of a second before the first frame. It is swapped
+   out on that frame and **never swapped back**: a stream that drops later has
+   a banner AND a window full of the last known state, which is more use than a
+   status page that throws it away.
+
    Log text arrives with **ANSI escapes in it** — pitcrew captures stdout
    verbatim. `ansi.py` turns SGR into span tags and drops everything else; it
    is pure (no GTK) and tested. Do not "simplify" it into a strip, and do not
