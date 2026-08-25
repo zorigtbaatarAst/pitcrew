@@ -1624,6 +1624,35 @@ shell's children exactly — `/proc/stat`'s counter is system-wide and far too
 noisy, and the `times` builtin misses a cheap subshell entirely because it
 burns no measurable CPU.
 
+## The Rust port
+
+A Rust rewrite is in progress on the `rust-rewrite` branch. **Both
+implementations are live**: `bin/pitcrew` is still the working tool, and the
+Rust binary is built alongside it.
+
+What the Rust build does today: the dashboard, `start` / `stop` / `restart`,
+`status` (and `--json`), `json --watch`, `diagnose`, `doctor`, `check`, `init`,
+`urls`, `ports`, `projects`, `limits`, `profile`, `use`.
+
+```
+make rust-install     # build the release binary and put it on your PATH
+```
+
+The two coexist by design — same name, different binaries, whichever is first
+on your `PATH` wins, and `pitcrew --version` says which you have.
+
+Two things it does that the shell version cannot:
+
+- **RAM caps are enforced on Windows**, through a named Job Object. The shell
+  version could only apologise for this: Job Objects exist, but nothing on the
+  command line puts a process in one.
+- **Windows needs no Git Bash or MSYS2.** The process table, the port list and
+  the memory gauges come from native APIs rather than `wmic` and `netstat`.
+
+The desktop app is unchanged and runs against either: it talks to the CLI over
+the versioned JSON contract, and its whole test suite passes against the Rust
+binary.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

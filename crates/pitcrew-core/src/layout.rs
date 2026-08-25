@@ -169,21 +169,21 @@ pub fn for_width(width: u16, opts: &Options) -> Layout {
     }
 }
 
-impl Layout {
-    /// The total width a row occupies. Never wider than the terminal.
-    pub fn row_w(&self) -> u16 {
-        self.prefix_w
-            + self.cells * (self.cell_fixed_w + self.graph_w)
-            + (self.cells - 1) * CELL_GAP_W
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn at(w: u16) -> Layout {
         for_width(w, &Options::default())
+    }
+
+    /// The total width a row occupies.
+    ///
+    /// Lives here rather than on `Layout` because nothing in production asks
+    /// the question — the renderer pads each column to the width it was given.
+    /// It exists to state the invariant the whole cascade is FOR.
+    fn row_w(l: &Layout) -> u16 {
+        l.prefix_w + l.cells * (l.cell_fixed_w + l.graph_w) + (l.cells - 1) * CELL_GAP_W
     }
 
     /// The invariant everything else rests on: a row must never be wider than
@@ -195,9 +195,9 @@ mod tests {
         for w in 20..=400u16 {
             let l = at(w);
             assert!(
-                l.row_w() <= w,
+                row_w(&l) <= w,
                 "at {w} columns the row wants {} — it would be cut off",
-                l.row_w()
+                row_w(&l)
             );
         }
     }
@@ -297,7 +297,7 @@ mod tests {
         };
         for w in 20..400u16 {
             let l = for_width(w, &opts);
-            assert!(l.row_w() <= w, "at {w} columns with caps spelled out");
+            assert!(row_w(&l) <= w, "at {w} columns with caps spelled out");
         }
         // It costs five cells, so at a width that just fit before it will not now.
         assert!(for_width(110, &opts).graph_w < at(110).graph_w);
