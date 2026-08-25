@@ -123,6 +123,20 @@ pub fn open(target: Option<&Path>, name: Option<&str>) -> Result<Session, String
 }
 
 pub fn open_found(found: find::Found) -> Result<Session, String> {
+    // Absolute, always. `root` and `logDir` travel in the JSON contract, and a
+    // consumer resolves them against ITS working directory, not ours — the
+    // desktop app tails `<logDir>/<comp>.log` from wherever it was launched.
+    let found = find::Found {
+        root: found
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| found.root.clone()),
+        file: found
+            .file
+            .canonicalize()
+            .unwrap_or_else(|_| found.file.clone()),
+        ..found
+    };
     if found.format == Format::Sh {
         // Honest rather than helpful-sounding. Reading it means running it.
         return Err(format!(

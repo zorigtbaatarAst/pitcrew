@@ -4,12 +4,14 @@
 //! healthy right now. Confusing the two is the easy mistake: doctor is static
 //! and about the machine, diagnose is derived from a live snapshot.
 //!
-//! Only the environment half is ported. The project's own checks and the
-//! capacity checks (does the configured stack fit in this machine, do two
-//! registered projects clash on a port) need the config model, so they arrive
-//! with it in phase 2. Until then this says so rather than printing a clean
-//! bill of health it has not earned — a doctor that silently checks less than
-//! you think it does is worse than one that admits its scope.
+//! Two halves. The environment half needs nothing but the machine. The
+//! project half runs whatever the config's `doctor:` block declares — label on
+//! the left, a shell command on the right, exit 0 is a tick.
+//!
+//! Those commands are the one place `doctor` runs something the project wrote,
+//! so they are run exactly as a start command is: one string, one shell. A
+//! config that can define them is a config you already trusted enough to
+//! launch services from.
 
 use pitcrew_platform::{caps::Enforcement, memory, ports, process::Sampler, Os};
 
@@ -25,7 +27,74 @@ pub enum Level {
     Warn,
 }
 
-/// Everything doctor can currently establish about this machine.
+/// Everything doctor can establish, optionally including a project's own checks.
+pub fn run_with(project: Option<&crate::project::Session>) -> Vec<Check> {
+    let mut out = run();
+    let Some(s) = project else {
+        return out;
+    };
+    let p = &s.loaded.project;
+
+    // Does the configured stack even fit? A cap that cannot bite is worse than
+    // no cap, because the OOM killer picks the victim instead.
+    let overrides = s.limits();
+    let committed: u64 = p
+        .components()
+        .filter_map(|c| pitcrew_core::limits::to_bytes(&overrides.resolve(p, c).0))
+        .sum();
+    let total = pitcrew_platform::memory::Gauges::new().read().mem_total;
+    if total > 0 && committed > total {
+        out.push(Check {
+            level: Level::Warn,
+            line: format!(
+                "caps   this project commits {} on a {} machine",
+                pitcrew_core::format::human_bytes(committed),
+                pitcrew_core::format::human_bytes(total)
+            ),
+        });
+    }
+
+    // A config that loads but looks wrong is still worth saying out loud here,
+    // because `check` is a thing people run once and `doctor` is a thing they
+    // run when something is broken.
+    for w in s.loaded.warnings.iter().chain(
+        pitcrew_core::validate::validate(p)
+            .iter()
+            .map(|w| w as &String),
+    ) {
+        out.push(Check {
+            level: Level::Warn,
+            line: format!("config {w}"),
+        });
+    }
+
+    for (label, cmd) in &p.doctor {
+        let ok = std::process::Command::new(pitcrew_platform::spawn::shell())
+            .arg(if cfg!(windows) { "/C" } else { "-c" })
+            .arg(cmd)
+            .current_dir(&s.found.root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false);
+        out.push(Check {
+            // The command is shown on failure, because "frontend deps
+            // installed: no" without it leaves the reader to go and find the
+            // config to learn what was actually run.
+            line: if ok {
+                format!("proj   {label}")
+            } else {
+                format!("proj   {label}  ({cmd})")
+            },
+            level: if ok { Level::Ok } else { Level::Warn },
+        });
+    }
+    out
+}
+
+/// Everything doctor can establish about this machine alone.
 pub fn run() -> Vec<Check> {
     let mut out = Vec::new();
     let os = Os::current();
@@ -89,14 +158,84 @@ pub fn run() -> Vec<Check> {
         ),
     });
 
-    out.push(Check {
-        level: Level::Warn,
-        line: "scope  the project's own checks are not ported yet (phase 2) — \
-               this reports the machine only"
-            .into(),
-    });
-
     out
+}
+
+/// The machine-readable form.
+///
+/// A separate shape from the prose, not a reformat of it: this is the CI-gate
+/// surface, and the exit code is part of it. Emitting the CHECKS rather than
+/// the rendered lines is what lets a consumer act on one without string
+/// matching.
+#[derive(serde::Serialize)]
+pub struct DoctorJson {
+    pub schema: u32,
+    pub version: &'static str,
+    pub os: &'static str,
+    /// The bash that runs start commands, where there is one. Empty on a box
+    /// with no bash — which is now possible, since the tool itself no longer
+    /// needs one.
+    pub bash: String,
+    pub collector: &'static str,
+    #[serde(rename = "capsEnforced")]
+    pub caps_enforced: bool,
+    #[serde(rename = "capsWarning")]
+    pub caps_warning: String,
+    /// True where a start command gets a POSIX shell. False on Windows, where
+    /// `cmd.exe` runs it and a `{ ...; }` grouping means something else.
+    #[serde(rename = "posixShell")]
+    pub posix_shell: bool,
+    pub tools: std::collections::BTreeMap<&'static str, bool>,
+}
+
+pub fn json() -> DoctorJson {
+    let caps = Enforcement::detect();
+    let mut tools = std::collections::BTreeMap::new();
+    for tool in ["docker", "fzf", "lsof", "systemctl"] {
+        tools.insert(tool, which(tool));
+    }
+    DoctorJson {
+        schema: pitcrew_model::SCHEMA,
+        version: env!("CARGO_PKG_VERSION"),
+        os: Os::current().as_str(),
+        bash: bash_version(),
+        collector: "native",
+        caps_enforced: caps.is_enforced(),
+        // Empty when there is nothing to warn about, so a consumer can test
+        // the string rather than parse the explanation.
+        caps_warning: if caps.is_enforced() {
+            String::new()
+        } else {
+            caps.explain().to_string()
+        },
+        posix_shell: pitcrew_platform::spawn::posix_shell(),
+        tools,
+    }
+}
+
+fn which(tool: &str) -> bool {
+    std::process::Command::new(tool)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn bash_version() -> String {
+    let Ok(out) = std::process::Command::new("bash").arg("--version").output() else {
+        return String::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(3)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Seconds as the coarsest useful unit. Two significant parts at most: nobody
@@ -123,11 +262,25 @@ mod tests {
         assert!(checks[0].line.contains(Os::current().as_str()));
     }
 
-    /// Until the project checks land, doctor must say its scope out loud
-    /// rather than implying a clean bill of health it has not earned.
+    /// The environment half stands alone: a machine with no project is still
+    /// a machine `doctor` can report on.
     #[test]
-    fn the_unported_scope_is_declared() {
-        assert!(run().iter().any(|c| c.line.contains("not ported yet")));
+    fn the_environment_half_needs_no_project() {
+        assert!(run_with(None).len() >= 5);
+    }
+
+    /// The JSON form is a CI-gate surface, so its shape is asserted rather
+    /// than left to whatever the struct happens to serialise to.
+    #[test]
+    fn the_json_form_carries_the_machine_readable_facts() {
+        let d = json();
+        assert_eq!(d.schema, pitcrew_model::SCHEMA);
+        assert_eq!(d.os, Os::current().as_str());
+        assert_eq!(d.posix_shell, cfg!(not(windows)));
+        assert!(d.tools.contains_key("docker"));
+        // Either it is enforced and there is nothing to warn about, or it is
+        // not and the reason is stated. Never both, never neither.
+        assert_eq!(d.caps_enforced, d.caps_warning.is_empty());
     }
 
     #[test]

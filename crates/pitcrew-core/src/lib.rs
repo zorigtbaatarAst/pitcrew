@@ -6,9 +6,13 @@
 //! `lib/02-config.sh` and is what let two config formats coexist for as long as
 //! they did.
 
+pub mod deps;
+pub mod diag;
+pub mod errscan;
 pub mod find;
 pub mod format;
 pub mod health;
+pub mod idle;
 pub mod lifecycle;
 pub mod limits;
 pub mod load;

@@ -149,12 +149,27 @@ counterpart lands — the parity check depends on being able to run both.
 ```
 crates/pitcrew-model/     the JSON contract, as serde types            done
 crates/pitcrew-platform/  processes, ports, memory, RAM caps           done
-crates/pitcrew-core/      config, targets, profiles, limits, registry,    partial
-                          state machine, snapshot, lifecycle, health
-crates/pitcrew-cli/       start · stop · restart · status · check ·       partial
+crates/pitcrew-core/      config, targets, profiles, limits, registry,    done
+                          state, snapshot, lifecycle, health, diag,
+                          idle, errscan, deps
+crates/pitcrew-cli/       start · stop · restart · status[--json] ·       partial
+                          json[--watch] · diagnose · doctor · check ·
                           urls · ports · projects · limits · profile
-                          list · doctor (environment half)
 ```
+
+**The Rust CLI satisfies the JSON contract.** `pitcrew status --json` and
+`pitcrew json --watch` produce the same schema-1 object the bash tree does —
+key sets and values verified identical on `test/fixture-yaml` — and the
+**unmodified Python GUI and all 108 of its tests pass against the Rust
+binary**:
+
+```
+ln -sf $PWD/target/debug/pitcrew /tmp/bin/pitcrew
+PATH=/tmp/bin:$PATH bash test/run.sh gui     # 108 run, 0 failed
+```
+
+Keep that working. It is the only end-to-end check that both implementations
+still mean the same thing, and it costs one symlink.
 
 Phases still to come: config detection and `init` (the rest of 2), diagnostics
 and JSON

@@ -185,3 +185,143 @@ fn fail(msg: &str) -> ExitCode {
     eprintln!("error  {msg}");
     ExitCode::FAILURE
 }
+
+/// `status --json` — one object, then exit.
+pub fn status_json(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
+    let s = match project::open(dir, name) {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
+    let mut b = crate::state_object::Builder::new(&s);
+    // Config warnings go to stderr, never into the object: stdout is a
+    // contract and a consumer parsing it should never have to skip prose.
+    for w in &b.warnings {
+        eprintln!("warn   {w}");
+    }
+    let obj = b.build(&s, false);
+    match serde_json::to_string(&obj) {
+        Ok(text) => {
+            println!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e.to_string()),
+    }
+}
+
+/// `json --watch` — one object per line, forever.
+///
+/// This is the desktop app's whole data path, and the reason it streams rather
+/// than polling `status --json` on a timer: CPU% is a delta between snapshots,
+/// so a fresh process reports null cpu and always would.
+pub fn json(dir: Option<&Path>, name: Option<&str>, watch: bool, interval: f64) -> ExitCode {
+    let s = match project::open(dir, name) {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
+    let mut b = crate::state_object::Builder::new(&s);
+    for w in &b.warnings {
+        eprintln!("warn   {w}");
+    }
+    if !watch {
+        return match serde_json::to_string(&b.build(&s, false)) {
+            Ok(text) => {
+                println!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e.to_string()),
+        };
+    }
+
+    let gap = std::time::Duration::from_secs_f64(interval.max(0.1));
+    loop {
+        match serde_json::to_string(&b.build(&s, false)) {
+            Ok(text) => {
+                // A closed pipe is the ordinary way this ends — the reader
+                // went away — and it is not an error worth a message.
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                if writeln!(out, "{text}").is_err() || out.flush().is_err() {
+                    return ExitCode::SUCCESS;
+                }
+            }
+            Err(e) => return fail(&e.to_string()),
+        }
+        std::thread::sleep(gap);
+    }
+}
+
+/// `diagnose` — is this stack healthy right now?
+///
+/// Takes TWO snapshots a second apart, because CPU% is a delta and one sample
+/// can only ever report "unknown" — which would make every idle check silently
+/// say nothing.
+pub fn diagnose(dir: Option<&Path>, name: Option<&str>, as_json: bool) -> ExitCode {
+    let s = match project::open(dir, name) {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
+    let mut b = crate::state_object::Builder::new(&s);
+    if !as_json {
+        for w in &b.warnings {
+            eprintln!("warn   {w}");
+        }
+    }
+    b.build(&s, true);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let obj = b.build(&s, true);
+
+    if as_json {
+        return match serde_json::to_string(&obj.health) {
+            Ok(text) => {
+                println!("{text}");
+                verdict_code(obj.health.verdict)
+            }
+            Err(e) => fail(&e.to_string()),
+        };
+    }
+
+    println!("  {} {}", obj.project, verdict_word(obj.health.verdict));
+    if obj.health.findings.is_empty() {
+        println!("  nothing to report");
+    }
+    for f in &obj.health.findings {
+        let mark = match f.severity {
+            pitcrew_model::Severity::Crit => "crit",
+            pitcrew_model::Severity::Warn => "warn",
+            pitcrew_model::Severity::Info => "info",
+        };
+        println!("  {mark}   {}", f.title);
+        // The evidence, never rounded into an assertion.
+        println!("         {}", f.detail);
+        if !f.fix.is_empty() {
+            println!("         → {}", f.fix);
+        }
+    }
+    // Protected components are listed even though they will never be proposed:
+    // a list that quietly omits the one you expected reads as a bug.
+    if !obj.health.recoverable.protected.is_empty() {
+        println!(
+            "\n  protected, so never proposed: {}",
+            obj.health.recoverable.protected.join(" ")
+        );
+    }
+    verdict_code(obj.health.verdict)
+}
+
+/// Non-zero on anything worse than info, so `diagnose` can be a CI gate
+/// without a wrapper deciding what counts.
+fn verdict_code(v: pitcrew_model::Verdict) -> ExitCode {
+    match v {
+        pitcrew_model::Verdict::Ok | pitcrew_model::Verdict::Info => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    }
+}
+
+fn verdict_word(v: pitcrew_model::Verdict) -> &'static str {
+    match v {
+        pitcrew_model::Verdict::Ok => "· all good",
+        pitcrew_model::Verdict::Info => "· worth knowing",
+        pitcrew_model::Verdict::Warn => "· needs attention",
+        pitcrew_model::Verdict::Crit => "· something is wrong",
+    }
+}

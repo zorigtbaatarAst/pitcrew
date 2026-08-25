@@ -9,6 +9,7 @@ mod doctor;
 mod project;
 mod report;
 mod run;
+mod state_object;
 
 use clap::{Parser, Subcommand};
 
@@ -102,7 +103,7 @@ fn main() -> std::process::ExitCode {
         // The environment half only needs the platform layer, so it works now.
         // Its project-specific half arrives with the config model in phase 2,
         // and the report says so.
-        Command::Doctor { json } => cmd_doctor(json),
+        Command::Doctor { json } => cmd_doctor(json, cli.dir.as_deref(), cli.project.as_deref()),
         Command::Check { target } => cmd_check(
             target.as_deref().or(cli.dir.as_deref()),
             cli.project.as_deref(),
@@ -118,10 +119,10 @@ fn main() -> std::process::ExitCode {
         },
         Command::Status { json } => {
             if json {
-                eprintln!("pitcrew: status --json is not ported yet — phase 4.");
-                return std::process::ExitCode::FAILURE;
+                run::status_json(cli.dir.as_deref(), cli.project.as_deref())
+            } else {
+                run::status(cli.dir.as_deref(), cli.project.as_deref())
             }
-            run::status(cli.dir.as_deref(), cli.project.as_deref())
         }
         Command::Start { targets } => {
             run::start(cli.dir.as_deref(), cli.project.as_deref(), &targets)
@@ -132,9 +133,11 @@ fn main() -> std::process::ExitCode {
         Command::Restart { targets } => {
             run::restart(cli.dir.as_deref(), cli.project.as_deref(), &targets)
         }
-        Command::Json { .. } | Command::Diagnose { .. } => {
-            eprintln!("pitcrew: not ported yet — phase 4 (diagnostics and JSON output).");
-            std::process::ExitCode::FAILURE
+        Command::Json { watch, interval } => {
+            run::json(cli.dir.as_deref(), cli.project.as_deref(), watch, interval)
+        }
+        Command::Diagnose { json } => {
+            run::diagnose(cli.dir.as_deref(), cli.project.as_deref(), json)
         }
     }
 }
@@ -164,13 +167,34 @@ fn cmd_check(target: Option<&std::path::Path>, name: Option<&str>) -> std::proce
 /// Exits non-zero when anything is wrong, so `doctor` can BE a CI gate rather
 /// than needing one wrapped around it. That property is inherited from the bash
 /// version and scripts already rely on it.
-fn cmd_doctor(json: bool) -> std::process::ExitCode {
-    let checks = doctor::run();
+fn cmd_doctor(
+    json: bool,
+    dir: Option<&std::path::Path>,
+    name: Option<&str>,
+) -> std::process::ExitCode {
+    // A project is optional here: `doctor` from outside any checkout should
+    // still report on the machine rather than refusing.
+    let session = project::open(dir, name).ok();
+    let checks = doctor::run_with(session.as_ref());
     let bad = checks.iter().any(|c| c.level == doctor::Level::Warn);
 
     if json {
-        eprintln!("pitcrew: doctor --json is not ported yet — phase 4.");
-        return std::process::ExitCode::FAILURE;
+        return match serde_json::to_string(&doctor::json()) {
+            Ok(text) => {
+                println!("{text}");
+                // Non-zero on anything wrong, so this can BE the CI gate rather
+                // than needing one wrapped around it.
+                if bad {
+                    std::process::ExitCode::FAILURE
+                } else {
+                    std::process::ExitCode::SUCCESS
+                }
+            }
+            Err(e) => {
+                eprintln!("error  {e}");
+                std::process::ExitCode::FAILURE
+            }
+        };
     }
     for check in &checks {
         let mark = match check.level {
