@@ -99,6 +99,7 @@ pub const fn posix_shell() -> bool {
     cfg!(not(windows))
 }
 
+#[cfg(unix)]
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -107,6 +108,7 @@ fn quote(s: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn tmp(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("pitcrew-spawn-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);

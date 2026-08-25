@@ -575,9 +575,19 @@ mod signal_tests {
             .expect("spawn");
         let root = child.id();
 
+        // Poll rather than sample once: the shell has to be scheduled and then
+        // fork before there is a child to find, and asserting immediately
+        // passes only on a machine that happens to be idle.
         let mut sampler = Sampler::new();
-        let table = sampler.sample().table;
-        let tree = table.tree(root);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (table, tree) = loop {
+            let table = sampler.sample().table;
+            let tree = table.tree(root);
+            if tree.len() >= 2 || std::time::Instant::now() > deadline {
+                break (table, tree);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
         assert!(
             tree.len() >= 2,
             "expected a wrapper and a child, got {tree:?}"
