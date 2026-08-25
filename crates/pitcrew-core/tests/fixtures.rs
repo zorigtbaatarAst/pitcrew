@@ -171,3 +171,94 @@ fn the_shipped_example_config_loads_without_complaint() {
         loaded.warnings
     );
 }
+
+/// A registry entry that points at a repo's config is the whole reason
+/// `include:` exists — you often cannot add a file to a repo you do not own.
+#[test]
+fn an_include_pulls_in_another_config_and_the_includer_overrides_it() {
+    let d = std::env::temp_dir().join(format!("pitcrew-incl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("base.yaml"),
+        "name: base\napps:\n  a:\n    be:\n      cmd: \"true\"\n      port: 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("pitcrew.yaml"),
+        "include: base.yaml\nname: override\n",
+    )
+    .unwrap();
+
+    let loaded = load::load_yaml(&d.join("pitcrew.yaml"), &d).expect("loads");
+    let p = &loaded.project;
+    assert_eq!(
+        p.component("be-a").unwrap().port,
+        Some(1),
+        "from the include"
+    );
+    assert_eq!(p.name, "override", "the includer wins");
+    // Overriding an included value is what including is FOR: warning about it
+    // would make every registry entry noisy.
+    assert!(
+        !loaded.warnings.iter().any(|w| w.contains("set twice")),
+        "{:#?}",
+        loaded.warnings
+    );
+}
+
+/// Anywhere but first and whether a key overrides the include or is overridden
+/// BY it depends on line order, which is not a thing anyone should reason about.
+#[test]
+fn an_include_that_is_not_the_first_key_is_reported_and_ignored() {
+    let d = std::env::temp_dir().join(format!("pitcrew-incl2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("base.yaml"), "name: base\n").unwrap();
+    std::fs::write(d.join("pitcrew.yaml"), "name: mine\ninclude: base.yaml\n").unwrap();
+
+    let loaded = load::load_yaml(&d.join("pitcrew.yaml"), &d).expect("loads");
+    assert!(loaded
+        .warnings
+        .iter()
+        .any(|w| w.contains("include must be the first key")));
+    assert_eq!(loaded.project.name, "mine");
+}
+
+/// A missing include is a warning, not a refusal: the rest of the config is
+/// still a config, and naming the missing file is more use than loading nothing.
+#[test]
+fn a_missing_include_is_reported_rather_than_fatal() {
+    let d = std::env::temp_dir().join(format!("pitcrew-incl3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("pitcrew.yaml"),
+        "include: nope.yaml\nname: mine\napps:\n  a:\n    be:\n      cmd: \"true\"\n",
+    )
+    .unwrap();
+
+    let loaded = load::load_yaml(&d.join("pitcrew.yaml"), &d).expect("still loads");
+    assert!(loaded
+        .warnings
+        .iter()
+        .any(|w| w.contains("could not be read")));
+    assert_eq!(loaded.project.name, "mine");
+    assert!(loaded.project.component("be-a").is_some());
+}
+
+/// A cycle must be a bounded warning, not a hang.
+#[test]
+fn an_include_cycle_stops_at_the_depth_limit() {
+    let d = std::env::temp_dir().join(format!("pitcrew-incl4-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("a.yaml"), "include: b.yaml\nname: a\n").unwrap();
+    std::fs::write(d.join("b.yaml"), "include: a.yaml\nname: b\n").unwrap();
+
+    let loaded = load::load_yaml(&d.join("a.yaml"), &d).expect("loads");
+    assert!(loaded
+        .warnings
+        .iter()
+        .any(|w| w.contains("nested more than")));
+}

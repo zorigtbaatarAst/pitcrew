@@ -74,14 +74,94 @@ pub struct Loaded {
     pub warnings: Vec<String>,
 }
 
+/// The include depth limit.
+///
+/// A config that needs five levels of indirection to say what it runs is a
+/// config nobody can follow, and the limit is also what stops a cycle from
+/// being a hang.
+const MAX_INCLUDE_DEPTH: usize = 4;
+
 /// Read a `pitcrew.yaml` into the model.
 ///
 /// `root` is the project root, which must already be known: paths resolve
 /// against it, so it cannot come out of the file it is used to read.
 pub fn load_yaml(file: &Path, root: &Path) -> Result<Loaded, LoadError> {
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    collect(file, 0, &mut entries, &mut warnings)?;
+    let mut loaded = from_entries(entries, file, root);
+    // Include warnings come first: they are about which files were read at
+    // all, which is context for everything the loader says afterwards.
+    warnings.extend(loaded.warnings);
+    loaded.warnings = warnings;
+    Ok(loaded)
+}
+
+/// Flatten a file and everything it includes, in the order the model should
+/// see them.
+///
+/// An included file's entries come FIRST, so the includer's own keys override
+/// them. That is what makes a registry entry able to point at a repo's config
+/// and still say `name:` differently.
+fn collect(
+    file: &Path,
+    depth: usize,
+    out: &mut Vec<Entry>,
+    warnings: &mut Vec<String>,
+) -> Result<(), LoadError> {
     let text = std::fs::read_to_string(file).map_err(LoadError::Io)?;
     let entries = yaml::parse(&text).map_err(LoadError::Parse)?;
-    Ok(from_entries(entries, file, root))
+
+    // `include:` must be the FIRST key. Anywhere else and whether a key
+    // overrides the include or is overridden BY it depends on line order,
+    // which is not a thing anyone should have to reason about.
+    let include = entries.first().filter(|e| e.path == "include").cloned();
+    for e in entries.iter().skip(1) {
+        if e.path == "include" {
+            warnings.push(format!(
+                "config: {}: include must be the first key — this one is ignored",
+                name_of(file)
+            ));
+        }
+    }
+
+    if let Some(inc) = include {
+        if depth >= MAX_INCLUDE_DEPTH {
+            warnings.push(format!(
+                "config: {}: includes are nested more than {MAX_INCLUDE_DEPTH} deep —                  '{}' was not read",
+                name_of(file),
+                inc.value
+            ));
+        } else {
+            // Relative to the including file, which is the only base that
+            // makes a registry entry portable.
+            let target = if Path::new(&inc.value).is_absolute() {
+                PathBuf::from(&inc.value)
+            } else {
+                file.parent().unwrap_or(Path::new(".")).join(&inc.value)
+            };
+            match collect(&target, depth + 1, out, warnings) {
+                Ok(()) => {}
+                // A missing include is a warning, not a refusal: the rest of
+                // the config is still a config, and saying which file is
+                // missing is more use than refusing to load anything.
+                Err(e) => warnings.push(format!(
+                    "config: {}: include '{}' could not be read — {e}",
+                    name_of(file),
+                    inc.value
+                )),
+            }
+        }
+    }
+
+    out.extend(entries);
+    Ok(())
+}
+
+fn name_of(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
 
 /// The mapping itself, split out so it can be driven from a string in tests.
@@ -105,11 +185,20 @@ pub fn from_entries(entries: Vec<Entry>, file: &Path, root: &Path) -> Loaded {
     let mut comp_dirs: Vec<(String, String)> = Vec::new();
     let mut apps_off: Vec<String> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
+    // Entries from an included file arrive before the includer's own.
+    let crossed_include = entries.iter().any(|e| e.path == "include");
 
     for e in &entries {
         // A scalar written twice is one of them being ignored. Which one wins
         // is defined (the later), but silently is not good enough.
-        if !e.path.ends_with(|c: char| c.is_ascii_digit()) && seen.contains(&e.path) {
+        //
+        // Deliberately NOT reported across an include boundary: overriding an
+        // included value is exactly what including is for, and warning on it
+        // would make every registry entry noisy.
+        if !e.path.ends_with(|c: char| c.is_ascii_digit())
+            && seen.contains(&e.path)
+            && !crossed_include
+        {
             w.push(format!("'{}' is set twice — the later one wins", e.path));
         }
         seen.push(e.path.clone());

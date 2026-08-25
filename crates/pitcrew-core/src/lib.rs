@@ -7,6 +7,7 @@
 //! they did.
 
 pub mod deps;
+pub mod detect;
 pub mod diag;
 pub mod errscan;
 pub mod find;

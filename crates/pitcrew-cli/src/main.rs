@@ -7,6 +7,7 @@
 mod check;
 mod dashboard;
 mod doctor;
+mod init;
 mod project;
 mod report;
 mod run;
@@ -81,6 +82,23 @@ enum Command {
     Limits,
     /// Pick the project a bare command means from outside any checkout.
     Use { name: String },
+    /// Look at a repository and write a config that runs.
+    Init {
+        /// The repository. Defaults to the current directory.
+        dir: Option<std::path::PathBuf>,
+        /// Write into the repository rather than the registry.
+        #[arg(long)]
+        in_project: bool,
+        /// Replace an existing config.
+        #[arg(long, short)]
+        force: bool,
+        /// Take a fresh look even if the repo ships its own config.
+        #[arg(long)]
+        detect: bool,
+        /// Override the project name.
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Saved sets of targets.
     Profile {
         #[command(subcommand)]
@@ -116,6 +134,19 @@ fn main() -> std::process::ExitCode {
         Command::Projects => report::projects(),
         Command::Limits => report::caps(cli.dir.as_deref(), cli.project.as_deref()),
         Command::Use { name } => report::use_project(&name),
+        Command::Init {
+            dir,
+            in_project,
+            force,
+            detect,
+            name,
+        } => init::run(&init::Options {
+            dir: dir.or_else(|| cli.dir.clone()),
+            name,
+            in_project,
+            force,
+            redetect: detect,
+        }),
         Command::Profile { action } => match action {
             None | Some(ProfileAction::List) => {
                 report::profiles(cli.dir.as_deref(), cli.project.as_deref())

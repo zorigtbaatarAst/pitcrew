@@ -151,7 +151,7 @@ crates/pitcrew-model/     the JSON contract, as serde types            done
 crates/pitcrew-platform/  processes, ports, memory, RAM caps           done
 crates/pitcrew-core/      config, targets, profiles, limits, registry,    done
                           state, snapshot, lifecycle, health, diag,
-                          idle, errscan, deps
+                          idle, errscan, deps, detect, layout, supervise
 crates/pitcrew-cli/       start · stop · restart · status[--json] ·       partial
                           json[--watch] · diagnose · doctor · check ·
                           urls · ports · projects · limits · profile
