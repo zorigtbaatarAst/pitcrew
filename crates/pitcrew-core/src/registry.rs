@@ -167,27 +167,44 @@ mod tests {
         assert_eq!(slug("Ünïcode"), "n-code");
     }
 
+    /// Roots are built from a real temp directory rather than written as
+    /// `/work/zulu`: a leading slash with no drive letter is NOT absolute on
+    /// Windows, so a hardcoded POSIX path silently tests something else there.
     #[test]
     fn entries_are_listed_by_name_with_their_roots() {
         let h = tmp("list");
-        write(&h, "zulu.yaml", "root: /work/zulu\nname: Zulu\n");
-        write(&h, "alpha.yaml", "root: /work/alpha\n");
+        let zulu = h.join("work/zulu");
+        write(
+            &h,
+            "zulu.yaml",
+            &format!("root: {}\nname: Zulu\n", zulu.display()),
+        );
+        write(
+            &h,
+            "alpha.yaml",
+            &format!("root: {}\n", h.join("work/alpha").display()),
+        );
         let got = list(&h);
         assert_eq!(
             got.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
             ["alpha", "zulu"]
         );
-        assert_eq!(got[1].root, Path::new("/work/zulu"));
+        assert_eq!(got[1].root, zulu);
     }
 
     /// Entries written before YAML support are still entries.
     #[test]
     fn a_bash_entry_is_found_and_reported_as_one() {
         let h = tmp("sh");
-        write(&h, "legacy.sh", "PITCREW_ROOT=\"/work/legacy\"\n");
+        let root = h.join("work/legacy");
+        write(
+            &h,
+            "legacy.sh",
+            &format!("PITCREW_ROOT=\"{}\"\n", root.display()),
+        );
         let e = get(&h, "legacy").expect("found");
         assert_eq!(e.format, Format::Sh);
-        assert_eq!(e.root, Path::new("/work/legacy"));
+        assert_eq!(e.root, root);
     }
 
     #[test]
@@ -213,19 +230,24 @@ mod tests {
     #[test]
     fn the_project_containing_a_directory_is_found() {
         let h = tmp("containing");
-        write(&h, "outer.yaml", "root: /work\n");
-        write(&h, "inner.yaml", "root: /work/sales\n");
-
-        assert_eq!(
-            containing(&h, Path::new("/work/other/x")).unwrap().name,
-            "outer"
+        // Built from a real temp directory rather than written as `/work`: a
+        // leading slash with no drive letter is NOT absolute on Windows, so a
+        // hardcoded POSIX path silently tests something else there.
+        let work = h.join("work");
+        write(&h, "outer.yaml", &format!("root: {}\n", work.display()));
+        write(
+            &h,
+            "inner.yaml",
+            &format!("root: {}\n", work.join("sales").display()),
         );
+
+        assert_eq!(containing(&h, &work.join("other/x")).unwrap().name, "outer");
         // The deepest root wins: a checkout registered inside another one
         // resolves to the inner project, which is the one you are standing in.
         assert_eq!(
-            containing(&h, Path::new("/work/sales/api")).unwrap().name,
+            containing(&h, &work.join("sales/api")).unwrap().name,
             "inner"
         );
-        assert!(containing(&h, Path::new("/elsewhere")).is_none());
+        assert!(containing(&h, &h.join("elsewhere")).is_none());
     }
 }

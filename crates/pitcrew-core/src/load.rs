@@ -710,6 +710,11 @@ mod tests {
         assert_eq!(abs("~/work/api", Path::new("/p")), home.join("work/api"));
         assert_eq!(abs("~", Path::new("/p")), home);
         assert_eq!(abs("rel", Path::new("/p")), Path::new("/p/rel"));
-        assert_eq!(abs("/abs", Path::new("/p")), Path::new("/abs"));
+        // A genuinely absolute path per platform: a leading slash with no
+        // drive letter is not absolute on Windows, so `/abs` there is a
+        // relative path and would be joined rather than kept.
+        let already = std::env::temp_dir();
+        assert!(already.is_absolute());
+        assert_eq!(abs(&already.to_string_lossy(), Path::new("/p")), already);
     }
 }
