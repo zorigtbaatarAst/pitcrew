@@ -249,6 +249,12 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test
+      # Dogfood the installer. This runner has cargo, a compiler and pkg-config
+      # and no GTK headers, which is exactly the --no-gui case, so a non-zero
+      # exit here means the script is wrong about a machine that IS ready.
+      - name: setup-rust.sh agrees this machine is ready
+        run: ./setup-rust.sh --dry-run --no-gui
+        shell: bash
 
   # The Rust desktop app, which needs GTK4 and libadwaita DEVELOPMENT headers —
   # a different install from the runtime libraries the Python app needs, and
@@ -276,6 +282,12 @@ jobs:
           else
             brew install gtk4 libadwaita
           fi
+        shell: bash
+      # And with the headers installed, the full check must pass too — if a
+      # package name in the table above is wrong, this is what says so, which
+      # is the only way the macOS row gets verified by anyone without a Mac.
+      - name: setup-rust.sh agrees the desktop app can be built
+        run: ./setup-rust.sh --dry-run
         shell: bash
       - name: clippy
         run: cargo clippy -p pitcrew-gui --all-targets -- -D warnings

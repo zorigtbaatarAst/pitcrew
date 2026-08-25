@@ -1635,8 +1635,15 @@ What the Rust build does today: the dashboard, `start` / `stop` / `restart`,
 `urls`, `ports`, `projects`, `limits`, `profile`, `use`.
 
 ```
-make rust-install     # build the release binary and put it on your PATH
+./setup-rust.sh --yes    # a bare machine -> working: toolchain check, build
+                         # tools, GTK headers, both binaries, desktop entry
+./setup-rust.sh --dry-run  # just tell me what is missing
 ```
+
+It installs nothing privileged on its own: without `--yes` the package steps
+print the exact command they would run and continue, so you can read it, run it
+yourself, and come back. `--dry-run` exits non-zero when something is missing,
+so it works as a readiness check in a provisioning script.
 
 The two coexist by design — same name, different binaries, whichever is first
 on your `PATH` wins, and `pitcrew --version` says which you have.

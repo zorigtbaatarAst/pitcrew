@@ -14,7 +14,7 @@ echo "── parse check"
 # setup.sh and gui/*.sh are in the list because they were NOT, and that is
 # where the Windows install quietly rotted: three installer scripts nobody
 # parsed and nobody shellchecked, on a platform nobody ran.
-for f in bin/pitcrew install.sh setup.sh gui/*.sh lib/*.sh themes/*.sh test/*.sh examples/plugins/*.sh; do
+for f in bin/pitcrew install.sh install-rust.sh setup.sh setup-rust.sh gui/*.sh lib/*.sh themes/*.sh test/*.sh examples/plugins/*.sh; do
   if bash -n "$f" 2>/dev/null; then
     printf '  \033[32m✓\033[0m %s\n' "$f"
   else
@@ -60,6 +60,6 @@ echo "── shellcheck"
 # examples/plugins/ is linted too: a worked example that does not pass the
 # project's own gate is not a worked example.
 shellcheck --shell=bash --severity=warning --exclude=SC1090,SC1091,SC2034 \
-  bin/pitcrew install.sh setup.sh gui/*.sh lib/*.sh themes/*.sh examples/plugins/*.sh || rc=1
+  bin/pitcrew install.sh install-rust.sh setup.sh setup-rust.sh gui/*.sh lib/*.sh themes/*.sh examples/plugins/*.sh || rc=1
 [ $rc -eq 0 ] && printf '\033[32m✔ clean\033[0m\n'
 exit $rc

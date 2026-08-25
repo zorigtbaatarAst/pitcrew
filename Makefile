@@ -1,5 +1,5 @@
 # pitcrew — development tasks. The tool itself needs none of this to run.
-.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint rust-install rust-gui rust-gui-check
+.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint rust-setup rust-install rust-gui rust-gui-check
 
 help:
 	@echo "make setup   fresh clone -> working tool (add YES=1 to install packages)"
@@ -13,7 +13,8 @@ help:
 	@echo "make test T=meters   run only test files matching 'meters'"
 	@echo
 	@echo "make rust      the Rust port: fmt check, clippy, tests"
-	@echo "make rust-test cargo test --workspace"
+	@echo "make rust-test the CLI test suite (the desktop app has its own)"
+	@echo "make rust-setup    fresh machine -> working Rust pitcrew (add YES=1)"
 	@echo "make rust-install  build the release binary and put it on your PATH"
 	@echo "make rust-gui      run the Rust desktop app (needs gtk4/libadwaita dev headers)"
 
@@ -47,6 +48,12 @@ rust: rust-lint rust-test
 # Build the release binary and put it on your PATH. The bash implementation
 # installs through `make install` and the two coexist — whichever is first on
 # your PATH wins, and `pitcrew --version` says which you have.
+# Take a bare machine to a working Rust pitcrew: toolchain, build tools, GTK
+# headers, both binaries, and a desktop entry. Add YES=1 to let it install
+# packages; without it, it prints the exact command and continues.
+rust-setup:
+	@./setup-rust.sh $(if $(YES),--yes,)
+
 rust-install:
 	@./install-rust.sh --build
 
