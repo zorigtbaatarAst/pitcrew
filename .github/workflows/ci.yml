@@ -250,6 +250,38 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # The Rust desktop app, which needs GTK4 and libadwaita DEVELOPMENT headers —
+  # a different install from the runtime libraries the Python app needs, and
+  # separately missable. Its own job because those headers are not worth putting
+  # on every runner for the CLI's sake.
+  rust-gui:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-${{ matrix.os }}
+      - name: gtk4 development headers
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
+          else
+            brew install gtk4 libadwaita
+          fi
+        shell: bash
+      - name: clippy
+        run: cargo clippy -p pitcrew-gui --all-targets -- -D warnings
+      - name: test
+        run: cargo test -p pitcrew-gui
+
   # There is no third Windows job, and the two above do not cover integration:
   # a real stack of real services running on a real box is still untested.
   #

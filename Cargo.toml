@@ -11,7 +11,7 @@
 #   pitcrew-platform  processes, ports, memory, RAM caps         (phase 1) ✓
 #   pitcrew-core      config, diagnostics, lifecycle, formatting (phase 2-4) ~
 #   pitcrew-tui       ratatui dashboard                          (phase 5)
-#   pitcrew-gui       gtk4-rs + libadwaita desktop app           (phase 6)
+#   pitcrew-gui       gtk4-rs + libadwaita desktop app           (phase 6) ~
 [workspace]
 resolver = "2"
 members = [
@@ -19,6 +19,7 @@ members = [
     "crates/pitcrew-cli",
     "crates/pitcrew-platform",
     "crates/pitcrew-core",
+    "crates/pitcrew-gui",
 ]
 
 [workspace.package]

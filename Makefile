@@ -1,5 +1,5 @@
 # pitcrew — development tasks. The tool itself needs none of this to run.
-.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint rust-install
+.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint rust-install rust-gui
 
 help:
 	@echo "make setup   fresh clone -> working tool (add YES=1 to install packages)"
@@ -15,6 +15,7 @@ help:
 	@echo "make rust      the Rust port: fmt check, clippy, tests"
 	@echo "make rust-test cargo test --workspace"
 	@echo "make rust-install  build the release binary and put it on your PATH"
+	@echo "make rust-gui      run the Rust desktop app (needs gtk4/libadwaita dev headers)"
 
 test:
 	@bash test/run.sh $(T)
@@ -48,6 +49,14 @@ rust: rust-lint rust-test
 # your PATH wins, and `pitcrew --version` says which you have.
 rust-install:
 	@./install-rust.sh --build
+
+# The Rust desktop app. Needs the GTK4 and libadwaita DEVELOPMENT headers,
+# which are a separate install from the runtime libraries the Python app uses:
+#   Fedora  sudo dnf install gtk4-devel libadwaita-devel
+#   Debian  sudo apt install libgtk-4-dev libadwaita-1-dev
+#   macOS   brew install gtk4 libadwaita
+rust-gui:
+	@cargo run -p pitcrew-gui
 
 rust-test:
 	@cargo test --workspace
