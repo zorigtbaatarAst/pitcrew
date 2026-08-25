@@ -149,14 +149,15 @@ counterpart lands — the parity check depends on being able to run both.
 ```
 crates/pitcrew-model/     the JSON contract, as serde types            done
 crates/pitcrew-platform/  processes, ports, memory, RAM caps           done
-crates/pitcrew-core/      YAML, config model, validation, targets,        partial
-                          profiles, limits, registry
-crates/pitcrew-cli/       check · urls · ports · projects · limits ·      partial
-                          profile list · doctor (environment half)
+crates/pitcrew-core/      config, targets, profiles, limits, registry,    partial
+                          state machine, snapshot, lifecycle, health
+crates/pitcrew-cli/       start · stop · restart · status · check ·       partial
+                          urls · ports · projects · limits · profile
+                          list · doctor (environment half)
 ```
 
-Phases still to come: config detection and `init` (the rest of 2), lifecycle
-(3), diagnostics and JSON
+Phases still to come: config detection and `init` (the rest of 2), diagnostics
+and JSON
 output (4), TUI (5), GTK GUI (6), distribution (7). The plan lives outside the
 repo; the phase numbering in the code comments refers to it.
 
@@ -185,7 +186,16 @@ Three things to know before touching any of it:
    emits the same flattened `path=value` lines as `yaml_parse`, so a divergence
    is one `diff` away. Keep it that way while both exist.
 
-4. **`crates/pitcrew-platform` inherits constraint 5 verbatim.** A
+4. **A start command reaches a shell as ONE string, always.** Configs contain
+   `cd web && { [ -d node_modules ] || npm install; } && npm run dev`, and the
+   role `env:` prefix is folded in front by concatenation — it is only an
+   assignment because a shell parses it there. `lifecycle` also runs that
+   command in a NESTED shell rather than inlining it into the wrapper: the
+   wrapper is a background subshell, so an inlined `exit 3` would exit the
+   wrapper and skip the exit record, which is the one thing the wrapper exists
+   to write.
+
+5. **`crates/pitcrew-platform` inherits constraint 5 verbatim.** A
    `cfg(target_os)` anywhere outside that crate is a bug, for the same reason a
    `Darwin` case outside `lib/00-platform.sh` is.
 

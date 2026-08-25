@@ -121,11 +121,17 @@ pub fn systemd_scope_argv(unit: &str, max_bytes: u64, command: &str) -> Vec<Stri
         "--scope".into(),
         "--collect".into(),
         format!("--unit={unit}"),
-        format!("-p=MemoryMax={max_bytes}"),
+        // `-p` and its value are TWO argv elements. `-p=MemoryMax=N` is parsed
+        // as `-p` with the value `=MemoryMax=N`, and systemd-run rejects it
+        // with "Unknown assignment" — inside the wrapper, into the log, where
+        // it arrives looking like the service failed to start.
+        "-p".into(),
+        format!("MemoryMax={max_bytes}"),
         // Without a swap limit the cap is advisory in practice: a process at
         // MemoryMax simply swaps, and the machine grinds instead of the
         // component failing. This is what makes the cap bite.
-        "-p=MemorySwapMax=0".into(),
+        "-p".into(),
+        "MemorySwapMax=0".into(),
         "bash".into(),
         "-c".into(),
         command.into(),
@@ -269,9 +275,15 @@ mod tests {
             "a failed unit must not block the next start"
         );
         assert!(argv.contains(&"--unit=pitcrew-demo-be-api".to_string()));
-        assert!(argv.contains(&"-p=MemoryMax=2147483648".to_string()));
+        // Two argv elements, not one: `-p=MemoryMax=N` is rejected by
+        // systemd-run with "Unknown assignment", inside the wrapper, into the
+        // log, where it looks exactly like the service failing to start.
+        let p_at = argv.iter().position(|a| a == "-p").expect("a -p flag");
+        assert_eq!(argv[p_at + 1], "MemoryMax=2147483648");
         // Without this the cap is advisory: the process swaps instead of failing.
-        assert!(argv.contains(&"-p=MemorySwapMax=0".to_string()));
+        assert!(argv
+            .windows(2)
+            .any(|w| w[0] == "-p" && w[1] == "MemorySwapMax=0"));
         assert_eq!(
             argv[argv.len() - 3..],
             ["bash".to_string(), "-c".into(), "./gradlew bootRun".into()]

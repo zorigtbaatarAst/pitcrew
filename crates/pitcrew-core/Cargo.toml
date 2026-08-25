@@ -9,3 +9,4 @@ description = "The pitcrew config model, and the front ends onto it."
 
 [dependencies]
 pitcrew-model = { workspace = true }
+pitcrew-platform = { workspace = true }

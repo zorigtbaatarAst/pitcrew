@@ -383,3 +383,217 @@ mod tests {
         assert!(!second.cpu.is_empty(), "a primed sampler reports rates");
     }
 }
+
+// ── signalling ──────────────────────────────────────────────────────────────
+
+/// Is this pid a live process?
+///
+/// On Unix this is `kill(pid, 0)`, which asks the kernel rather than trusting a
+/// process table that was sampled some milliseconds ago — the difference
+/// matters on the path that decides whether to start a second copy of a service.
+pub fn is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // ESRCH means no such process. EPERM means it exists and is not ours,
+        // which for this question is still "alive".
+        //
+        // errno is read through std rather than `__errno_location`, which is a
+        // glibc spelling: macOS calls it `__error` and the direct call would
+        // not build there at all.
+        if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+            return true;
+        }
+        matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EPERM)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut sys = System::new();
+        let pid = sysinfo::Pid::from_u32(pid);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        sys.process(pid).is_some()
+    }
+}
+
+/// Ask a process to stop, then insist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// SIGTERM — "please stop", which a service can catch to flush and close.
+    Term,
+    /// SIGKILL — the backstop, for something that did not.
+    Kill,
+}
+
+/// Signal one process. `Ok(false)` when it is already gone, which is the
+/// ordinary outcome of the second pass over a tree and not an error.
+pub fn signal(pid: u32, sig: Signal) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        let sig = match sig {
+            Signal::Term => libc::SIGTERM,
+            Signal::Kill => libc::SIGKILL,
+        };
+        let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
+        if rc == 0 {
+            return Ok(true);
+        }
+        let e = std::io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::ESRCH) => Ok(false),
+            _ => Err(e),
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        // Windows has no SIGTERM. A graceful stop would mean a console control
+        // event or a window message, neither of which reaches a detached
+        // service reliably — so both signals terminate, and `stop` says so
+        // rather than implying a clean shutdown it did not perform.
+        let _ = sig;
+        unsafe {
+            let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) else {
+                return Ok(false);
+            };
+            let result = TerminateProcess(handle, 1);
+            let _ = CloseHandle(handle);
+            Ok(result.is_ok())
+        }
+    }
+}
+
+/// Whether a graceful stop is even possible here.
+///
+/// False on Windows, where there is no SIGTERM that reaches a detached process
+/// — worth saying out loud rather than letting an identical-looking `stop`
+/// imply a clean shutdown that did not happen.
+pub const fn graceful_stop_available() -> bool {
+    cfg!(unix)
+}
+
+/// Stop a whole process tree: TERM every member, wait, then KILL what is left.
+///
+/// **Children first.** Signalling the root first gives a shell wrapper the
+/// chance to exit while its service is still running, which orphans the service
+/// and loses the only handle anyone had on it. That is how a "stopped" JVM
+/// keeps holding two gigabytes.
+///
+/// Returns how many processes were signalled. `poll` is called between the two
+/// passes and should sleep; it is a parameter so tests do not have to wait.
+pub fn kill_tree(
+    table: &ProcessTable,
+    root: u32,
+    mut poll: impl FnMut() -> bool,
+) -> std::io::Result<usize> {
+    let mut pids = table.tree(root);
+    pids.reverse();
+    if pids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut signalled = 0;
+    for &pid in &pids {
+        if signal(pid, Signal::Term)? {
+            signalled += 1;
+        }
+    }
+
+    // Give them the chance TERM was for. `poll` returns false to stop waiting.
+    while pids.iter().any(|&p| is_alive(p)) {
+        if !poll() {
+            break;
+        }
+    }
+
+    for &pid in &pids {
+        if is_alive(pid) {
+            let _ = signal(pid, Signal::Kill);
+        }
+    }
+    Ok(signalled)
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+
+    #[test]
+    fn this_process_is_alive_and_a_made_up_pid_is_not() {
+        assert!(is_alive(std::process::id()));
+        // Not proof on its own — a pid can be recycled — but a pid this high
+        // is above every default pid_max, so nothing can be using it.
+        assert!(!is_alive(u32::MAX - 1));
+    }
+
+    /// Windows has no SIGTERM that reaches a detached process, and `stop` says
+    /// so rather than implying a clean shutdown it did not perform.
+    #[test]
+    fn graceful_stop_is_advertised_honestly() {
+        assert_eq!(graceful_stop_available(), cfg!(unix));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_child_can_be_signalled_and_stops_being_alive() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        assert!(is_alive(pid));
+
+        assert!(signal(pid, Signal::Term).unwrap());
+        // Reaped here so the pid stops being a zombie, which `kill(pid, 0)`
+        // would otherwise still report as alive.
+        let _ = child.wait();
+        assert!(!is_alive(pid));
+
+        // Signalling something already gone is Ok(false), not an error: it is
+        // the ordinary outcome of the second pass over a tree.
+        assert!(!signal(pid, Signal::Kill).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killing_a_tree_takes_the_children_too() {
+        // A shell that spawns a child and waits: the shape every component has,
+        // where the wrapper is what pitcrew records and the service is under it.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30 & wait")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let root = child.id();
+
+        let mut sampler = Sampler::new();
+        let table = sampler.sample().table;
+        let tree = table.tree(root);
+        assert!(
+            tree.len() >= 2,
+            "expected a wrapper and a child, got {tree:?}"
+        );
+
+        let mut spins = 0;
+        kill_tree(&table, root, || {
+            spins += 1;
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            spins < 100
+        })
+        .expect("kill");
+        let _ = child.wait();
+
+        for pid in tree {
+            assert!(!is_alive(pid), "pid {pid} survived the tree kill");
+        }
+    }
+}

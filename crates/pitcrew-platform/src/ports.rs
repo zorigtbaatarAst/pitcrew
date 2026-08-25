@@ -128,31 +128,34 @@ mod tests {
         ))));
     }
 
-    /// End to end against the real OS: open a port, and the scan must see it.
+    /// End to end against the real OS, both directions in one test.
+    ///
+    /// Deliberately NOT two tests. Cargo runs them in parallel threads, and an
+    /// ephemeral port released by one is exactly the port the kernel is most
+    /// likely to hand the other — so a separate "closed" test fails at random
+    /// on a machine that is doing nothing wrong.
     #[test]
-    fn a_port_this_test_is_listening_on_is_reported_open() {
+    fn a_bound_port_is_seen_and_a_released_one_is_not() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
         let port = listener.local_addr().unwrap().port();
 
-        let found = scan();
         assert!(
-            found.is_open(port),
+            scan().is_open(port),
             "port {port} is bound by this test but the scan did not see it"
         );
 
         drop(listener);
-    }
 
-    /// And a port nothing is on must not be reported open, or every component
-    /// would read as up.
-    #[test]
-    fn a_closed_port_is_not_reported_open() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-
-        // Re-scanning after the close; the kernel may hold the socket in
-        // TIME_WAIT, but never in LISTEN, which is the only state scan() counts.
-        assert!(!scan().is_open(port));
+        // Re-binding is the only honest way to establish that nothing is
+        // listening: another process on this machine is free to take the port
+        // the moment it is released, and asserting "closed" without checking
+        // would blame the scanner for someone else's socket.
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+            Ok(proof) => {
+                drop(proof);
+                assert!(!scan().is_open(port), "nothing is listening on {port}");
+            }
+            Err(_) => eprintln!("skipping the closed half: {port} was taken by something else"),
+        }
     }
 }

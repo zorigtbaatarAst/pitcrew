@@ -7,11 +7,17 @@
 //! they did.
 
 pub mod find;
+pub mod format;
+pub mod health;
+pub mod lifecycle;
 pub mod limits;
 pub mod load;
+pub mod logdir;
 pub mod model;
 pub mod profiles;
 pub mod registry;
+pub mod snapshot;
+pub mod state;
 pub mod targets;
 pub mod validate;
 pub mod yaml;

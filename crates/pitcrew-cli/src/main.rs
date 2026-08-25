@@ -8,6 +8,7 @@ mod check;
 mod doctor;
 mod project;
 mod report;
+mod run;
 
 use clap::{Parser, Subcommand};
 
@@ -38,6 +39,12 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Start components. With no targets, starts everything.
+    Start { targets: Vec<String> },
+    /// Stop components. With no targets, stops everything.
+    Stop { targets: Vec<String> },
+    /// Stop then start.
+    Restart { targets: Vec<String> },
     /// Stream the state object, one JSON document per line.
     Json {
         /// Keep streaming rather than emitting one document.
@@ -109,7 +116,23 @@ fn main() -> std::process::ExitCode {
                 report::profiles(cli.dir.as_deref(), cli.project.as_deref())
             }
         },
-        Command::Status { .. } | Command::Json { .. } | Command::Diagnose { .. } => {
+        Command::Status { json } => {
+            if json {
+                eprintln!("pitcrew: status --json is not ported yet — phase 4.");
+                return std::process::ExitCode::FAILURE;
+            }
+            run::status(cli.dir.as_deref(), cli.project.as_deref())
+        }
+        Command::Start { targets } => {
+            run::start(cli.dir.as_deref(), cli.project.as_deref(), &targets)
+        }
+        Command::Stop { targets } => {
+            run::stop(cli.dir.as_deref(), cli.project.as_deref(), &targets)
+        }
+        Command::Restart { targets } => {
+            run::restart(cli.dir.as_deref(), cli.project.as_deref(), &targets)
+        }
+        Command::Json { .. } | Command::Diagnose { .. } => {
             eprintln!("pitcrew: not ported yet — phase 4 (diagnostics and JSON output).");
             std::process::ExitCode::FAILURE
         }

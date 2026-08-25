@@ -463,6 +463,7 @@ name = "pitcrew-core"
 version = "0.1.0"
 dependencies = [
  "pitcrew-model",
+ "pitcrew-platform",
 ]
 
 [[package]]
@@ -477,6 +478,7 @@ dependencies = [
 name = "pitcrew-platform"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "netstat2",
  "sysinfo",
  "windows",

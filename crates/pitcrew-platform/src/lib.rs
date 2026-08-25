@@ -41,6 +41,7 @@ pub mod caps;
 pub mod memory;
 pub mod ports;
 pub mod process;
+pub mod spawn;
 
 pub use caps::Enforcement;
 pub use memory::Machine;
