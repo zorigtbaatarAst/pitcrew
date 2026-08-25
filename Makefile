@@ -1,5 +1,5 @@
 # pitcrew — development tasks. The tool itself needs none of this to run.
-.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint
+.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint rust-install
 
 help:
 	@echo "make setup   fresh clone -> working tool (add YES=1 to install packages)"
@@ -14,6 +14,7 @@ help:
 	@echo
 	@echo "make rust      the Rust port: fmt check, clippy, tests"
 	@echo "make rust-test cargo test --workspace"
+	@echo "make rust-install  build the release binary and put it on your PATH"
 
 test:
 	@bash test/run.sh $(T)
@@ -41,6 +42,12 @@ gui-deps:
 # until the port reaches parity. Needs rustfmt and clippy — on Fedora those are
 # separate packages (`rustfmt`, `clippy`), or `rustup component add` elsewhere.
 rust: rust-lint rust-test
+
+# Build the release binary and put it on your PATH. The bash implementation
+# installs through `make install` and the two coexist — whichever is first on
+# your PATH wins, and `pitcrew --version` says which you have.
+rust-install:
+	@./install-rust.sh --build
 
 rust-test:
 	@cargo test --workspace

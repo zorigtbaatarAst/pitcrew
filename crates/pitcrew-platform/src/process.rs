@@ -169,6 +169,13 @@ impl Sampler {
     }
 
     /// Refresh the process table and compute CPU rates over the elapsed window.
+    ///
+    /// **The command line is NOT read in this sweep.** `/proc/<pid>/cmdline`
+    /// is a file per process, and reading it for every process on the machine
+    /// costs more than everything else here put together — on a box with 750
+    /// processes it was the whole of a ~100ms frame. It is fetched separately,
+    /// for the handful of pids that are actually in a component's tree, by
+    /// [`Sampler::commands_for`].
     pub fn sample(&mut self) -> Sample {
         // `cpu()` is asked for because it is what populates the accumulated
         // counter; the rate below is computed here rather than taken from
@@ -178,10 +185,7 @@ impl Sampler {
         self.sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing()
-                .with_cpu()
-                .with_memory()
-                .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
+            ProcessRefreshKind::nothing().with_cpu().with_memory(),
         );
 
         let now = Instant::now();
@@ -225,7 +229,8 @@ impl Sampler {
                     rss: proc.memory(),
                     cpu_ms,
                     start_time: proc.start_time(),
-                    cmd: command_of(proc),
+                    // Filled in by commands_for, for the pids that need it.
+                    cmd: String::new(),
                 },
             );
         }
@@ -245,6 +250,48 @@ impl Sampler {
             table: ProcessTable { procs, children },
             cpu,
         }
+    }
+}
+
+impl Sampler {
+    /// An empty sample that still moves the clock on.
+    ///
+    /// For frames where nothing this project started is running: there is no
+    /// tree to walk, so the sweep would produce nothing but cost everything.
+    /// The previous-sample map is cleared rather than kept, because a CPU delta
+    /// taken across a gap where the process was not observed is not a rate.
+    pub fn idle_sample(&mut self) -> Sample {
+        self.prev.clear();
+        self.prev_at = Instant::now();
+        self.primed = false;
+        Sample {
+            table: ProcessTable::default(),
+            cpu: HashMap::new(),
+        }
+    }
+
+    /// Command lines for a specific set of pids.
+    ///
+    /// Separate from the sweep because it is the expensive half: one file read
+    /// per process. Only the pids a caller is actually going to show are worth
+    /// paying for, and that is at most a dozen per component.
+    pub fn commands_for(&mut self, pids: &[u32]) -> HashMap<u32, String> {
+        if pids.is_empty() {
+            return HashMap::new();
+        }
+        let wanted: Vec<sysinfo::Pid> = pids.iter().map(|p| sysinfo::Pid::from_u32(*p)).collect();
+        self.sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&wanted),
+            false,
+            ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet),
+        );
+        pids.iter()
+            .filter_map(|p| {
+                self.sys
+                    .process(sysinfo::Pid::from_u32(*p))
+                    .map(|proc| (*p, command_of(proc)))
+            })
+            .collect()
     }
 }
 

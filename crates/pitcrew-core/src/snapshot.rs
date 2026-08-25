@@ -79,7 +79,25 @@ impl Collector {
     }
 
     pub fn take(&mut self, p: &Project, logs: &LogDir) -> Snapshot {
-        let sample = self.sampler.sample();
+        // Sweeping the process table is by far the most expensive thing here —
+        // one /proc read per process on the machine. When nothing this project
+        // started is alive there is no tree to walk, every RSS and CPU is None
+        // regardless, and the sweep buys exactly nothing. A stopped stack is
+        // the common case for a `status` check, so it is worth the branch.
+        //
+        // The pid liveness test is `kill(pid, 0)`: one syscall per component,
+        // against 750 file reads.
+        let anything_alive = p
+            .components()
+            .filter_map(|c| logs.pid(&c.name))
+            .any(process::is_alive);
+        let sample = if anything_alive {
+            self.sampler.sample()
+        } else {
+            // Still advances the CPU baseline's clock, so the first frame after
+            // something starts is not differencing against a stale window.
+            self.sampler.idle_sample()
+        };
         let listening = ports::scan();
         let machine = self.gauges.read();
         let now = pitcrew_platform::now() as i64;
@@ -88,6 +106,23 @@ impl Collector {
         for c in p.components() {
             components.push(self.one(c, logs, &sample, &listening, now));
         }
+
+        // Command lines, for the handful of pids that will actually be shown.
+        // Reading them for every process on the machine is the single most
+        // expensive thing a frame can do.
+        let shown: Vec<u32> = components
+            .iter()
+            .flat_map(|c| c.processes.iter().map(|p| p.pid))
+            .collect();
+        let commands = self.sampler.commands_for(&shown);
+        for c in &mut components {
+            for proc in &mut c.processes {
+                if let Some(cmd) = commands.get(&proc.pid) {
+                    proc.cmd.clone_from(cmd);
+                }
+            }
+        }
+
         Snapshot {
             at: now,
             components,

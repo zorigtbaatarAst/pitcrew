@@ -1,0 +1,100 @@
+name: release
+
+# Tagged builds only. A release workflow that fires on every push produces
+# artifacts nobody asked for and hides the one somebody did.
+on:
+  push:
+    tags: ['v*']
+  # For rehearsing the matrix without cutting a tag: the artifacts are uploaded
+  # but no release is created.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The aarch64 Linux target needs a cross linker, which the runner does
+      # not ship. Everything else builds natively.
+      - name: cross linker for aarch64
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      # Only the CLI. The desktop app is not a static binary — it needs GTK4
+      # and libadwaita at runtime — so it is installed rather than shipped.
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p pitcrew-cli
+
+      - name: package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ "$version" = "$GITHUB_REF_NAME" ] && version=dev
+          name="pitcrew-$version-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          # LICENSE and README travel with it: a binary somebody downloaded in
+          # six months should be able to say what it is and who wrote it.
+          cp LICENSE README.md "dist/$name/"
+          if [ "${{ runner.os }}" = Windows ]; then
+            cp "target/${{ matrix.target }}/release/pitcrew.exe" "dist/$name/"
+            (cd dist && 7z a "$name.zip" "$name") > /dev/null
+            echo "ASSET=dist/$name.zip" >> "$GITHUB_ENV"
+          else
+            cp "target/${{ matrix.target }}/release/pitcrew" "dist/$name/"
+            (cd dist && tar czf "$name.tar.gz" "$name")
+            echo "ASSET=dist/$name.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # Checksums, because a download nobody can verify is a download nobody
+      # should run.
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
