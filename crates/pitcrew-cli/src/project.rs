@@ -116,6 +116,19 @@ fn explicit(t: &Path) -> Result<find::Found, String> {
     Err(format!("no such config: {}", t.display()))
 }
 
+/// Why a `pitcrew.config.sh` cannot be loaded here.
+///
+/// Honest rather than helpful-sounding, and in one place because two copies of
+/// a refusal drift into two different explanations of the same thing.
+pub fn sh_not_readable(file: &Path) -> String {
+    format!(
+        "{}: the bash config format is not readable from this build — it is a \
+         shell script, so loading it means running it.\n  Convert it first with \
+         the bash implementation: pitcrew migrate",
+        file.display()
+    )
+}
+
 /// Find it and load it.
 pub fn open(target: Option<&Path>, name: Option<&str>) -> Result<Session, String> {
     let found = locate(target, name)?;
@@ -138,13 +151,7 @@ pub fn open_found(found: find::Found) -> Result<Session, String> {
         ..found
     };
     if found.format == Format::Sh {
-        // Honest rather than helpful-sounding. Reading it means running it.
-        return Err(format!(
-            "{}: the bash config format is not readable from this build — it is a \
-             shell script, so loading it means running it.\n  Convert it first with \
-             the bash implementation: pitcrew migrate",
-            found.file.display()
-        ));
+        return Err(sh_not_readable(&found.file));
     }
     let loaded = load::load_yaml(&found.file, &found.root)
         .map_err(|e| format!("{}:{e}", found.file.display()))?;

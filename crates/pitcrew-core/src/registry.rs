@@ -40,11 +40,9 @@ pub fn home() -> PathBuf {
     if let Some(h) = std::env::var_os("PITCREW_HOME") {
         return PathBuf::from(h);
     }
-    let base = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    base.join(".config/pitcrew")
+    crate::load::home_dir()
+        .unwrap_or_default()
+        .join(".config/pitcrew")
 }
 
 pub fn projects_dir(home: &Path) -> PathBuf {

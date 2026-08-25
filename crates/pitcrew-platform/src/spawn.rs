@@ -11,6 +11,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::shell_quote as quote;
+
 /// Launch `script` so that it survives this process, and report the pid of the
 /// thing that is actually running.
 ///
@@ -97,11 +99,6 @@ pub fn shell() -> &'static str {
 /// True where a start command gets a POSIX shell.
 pub const fn posix_shell() -> bool {
     cfg!(not(windows))
-}
-
-#[cfg(unix)]
-fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 #[cfg(test)]

@@ -96,6 +96,17 @@ impl Os {
     }
 }
 
+/// Quote a string so a POSIX shell reads it as one word.
+///
+/// One copy, in the lowest crate, because three had appeared: the launcher
+/// needs it for the wrapper, the config loader for the `cd` it folds into a
+/// command, and the caps layer for a systemd argv. They must agree — a path
+/// quoted one way here and another way there is a service that starts from the
+/// wrong directory.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 /// Seconds since the epoch at which this machine booted.
 ///
 /// Used to decide whether a pidfile survived a reboot: a recorded pid that
@@ -118,6 +129,16 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory with an apostrophe in it is not exotic — `~/Bob's work` is
+    /// a real path — and getting this wrong means a command that starts in the
+    /// wrong place or not at all.
+    #[test]
+    fn quoting_survives_an_apostrophe() {
+        assert_eq!(shell_quote("/a/b"), "'/a/b'");
+        assert_eq!(shell_quote("/it's/here"), r"'/it'\''s/here'");
+        assert_eq!(shell_quote(""), "''");
+    }
 
     /// The strings are the contract — they appear in `doctor --json` as `os`.
     #[test]

@@ -244,3 +244,13 @@ fn cmd_doctor(
         std::process::ExitCode::SUCCESS
     }
 }
+
+/// Report a problem and exit non-zero.
+///
+/// One copy, because three had appeared and they have to agree: everything
+/// here is usable as a gate, so the exit code and the prefix are a contract,
+/// not a formatting choice.
+pub fn fail(msg: &str) -> std::process::ExitCode {
+    eprintln!("error  {msg}");
+    std::process::ExitCode::FAILURE
+}

@@ -1624,15 +1624,35 @@ shell's children exactly — `/proc/stat`'s counter is system-wide and far too
 noisy, and the `times` builtin misses a cheap subshell entirely because it
 burns no measurable CPU.
 
-## The Rust port
+## Two builds, and which one is for you
 
-A Rust rewrite is in progress on the `rust-rewrite` branch. **Both
-implementations are live**: `bin/pitcrew` is still the working tool, and the
-Rust binary is built alongside it.
+pitcrew exists twice, on purpose.
+
+**The shell implementation** — `bin/pitcrew`, what this README has been
+describing. Zero dependencies beyond bash 5, patchable in place over SSH, real
+cgroup RAM caps on Linux. This is what the author runs.
+
+**The Rust build** — one binary, no bash at all. This is the one to install on
+**Windows or macOS**, where the shell version needs Git Bash or MSYS2 and cannot
+enforce a RAM cap. On Windows the Rust build enforces caps through a Job Object;
+on both it needs nothing installed underneath it.
+
+Both read the same `pitcrew.yaml` and emit the same JSON, so a team can mix
+them: `make compare` is a command that checks exactly that, and it runs in CI.
+
+| | shell | Rust |
+|---|---|---|
+| Linux | ✅ recommended | ✅ works, faster |
+| macOS | ⚠️ needs `brew install bash` | ✅ **recommended** |
+| Windows | ⚠️ needs Git Bash or MSYS2 | ✅ **recommended** |
+| RAM caps enforced | Linux only | Linux **and Windows** |
+| Install | clone + symlink | one binary |
 
 What the Rust build does today: the dashboard, `start` / `stop` / `restart`,
 `status` (and `--json`), `json --watch`, `diagnose`, `doctor`, `check`, `init`,
-`urls`, `ports`, `projects`, `limits`, `profile`, `use`.
+`urls`, `ports`, `projects`, `limits`, `profile`, `use` — plus a GTK desktop
+app. Not yet ported: `logs`, `shell`, `ps`, `watch`, `edit`, `theme`, `render`,
+`stale`, `wait`, `plugins`, `migrate`, `forget`.
 
 ```
 ./setup-rust.sh --yes    # a bare machine -> working: toolchain check, build

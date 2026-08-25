@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::model::{app_name_ok, role_name_ok, App, Component, Project, Role};
 use crate::yaml::{self, Entry};
+use pitcrew_platform::shell_quote;
 
 /// Display settings a config may pin, each becoming `PITCREW_<NAME>`.
 ///
@@ -471,7 +472,11 @@ fn abs(p: &str, base: &Path) -> PathBuf {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
+/// The user's home, by whichever name this platform gives it.
+///
+/// One copy: the registry needs it too, and two of them is two chances to
+/// disagree about what `~` means.
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -529,11 +534,6 @@ fn expand(s: &str, root: &Path) -> String {
         }
     }
     out
-}
-
-/// Single-quote for a shell, the way bash's `${x@Q}` does.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// The spellings people actually write. An unrecognised word is reported rather

@@ -21,6 +21,7 @@ use pitcrew_platform::{caps, ports, process, spawn};
 
 use crate::logdir::LogDir;
 use crate::model::{Component, Project};
+use pitcrew_platform::shell_quote;
 
 /// What a start attempt did.
 #[derive(Debug, PartialEq, Eq)]
@@ -253,10 +254,6 @@ fn should_kill(table: &process::ProcessTable, pid: u32) -> bool {
         return false;
     };
     !p.cmd.contains("docker-proxy")
-}
-
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 fn run_quiet(program: &str, args: &[&str]) -> bool {

@@ -32,17 +32,17 @@ pub fn run(opts: &Options) -> ExitCode {
     {
         Ok(d) => match d.canonicalize() {
             Ok(d) if d.is_dir() => d,
-            _ => return fail(&format!("no such directory: {}", d.display())),
+            _ => return crate::fail(&format!("no such directory: {}", d.display())),
         },
-        Err(e) => return fail(&e.to_string()),
+        Err(e) => return crate::fail(&e.to_string()),
     };
 
     let name = opts
         .name
         .clone()
-        .unwrap_or_else(|| registry::slug(&file_name(&dir)));
+        .unwrap_or_else(|| registry::slug(&detect::dir_name(&dir)));
     if name.is_empty() {
-        return fail("could not work out a project name — pass --name");
+        return crate::fail("could not work out a project name — pass --name");
     }
 
     // A repo that ships its own config has already answered every question this
@@ -57,7 +57,7 @@ pub fn run(opts: &Options) -> ExitCode {
     println!("  looking at {}", dir.display());
     let detected = detect::scan(&dir);
     if detected.components.is_empty() {
-        return fail(
+        return crate::fail(
             "nothing here looks like a service pitcrew can start.\n  \
              Write a pitcrew.yaml by hand — see: pitcrew check <file>",
         );
@@ -69,7 +69,7 @@ pub fn run(opts: &Options) -> ExitCode {
         registry::projects_dir(&registry::home()).join(format!("{name}.yaml"))
     };
     if target.exists() && !opts.force {
-        return fail(&format!(
+        return crate::fail(&format!(
             "{} already exists — pass --force to replace it",
             target.display()
         ));
@@ -85,11 +85,11 @@ pub fn run(opts: &Options) -> ExitCode {
     );
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            return fail(&format!("{}: {e}", parent.display()));
+            return crate::fail(&format!("{}: {e}", parent.display()));
         }
     }
     if let Err(e) = std::fs::write(&target, body) {
-        return fail(&format!("{}: {e}", target.display()));
+        return crate::fail(&format!("{}: {e}", target.display()));
     }
 
     for app in detected.apps() {
@@ -111,14 +111,14 @@ pub fn run(opts: &Options) -> ExitCode {
 fn write_pointer(name: &str, dir: &Path, config: &Path, force: bool) -> ExitCode {
     let target = registry::projects_dir(&registry::home()).join(format!("{name}.yaml"));
     if target.exists() && !force {
-        return fail(&format!(
+        return crate::fail(&format!(
             "{} already exists — pass --force to replace it",
             target.display()
         ));
     }
     if let Some(parent) = target.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            return fail(&format!("{}: {e}", parent.display()));
+            return crate::fail(&format!("{}: {e}", parent.display()));
         }
     }
     let body = format!(
@@ -136,7 +136,7 @@ fn write_pointer(name: &str, dir: &Path, config: &Path, force: bool) -> ExitCode
         dir.display()
     );
     if let Err(e) = std::fs::write(&target, body) {
-        return fail(&format!("{}: {e}", target.display()));
+        return crate::fail(&format!("{}: {e}", target.display()));
     }
     println!("  {} ships its own config — pointing at it", dir.display());
     println!("  wrote  {}", target.display());
@@ -200,17 +200,6 @@ fn relative(dir: &Path, root: Option<&Path>) -> Option<String> {
 /// is legal but reads as a key to any parser that is not looking closely.
 fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-fn file_name(p: &Path) -> String {
-    p.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-fn fail(msg: &str) -> ExitCode {
-    eprintln!("error  {msg}");
-    ExitCode::FAILURE
 }
 
 #[cfg(test)]

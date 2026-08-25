@@ -141,10 +141,16 @@ attribute, and most are pinned by a test.
 
 ## The Rust port
 
-There is a Rust rewrite in progress under `crates/`. **Both implementations are
-live**: `bin/pitcrew` + `lib/` is still the working tool, and the Rust tree is
-built up phase by phase behind it. Do not delete bash files as their Rust
-counterpart lands — the parity check depends on being able to run both.
+There is a Rust build under `crates/`. **Both implementations are live, and
+neither is going away soon.** They are aimed at different people:
+
+* the shell implementation is what this project's author runs, on Linux
+* the Rust build is what Windows and macOS users install, where the shell one
+  needs Git Bash or a Homebrew bash and cannot enforce a RAM cap
+
+Do not delete bash files as their Rust counterpart lands. `make compare`
+depends on being able to run both, and it is the strongest evidence the port is
+correct.
 
 ```
 crates/pitcrew-model/     the JSON contract, as serde types            done

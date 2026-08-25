@@ -130,7 +130,7 @@ pub fn scan(root: &Path) -> Detected {
             push(
                 root,
                 root,
-                name_of(root),
+                dir_name(root),
                 None,
                 kind,
                 &mut out,
@@ -159,7 +159,7 @@ fn walk(root: &Path, base: &Path, budget: u8, out: &mut Detected, ports: &mut Ve
     dirs.sort();
 
     for dir in dirs {
-        let name = name_of(&dir);
+        let name = dir_name(&dir);
         if name.starts_with('.') || SKIP.contains(&name.as_str()) {
             continue;
         }
@@ -177,7 +177,7 @@ fn walk(root: &Path, base: &Path, budget: u8, out: &mut Detected, ports: &mut Ve
                 .collect();
             subs.sort();
             for sub in subs {
-                let Some(role) = role_of_dir(&name_of(&sub)) else {
+                let Some(role) = role_of_dir(&dir_name(&sub)) else {
                     continue;
                 };
                 let Some(kind) = kind_of(&sub) else { continue };
@@ -257,7 +257,10 @@ fn push(
     });
 }
 
-fn name_of(p: &Path) -> String {
+/// A path's last component. Public because `init` names a project after the
+/// directory it was pointed at, and two copies of this is two answers for a
+/// path with a trailing slash.
+pub fn dir_name(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
@@ -483,7 +486,7 @@ fn has_go_main(d: &Path) -> bool {
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
-            if !SKIP.contains(&name_of(&p).as_str()) && has_go_main(&p) {
+            if !SKIP.contains(&dir_name(&p).as_str()) && has_go_main(&p) {
                 return true;
             }
         } else if p.extension().is_some_and(|x| x == "go")
@@ -574,7 +577,7 @@ fn spring_port(d: &Path) -> Option<u16> {
     let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     files.sort();
     for f in files {
-        let name = name_of(&f);
+        let name = dir_name(&f);
         let Some(text) = read(&f) else { continue };
         if name.starts_with("application") && name.ends_with(".properties") {
             for line in text.lines() {

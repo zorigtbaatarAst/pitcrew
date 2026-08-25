@@ -1,5 +1,10 @@
 name: release
 
+# The Rust build is what Windows and macOS users install. On Linux the shell
+# implementation is the one its author runs, so a Linux binary is published as
+# a convenience rather than as the recommended way in — the ordering of the
+# matrix below says so, and so does the release note.
+#
 # Tagged builds only. A release workflow that fires on every push produces
 # artifacts nobody asked for and hides the one somebody did.
 on:
@@ -18,17 +23,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The two that matter first: this build exists for them.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          # Linux, for anyone who wants it — but see the note at the top.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -98,3 +105,23 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          body: |
+            ## Which build do I want?
+
+            **Windows and macOS — take one of these.** A single binary, no bash,
+            no Git Bash, no MSYS2. On Windows it enforces RAM caps through a Job
+            Object, which the shell implementation cannot do at all.
+
+            **Linux — you can take one of these, or use the shell
+            implementation**, which is what this project's author runs and which
+            has no dependencies beyond bash 5. The Rust build is faster and is a
+            single file; the shell one is patchable in place over SSH. Both read
+            the same `pitcrew.yaml` and emit the same JSON.
+
+            ```
+            tar xzf pitcrew-*.tar.gz && install -m755 pitcrew-*/pitcrew ~/.local/bin/
+            ```
+
+            Verify with `SHA256SUMS`. The desktop app is not in these archives:
+            it needs GTK4 and libadwaita at runtime, so it is built from source
+            with `./setup-rust.sh`.

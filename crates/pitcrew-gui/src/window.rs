@@ -16,7 +16,7 @@ use pitcrew_model as pm;
 
 use crate::logview::LogView;
 use crate::runner::{self, Event, Stream};
-use crate::views::{Action, Components, Frame, Overview, Projects, Resources};
+use crate::views::{self, Action, Components, Frame, Overview, Projects, Resources};
 
 pub struct Ui {
     pub window: adw::ApplicationWindow,
@@ -213,17 +213,13 @@ impl Ui {
         *self.log_dir.borrow_mut() = snap.log_dir.clone();
 
         // The verdict travels WITH the facts, so nothing here re-derives it.
-        let (icon, css) = match snap.health.verdict {
-            pm::Verdict::Crit => ("dialog-error-symbolic", "error"),
-            pm::Verdict::Warn => ("dialog-warning-symbolic", "warning"),
-            pm::Verdict::Info => ("dialog-information-symbolic", "accent"),
-            pm::Verdict::Ok => ("emblem-ok-symbolic", "success"),
-        };
-        self.verdict_icon.set_icon_name(Some(icon));
-        for class in ["error", "warning", "accent", "success"] {
+        self.verdict_icon
+            .set_icon_name(Some(views::verdict_icon(snap.health.verdict)));
+        for class in views::VERDICT_CLASSES {
             self.verdict_icon.remove_css_class(class);
         }
-        self.verdict_icon.add_css_class(css);
+        self.verdict_icon
+            .add_css_class(views::verdict_class(snap.health.verdict));
         self.verdict.set_text(if snap.health.headline.is_empty() {
             "all good"
         } else {

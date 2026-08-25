@@ -69,13 +69,13 @@ impl Overview {
 
     pub fn update(&self, f: &Frame<'_>) {
         let h = &f.snap.health;
-        let (icon, title) = match h.verdict {
-            pm::Verdict::Crit => ("dialog-error-symbolic", "Something is wrong"),
-            pm::Verdict::Warn => ("dialog-warning-symbolic", "Needs attention"),
-            pm::Verdict::Info => ("dialog-information-symbolic", "Worth knowing"),
-            pm::Verdict::Ok => ("emblem-ok-symbolic", "All good"),
+        let title = match h.verdict {
+            pm::Verdict::Crit => "Something is wrong",
+            pm::Verdict::Warn => "Needs attention",
+            pm::Verdict::Info => "Worth knowing",
+            pm::Verdict::Ok => "All good",
         };
-        self.status.set_icon_name(Some(icon));
+        self.status.set_icon_name(Some(verdict_icon(h.verdict)));
         self.status.set_title(title);
         self.status.set_description(Some(if h.headline.is_empty() {
             "Nothing to report."
@@ -91,16 +91,15 @@ impl Overview {
             // because a detail can contain a `&` and Adw renders a subtitle as
             // Pango markup.
             row.set_subtitle(&finding.detail);
-            let icon = gtk::Image::from_icon_name(match finding.severity {
-                pm::Severity::Crit => "dialog-error-symbolic",
-                pm::Severity::Warn => "dialog-warning-symbolic",
-                pm::Severity::Info => "dialog-information-symbolic",
-            });
-            icon.add_css_class(match finding.severity {
-                pm::Severity::Crit => "error",
-                pm::Severity::Warn => "warning",
-                pm::Severity::Info => "accent",
-            });
+            // Same vocabulary as the verdict: a finding and the headline it
+            // produced must not be different colours.
+            let as_verdict = match finding.severity {
+                pm::Severity::Crit => pm::Verdict::Crit,
+                pm::Severity::Warn => pm::Verdict::Warn,
+                pm::Severity::Info => pm::Verdict::Info,
+            };
+            let icon = gtk::Image::from_icon_name(verdict_icon(as_verdict));
+            icon.add_css_class(verdict_class(as_verdict));
             row.add_prefix(&icon);
             if !finding.fix.is_empty() {
                 // Shown, not offered as a button: pitcrew proposes and the
@@ -366,6 +365,32 @@ impl Default for Projects {
 }
 
 // ── shared ──────────────────────────────────────────────────────────────────
+
+/// The icon for a verdict, and the Adwaita class that colours it.
+///
+/// One place, because the header and the overview both show it and two copies
+/// is two chances for the window to disagree with itself about how bad things
+/// are. Drawn from Adwaita's own vocabulary, so it follows the user's theme.
+pub fn verdict_icon(v: pm::Verdict) -> &'static str {
+    match v {
+        pm::Verdict::Crit => "dialog-error-symbolic",
+        pm::Verdict::Warn => "dialog-warning-symbolic",
+        pm::Verdict::Info => "dialog-information-symbolic",
+        pm::Verdict::Ok => "emblem-ok-symbolic",
+    }
+}
+
+pub fn verdict_class(v: pm::Verdict) -> &'static str {
+    match v {
+        pm::Verdict::Crit => "error",
+        pm::Verdict::Warn => "warning",
+        pm::Verdict::Info => "accent",
+        pm::Verdict::Ok => "success",
+    }
+}
+
+/// Every class [`verdict_class`] can return, for clearing before setting.
+pub const VERDICT_CLASSES: [&str; 4] = ["error", "warning", "accent", "success"];
 
 /// A titled group. Not `AdwPreferencesGroup` inside a page — that carries a
 /// ~600px clamp which cannot be widened, and it is what left half of every

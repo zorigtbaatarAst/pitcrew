@@ -47,11 +47,11 @@ fn resolve(s: &Session, words: &[String]) -> Result<targets::Resolved, String> {
 pub fn start(dir: Option<&Path>, name: Option<&str>, words: &[String]) -> ExitCode {
     let s = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let picked = match resolve(&s, words) {
         Ok(r) => r,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     if picked.deps {
         // Docker dependencies are not ported yet. Saying so is the whole point
@@ -90,11 +90,11 @@ pub fn start(dir: Option<&Path>, name: Option<&str>, words: &[String]) -> ExitCo
 pub fn stop(dir: Option<&Path>, name: Option<&str>, words: &[String]) -> ExitCode {
     let s = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let picked = match resolve(&s, words) {
         Ok(r) => r,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     if picked.deps {
         eprintln!("warn   deps are not ported yet (phase 4) — nothing was done for them");
@@ -132,7 +132,7 @@ pub fn restart(dir: Option<&Path>, name: Option<&str>, words: &[String]) -> Exit
 pub fn status(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
     let s = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let p = &s.loaded.project;
     let mut collector = Collector::new();
@@ -181,16 +181,11 @@ pub fn status(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn fail(msg: &str) -> ExitCode {
-    eprintln!("error  {msg}");
-    ExitCode::FAILURE
-}
-
 /// `status --json` — one object, then exit.
 pub fn status_json(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
     let s = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let mut b = crate::state_object::Builder::new(&s);
     // Config warnings go to stderr, never into the object: stdout is a
@@ -204,7 +199,7 @@ pub fn status_json(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
             println!("{text}");
             ExitCode::SUCCESS
         }
-        Err(e) => fail(&e.to_string()),
+        Err(e) => crate::fail(&e.to_string()),
     }
 }
 
@@ -216,7 +211,7 @@ pub fn status_json(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
 pub fn json(dir: Option<&Path>, name: Option<&str>, watch: bool, interval: f64) -> ExitCode {
     let s = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let mut b = crate::state_object::Builder::new(&s);
     for w in &b.warnings {
@@ -228,7 +223,7 @@ pub fn json(dir: Option<&Path>, name: Option<&str>, watch: bool, interval: f64) 
                 println!("{text}");
                 ExitCode::SUCCESS
             }
-            Err(e) => fail(&e.to_string()),
+            Err(e) => crate::fail(&e.to_string()),
         };
     }
 
@@ -244,7 +239,7 @@ pub fn json(dir: Option<&Path>, name: Option<&str>, watch: bool, interval: f64) 
                     return ExitCode::SUCCESS;
                 }
             }
-            Err(e) => return fail(&e.to_string()),
+            Err(e) => return crate::fail(&e.to_string()),
         }
         std::thread::sleep(gap);
     }
@@ -258,7 +253,7 @@ pub fn json(dir: Option<&Path>, name: Option<&str>, watch: bool, interval: f64) 
 pub fn diagnose(dir: Option<&Path>, name: Option<&str>, as_json: bool) -> ExitCode {
     let s = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let mut b = crate::state_object::Builder::new(&s);
     if !as_json {
@@ -276,7 +271,7 @@ pub fn diagnose(dir: Option<&Path>, name: Option<&str>, as_json: bool) -> ExitCo
                 println!("{text}");
                 verdict_code(obj.health.verdict)
             }
-            Err(e) => fail(&e.to_string()),
+            Err(e) => crate::fail(&e.to_string()),
         };
     }
 

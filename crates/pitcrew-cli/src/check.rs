@@ -33,15 +33,7 @@ pub fn check(target: Option<&Path>, name: Option<&str>) -> Outcome {
     };
 
     if found.format == Format::Sh {
-        // Honest rather than helpful-sounding: this is a shell script, and
-        // reading it means running it. The bash implementation is where that
-        // can happen, and it can convert the file too.
-        return Outcome::Refused(format!(
-            "{}: the bash config format is not readable from this build — it is a \
-             shell script, so loading it means running it.\n  Convert it first with \
-             the bash implementation: pitcrew migrate",
-            found.file.display()
-        ));
+        return Outcome::Refused(project::sh_not_readable(&found.file));
     }
 
     let loaded = match load::load_yaml(&found.file, &found.root) {

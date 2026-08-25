@@ -18,7 +18,7 @@ use crate::project;
 pub fn urls(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
     let session = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let p = &session.loaded.project;
     println!(
@@ -139,7 +139,7 @@ pub fn projects() -> ExitCode {
 pub fn profiles(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
     let session = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let profile_dir = session.profile_dir();
     let found = profiles::all(&profile_dir, &session.loaded.project);
@@ -167,7 +167,7 @@ pub fn profiles(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
 pub fn caps(dir: Option<&Path>, name: Option<&str>) -> ExitCode {
     let session = match project::open(dir, name) {
         Ok(s) => s,
-        Err(e) => return fail(&e),
+        Err(e) => return crate::fail(&e),
     };
     let overrides = session.limits();
     let p = &session.loaded.project;
@@ -193,7 +193,7 @@ pub fn use_project(name: &str) -> ExitCode {
     let home = registry::home();
     let Some(entry) = registry::get(&home, name) else {
         let known: Vec<String> = registry::list(&home).into_iter().map(|e| e.name).collect();
-        return fail(&if known.is_empty() {
+        return crate::fail(&if known.is_empty() {
             format!("no project '{name}', and nothing is registered — try: pitcrew init <dir>")
         } else {
             format!("no project '{name}' (registered: {})", known.join(" "))
@@ -204,11 +204,6 @@ pub fn use_project(name: &str) -> ExitCode {
             println!("ok     now using {} · {}", entry.name, entry.root.display());
             ExitCode::SUCCESS
         }
-        Err(e) => fail(&e),
+        Err(e) => crate::fail(&e),
     }
-}
-
-fn fail(msg: &str) -> ExitCode {
-    eprintln!("error  {msg}");
-    ExitCode::FAILURE
 }
