@@ -246,9 +246,9 @@ jobs:
       # -D warnings, because a lint that is only ever a notice is a lint nobody
       # reads — the same bargain shellcheck --severity=warning already makes here.
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
       - name: test
-        run: cargo test --workspace
+        run: cargo test
 
   # The Rust desktop app, which needs GTK4 and libadwaita DEVELOPMENT headers —
   # a different install from the runtime libraries the Python app needs, and

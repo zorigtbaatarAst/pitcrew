@@ -22,6 +22,19 @@ members = [
     "crates/pitcrew-gui",
 ]
 
+# The desktop app is NOT in the default set. It needs the GTK4 and libadwaita
+# development headers, which are a separate install from the runtime libraries
+# and are not worth putting on a machine that only wants the CLI. A bare
+# `cargo build` / `test` / `clippy` therefore skips it; `-p pitcrew-gui` builds
+# it explicitly, and CI has a job that installs the headers and does exactly
+# that.
+default-members = [
+    "crates/pitcrew-model",
+    "crates/pitcrew-platform",
+    "crates/pitcrew-core",
+    "crates/pitcrew-cli",
+]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

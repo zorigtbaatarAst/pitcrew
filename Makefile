@@ -1,5 +1,5 @@
 # pitcrew — development tasks. The tool itself needs none of this to run.
-.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint rust-install rust-gui
+.PHONY: help test lint check setup install install-gui gui-deps rust rust-test rust-lint rust-install rust-gui rust-gui-check
 
 help:
 	@echo "make setup   fresh clone -> working tool (add YES=1 to install packages)"
@@ -58,9 +58,14 @@ rust-install:
 rust-gui:
 	@cargo run -p pitcrew-gui
 
+# The desktop app's own gate, separate because it needs those headers.
+rust-gui-check:
+	@cargo clippy -p pitcrew-gui --all-targets -- -D warnings
+	@cargo test -p pitcrew-gui
+
 rust-test:
-	@cargo test --workspace
+	@cargo test
 
 rust-lint:
 	@cargo fmt --all -- --check
-	@cargo clippy --workspace --all-targets -- -D warnings
+	@cargo clippy --all-targets -- -D warnings
