@@ -185,6 +185,45 @@ test_a_catalog_spelling_of_spring_boot_still_gets_a_health_check() {
   assert_eq "$HEALTH" "/actuator/health" "spelled with dots, it is still Spring Boot"
 }
 
+test_a_context_path_moves_the_health_endpoint_with_it() {
+  # `server.servlet.context-path` moves every mapping the app has, the actuator
+  # with them — so /actuator/health is a 404 and the real endpoint is
+  # /<ctx>/actuator/health. A generated config that probed the bare path could
+  # never come back UP, and the component read "starting" for as long as it was
+  # left running. Both spellings, because a monorepo has both.
+  local d="$FIX/ctx-props"
+  mkdir -p "$d/src/main/resources"
+  mk "$d/build.gradle" "dependencies { implementation 'org.springframework.boot:spring-boot-starter-web' }"
+  mk "$d/src/main/resources/application.properties" 'server.port=8087
+server.servlet.context-path=/report-api'
+  _detect_health "$d" gradle
+  assert_eq "$HEALTH" "/report-api/actuator/health" "properties form"
+
+  local y="$FIX/ctx-yaml"
+  mkdir -p "$y/src/main/resources"
+  mk "$y/build.gradle" "dependencies { implementation 'org.springframework.boot:spring-boot-starter-web' }"
+  mk "$y/src/main/resources/application.yml" 'server:
+  port: 8082
+  servlet:
+    context-path: /backoffice-api   # trailing comments are not part of it
+
+spring:
+  application:
+    name: backoffice'
+  _detect_health "$y" gradle
+  assert_eq "$HEALTH" "/backoffice-api/actuator/health" "yaml form"
+
+  # A placeholder is resolved at runtime out of an env var we cannot read. In
+  # the face of ambiguity, no health path: an open port is then what makes it
+  # up, which is true, where a guessed path would be permanently false.
+  local u="$FIX/ctx-unknown"
+  mkdir -p "$u/src/main/resources"
+  mk "$u/build.gradle" "dependencies { implementation 'org.springframework.boot:spring-boot-starter-web' }"
+  mk "$u/src/main/resources/application.properties" 'server.servlet.context-path=${CTX:/api}'
+  _detect_health "$u" gradle
+  assert_empty "$HEALTH" "a path we cannot know is not guessed at"
+}
+
 test_a_catalog_module_keeps_its_port_and_its_gradle_path() {
   DET_APPS=(); detect_scan "$CATFIX"
   _detect_port "${DET_DIR[backend.be]}" gradle

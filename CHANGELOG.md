@@ -11,6 +11,50 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Fixed
+- **A service that was up and serving read "starting" for as long as you left
+  it running.** A health path exists to answer "the port is open, but is it
+  *ready*" — a question about a boot, since a Spring Boot app accepts
+  connections well before it can serve one. It was allowed to gate the word
+  "up" forever, so a backend whose actuator kept answering DOWN sat at amber,
+  with a spinner, an hour after it started handling traffic: `1/2 up`, and the
+  one that was working counted as the one that was not. Three separate things
+  made that the normal case rather than the rare one, and all three are fixed:
+  - **The probe waited two seconds.** It was chosen when the probe ran inline
+    and every second of it froze a frame; it has run in the background for a
+    while now. A real actuator aggregating a Mongo ping and a disk check
+    answers in three to four, so the probe timed out, every time, forever.
+    `PITCREW_HEALTH_TIMEOUT` (default 5s) — and the cadence never starts a
+    probe while the last one could still be running.
+  - **`init` wrote a health path that could not exist.** A
+    `server.servlet.context-path` moves every mapping the app has, the actuator
+    with them, so `/actuator/health` is a 404 and the endpoint is at
+    `/<context-path>/actuator/health`. In a monorepo where each service sets
+    one — which is most of them — every generated backend was checked at a URL
+    that had never existed. Both spellings are read, `.properties` and YAML; a
+    context path that resolves from a placeholder at runtime writes no health
+    path at all rather than a wrong one.
+  - **"Starting" is bounded now.** Past `wait` × `PITCREW_SLOW_START_MULT` —
+    the same window the `stuck` check already used — an open port is the
+    verdict, and a health endpoint that still disagrees becomes an `unhealthy`
+    finding instead. It quotes the status it got, because `404` is a line to
+    fix in the config and `503` is a dependency to go and look at, and the
+    amber dot said neither. `stuck` keeps the other half: alive, and nothing
+    listening.
+  Two smaller lies went with them. The probe used to grep the whole body for
+  `"UP"`, so `{"status":"DOWN","components":{"db":{"status":"UP"}}}` read as
+  healthy — the overall status is the one that counts. And a health endpoint
+  that answers `200 ok` without being Spring-shaped is now an answer; demanding
+  a quoted `"UP"` from it left healthy services in "starting" too.
+- **The desktop app forgot which project you had open.** It opens on
+  `~/.config/pitcrew/current` — the selection `pitcrew` with no `-p` uses, and
+  the one its own Projects page badges as "current" — but switching project in
+  the header only ever changed it in that window. Close it and the choice was
+  gone: the next launch reopened whatever a terminal had last run `pitcrew use`
+  on, which for anyone who works in the app rather than the CLI was some other
+  project entirely. The switch is written through `pitcrew use` now, so it
+  outlives the window and a terminal in the same session agrees with it. Not
+  written from Python: the registry belongs to the CLI, and a second writer to
+  that file is a second answer to which project is current.
 - **On Windows every component measured the wrapper and nothing under it.**
   Cygwin — and so MSYS2, and so Git Bash — has no `exec`: it implements one by
   creating a *new* Windows process for the program being run. The Windows

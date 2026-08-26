@@ -147,6 +147,11 @@ pitcrew_doctor_extra() {
 # background so a booting JVM can never stall a repaint, and back off to 3x
 # this once a service reports UP.
 # PITCREW_HEALTH_INTERVAL=5
+# How long one probe may take before it counts as unanswered. A Spring Boot
+# actuator that aggregates a database ping is slower than people expect —
+# under this figure it is reported DOWN forever, which reads as a boot that
+# never finishes.
+# PITCREW_HEALTH_TIMEOUT=5
 # PITCREW_DEP_INTERVAL=10    # how often `docker inspect` is run for deps
 
 # ── crash handling (optional) ───────────────────────────────────────────────

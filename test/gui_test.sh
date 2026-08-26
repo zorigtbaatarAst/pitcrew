@@ -1590,6 +1590,40 @@ print(text())
   rm -f "$SAMPLE_YAML"
 }
 
+test_switching_project_in_the_app_is_remembered_next_time() {
+  gui_display || return 0
+  # The app opens on whatever `~/.config/pitcrew/current` names — the same
+  # selection `pitcrew` with no -p uses, and the one the Projects page badges
+  # as "current". Switching only ever changed it in this window, so closing it
+  # threw the choice away and the next launch reopened whatever the terminal
+  # had last run `pitcrew use` on.
+  #
+  # Asserting on the ARGV rather than on the file: the registry belongs to the
+  # CLI, and a GUI that wrote `current` itself would be a second writer to
+  # disagree with the first.
+  local home; home=$(mktemp -d); mkdir -p "$home/projects"
+  printf 'root: /tmp\n' > "$home/projects/demo.yaml"
+  printf 'root: /tmp\n' > "$home/projects/other.yaml"
+  local log; log=$(mktemp)
+  local cli; cli=$(temp_file .sh)
+  printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' \"\$*\" >> $log" > "$cli"
+  chmod +x "$cli"
+  local out; out=$(PITCREW_HOME="$home" _settings_drive "
+from gi.repository import Adw, GLib
+Adw.init()
+w = pgui.Window('$cli', 'demo', Settings(pathlib.Path('$(mktemp -d)/gui')))
+w._switch_to('other')
+loop = GLib.MainLoop()
+GLib.timeout_add(900, lambda: (loop.quit(), False)[1])
+loop.run()
+print(w._project)
+")
+  assert_eq "$out" "other" "the window follows the switch"
+  assert_match "$(cat "$log")" 'use other' \
+    "and the choice is saved through the CLI that owns the registry"
+  rm -rf "$home"; rm -f "$log"
+}
+
 test_a_project_pitcrew_cannot_read_still_gets_an_empty_app() {
   gui_available || return 0
   # Plenty of projects are started by a command no detector could guess. That

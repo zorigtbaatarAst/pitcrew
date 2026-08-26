@@ -199,6 +199,45 @@ _detect_port() { # $1 dir, $2 kind → PORT ("" when it cannot be known)
   return 0
 }
 
+_detect_context_path() { # $1 dir → CTX (""=none) and CTX_UNKNOWN (1=set, unreadable)
+  # `server.servlet.context-path` moves EVERY mapping the app has, the actuator
+  # with them: with it set, /actuator/health is a 404 and the app answers on
+  # /<ctx>/actuator/health. Writing the bare path was a health check that could
+  # never pass — a backend that read "starting" for as long as you left it up.
+  #
+  # Only the base application.properties / application.yml, never the
+  # per-profile files: pitcrew does not know which profile the start command
+  # will run under, and a guess taken from one of them is worse than the
+  # nothing we had before.
+  local r="$1/src/main/resources" v=""
+  CTX=""; CTX_UNKNOWN=0
+  # `.properties` allows either separator, and a `#` in it is part of the value.
+  v=$(grep -hsoE '^[[:space:]]*server\.servlet\.context-path[[:space:]]*[=:].*' \
+        "$r/application.properties" 2>/dev/null | head -1)
+  v=${v#*[=:]}
+  if [ -z "$v" ]; then
+    # server:\n  servlet:\n    context-path: /x — nothing else under `server:`
+    # is spelled context-path, so the nesting does not need to be tracked.
+    v=$(awk '/^server:/{f=1;next} f&&/^[[:space:]]+context-path:/{sub(/^[^:]*:/,"");print;exit} /^[^[:space:]#]/{f=0}' \
+          "$r"/application.y*ml 2>/dev/null | head -1)
+    v=${v%%[[:space:]]#*}                      # in YAML a trailing # IS a comment
+  fi
+  # trim, unquote
+  v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
+  v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+  # A placeholder resolves at runtime out of an env var or another property.
+  # We cannot know what it becomes, so we do not pretend to — and "not set" and
+  # "set to something we cannot read" are different answers, because the second
+  # one means the bare /actuator/health is wrong too.
+  case "$v" in
+    ''|/) return 0 ;;
+    *'$'*) CTX_UNKNOWN=1; return 0 ;;
+  esac
+  case "$v" in /*) CTX=$v ;; *) CTX=/$v ;; esac
+  CTX=${CTX%/}
+  return 0
+}
+
 _detect_health() { # $1 dir, $2 kind → HEALTH ("" unless it is clearly Spring Boot)
   HEALTH=""
   case "$2" in
@@ -206,9 +245,15 @@ _detect_health() { # $1 dir, $2 kind → HEALTH ("" unless it is clearly Spring 
     # dependency is written `libs.bundles.spring.boot.starters`, and a backend
     # that lost its health check lost the only thing that says it is UP rather
     # than merely running.
-    gradle) grep -qsiE 'spring[-._]boot' "$1"/build.gradle* && HEALTH=/actuator/health ;;
-    maven)  grep -qsiE 'spring[-._]boot' "$1/pom.xml"       && HEALTH=/actuator/health ;;
+    gradle) grep -qsiE 'spring[-._]boot' "$1"/build.gradle* || return 0 ;;
+    maven)  grep -qsiE 'spring[-._]boot' "$1/pom.xml"       || return 0 ;;
+    *)      return 0 ;;
   esac
+  _detect_context_path "$1"
+  # No health path at all, rather than one that is certainly wrong: an open
+  # port is then what makes the component up, which is true as far as it goes.
+  [ "$CTX_UNKNOWN" = 1 ] && return 0
+  HEALTH="${CTX}/actuator/health"
   return 0
 }
 

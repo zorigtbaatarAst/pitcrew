@@ -1717,8 +1717,37 @@ class Window(Adw.ApplicationWindow):
         action.set_state(target)
         self._project = name
         self._project_button.set_label(name)
-        self._refresh_projects()
+        self._remember_project(name)
         self._restart_stream()
+
+    def _remember_project(self, name: str) -> None:
+        """Make the switch outlive the window.
+
+        The app opens on `~/.config/pitcrew/current` — the same selection
+        `pitcrew` with no `-p` uses, and the one this window's Projects page
+        badges as "current". Switching only ever changed it in memory, so
+        closing the window threw the choice away and the next launch reopened
+        whatever the terminal had last run `pitcrew use` on.
+
+        Written by the CLI rather than from here: the registry is the CLI's,
+        `use` is what owns that file (it validates the name and, on `forget`,
+        clears it), and re-implementing it in Python would be a second writer
+        to disagree with the first. Async, so the switch itself stays instant —
+        the stream is already restarting while this runs.
+
+        The projects list is refreshed when it lands, not before: the "current"
+        badge comes from `pitcrew projects --json`, so asking any earlier
+        renders the badge on the row we just moved it off.
+        """
+        def done(ok: bool, output: str) -> None:
+            if not ok:
+                # A home we cannot write is not a reason to stop watching the
+                # project — it is a reason to say it will not be remembered.
+                self._toast(output.splitlines()[-1] if output.strip()
+                            else f"could not save {name} as the current project")
+            self._refresh_projects()
+
+        self._runner.run(["use", name], done)
 
     def _fail(self, message: str) -> None:
         # pitcrew colours its own errors, so raw from the pipe the failure this

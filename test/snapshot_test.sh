@@ -80,14 +80,16 @@ test_pidfile_from_a_previous_boot_is_not_trusted() {
 }
 
 # ── the state machine, driven from a fabricated snapshot ────────────────────
-_state_of() { # $1 comp, $2 port-open?, $3 pid, $4 health
-  SNAP_PORT_OPEN=(); SNAP_PID=(); SNAP_HEALTH=(); SNAP_STATE=()
+_state_of() { # $1 comp, $2 port-open?, $3 pid, $4 health, [$5 seconds since it started]
+  SNAP_PORT_OPEN=(); SNAP_PID=(); SNAP_HEALTH=(); SNAP_STATE=(); SNAP_SINCE=()
   local port=${PITCREW_PORT[$1]:-}
   [ "$2" = open ] && SNAP_PORT_OPEN[$port]=1
   SNAP_PID[$1]=$3
   # Health is per COMPONENT now: it was a backend-only idea only because there
   # used to be exactly one backend per app.
   SNAP_HEALTH[$1]=$4
+  SNAP_NOW_S=1000000
+  [ $# -ge 5 ] && SNAP_SINCE[$1]=$(( SNAP_NOW_S - $5 ))
   _snapshot_states
   printf '%s' "${SNAP_STATE[$1]}"
 }
@@ -104,6 +106,53 @@ test_state_machine() {
   # open port enough on its own.
   assert_eq "$(_state_of fe-both open   $$      UP)"   up       "no health path means port-open is up"
   assert_eq "$(_state_of fe-both open   $$      DOWN)" starting "and any role with one is believed"
+}
+
+# ── what a health probe's answer means ──────────────────────────────────────
+_verdict() { _health_verdict "$1" "$2"; printf '%s' "$R"; }
+
+test_a_health_probe_reads_the_status_it_was_given() {
+  assert_eq "$(_verdict 200 '{"status":"UP"}')"        UP        "the plain healthy answer"
+  assert_eq "$(_verdict 200 '{"status": "UP"}')"       UP        "a pretty-printer changes nothing"
+  # The old check grepped the whole body for "UP", so a failed aggregate whose
+  # details happened to contain one healthy indicator read as healthy. That is
+  # the wrong direction to be wrong in.
+  assert_eq "$(_verdict 200 '{"status":"DOWN","components":{"db":{"status":"UP"}}}')" \
+    "DOWN 200" "one healthy indicator inside a DOWN aggregate is not UP"
+  assert_eq "$(_verdict 503 '{"status":"DOWN"}')"      "DOWN 503" "the status is kept as evidence"
+  # 404 is the signature of a health path that is wrong — a Spring app behind a
+  # context-path, most often — and it is a different job from a sick service.
+  assert_eq "$(_verdict 404 '')"                       "DOWN 404" "a wrong path is DOWN, with its code"
+  assert_eq "$(_verdict 000 '')"                       "DOWN 000" "nothing answered at all"
+  assert_eq "$(_verdict '' '')"                        "DOWN 000" "not even curl"
+  # A health endpoint that is not Spring-shaped has still answered: demanding a
+  # quoted "UP" from it left perfectly healthy services stuck in "starting".
+  assert_eq "$(_verdict 200 'ok')"                     UP        "a 2xx from a plain endpoint is an answer"
+  assert_eq "$(_verdict 204 '')"                       UP        "so is an empty one"
+}
+
+test_a_health_check_gates_the_boot_and_then_stops_gating() {
+  # The bug this pins: a health path was allowed to hold a component in
+  # "starting" for as long as the process lived. A backend that serves its port
+  # all afternoon while one indicator inside its actuator says DOWN — or whose
+  # configured path 404s — read `starting`, with a spinner, an hour in.
+  #
+  # A health path answers "the port is open, but is it READY", which is a
+  # question about a boot. Past the boot window the port is the verdict, and
+  # the disagreement becomes a finding instead (diag_check_unhealthy).
+  PITCREW_WAIT_SECS=60 PITCREW_SLOW_START_MULT=1
+  assert_eq "$(_state_of be-both open $$ DOWN 30)"   starting \
+    "inside the window it is still booting"
+  assert_eq "$(_state_of be-both open $$ DOWN 60)"   starting \
+    "the window is inclusive of its own last second"
+  assert_eq "$(_state_of be-both open $$ DOWN 3600)" up \
+    "an hour of serving that port is not a boot"
+  assert_eq "$(_state_of be-both open $$ UP 3600)"   up \
+    "and a healthy one is unaffected"
+  # Nothing listening is a different failure and keeps the old answer: the
+  # process is alive, so it may yet come up, and nothing can use it meanwhile.
+  assert_eq "$(_state_of be-both closed $$ DOWN 3600)" starting \
+    "no port open is stuck, not up"
 }
 
 test_a_port_held_by_something_else_is_not_reported_as_ours() {

@@ -244,7 +244,7 @@ For each component it works out:
 | **command** | the real one — `./gradlew :sales:backend:bootRun`, `npm run dev`, `go run ./...` |
 | **port** | Spring's `server.port`, a port pinned in a `dev` script, or a framework default; anything left over gets the next free port |
 | **role** | from the directory name, or from the framework (Next/Vite/Angular → frontend, everything else → backend) |
-| **health** | `/actuator/health` when it sees Spring Boot |
+| **health** | `/actuator/health` when it sees Spring Boot — behind `server.servlet.context-path` when the app sets one |
 | **watch dir** | the component's `src/`, for `pitcrew stale` |
 | **deps** | services named in a `docker-compose.yml`, written out commented for you to confirm |
 
@@ -798,7 +798,8 @@ implementation, three surfaces.
 | | |
 |---|---|
 | `crashed` | a component that died, with its exit code and how long ago |
-| `stuck` | "starting" for longer than the boot timeout — not booting, stuck |
+| `stuck` | "starting" for longer than the boot timeout — alive, and still nothing listening |
+| `unhealthy` | serving its port, and its own health endpoint disagrees — with the status it answered |
 | `external` | a port served by something pitcrew did not start (looks like success) |
 | `memory` | machine RAM or **swap** under pressure, naming who is holding it |
 | `caps-overcommit` | caps that add up to more than the machine — the OOM killer picks instead |
@@ -1090,6 +1091,7 @@ Start there with `PITCREW_ZEN=1 pitcrew watch`.
 | `PITCREW_PICKER` | auto | `fzf` or `plain` — force one menu picker instead of using fzf when it is installed |
 | `PITCREW_ERROR_PATTERN` | `ERROR\|FATAL\|Exception\|UnhandledRejection` | what the error radar counts |
 | `PITCREW_HEALTH_INTERVAL` | `5` | seconds between health probes (×3 once a service reports UP) |
+| `PITCREW_HEALTH_TIMEOUT` | `5` | seconds a health probe may take before it counts as unanswered |
 | `PITCREW_DEP_INTERVAL` | `10` | seconds between docker dep checks |
 
 `NO_COLOR` (or `PITCREW_NO_COLOR`) drops every colour.
@@ -1180,6 +1182,11 @@ Terminal-only by nature: `pitcrew render` (it styles the terminal dashboard's
 graphs), the `menu`, and actually *running* a `shell` — a GTK window cannot
 host an interactive `psql`, so Tools hands you the exact command to paste
 instead of pretending.
+
+The **project selection is shared**, the same way. The app opens on whatever
+`~/.config/pitcrew/current` names, and switching project in its header writes
+that file through `pitcrew use` — so the window reopens where you left it, and
+a terminal in the same session is looking at the same project.
 
 The **theme is shared**. The app draws its meters, graph series, state dots,
 verdict tint and log palette from whichever theme `pitcrew theme` last saved,
@@ -1537,10 +1544,16 @@ over ssh, which a GTK app never will.
   instead of none, and a 1s floor on the refresh rate. `pitcrew doctor` tells
   you which collector is active.
 - "Up" means: the port is open, and — if you configured a health path — the
-  health endpoint reports `"UP"`. Anything else is "starting" while the
-  pidfile's process is alive, or "crashed" if it died on its own (a leftover
-  pidfile pointing at a dead pid). A component with no start command
-  configured for that role is "n/a", not "down".
+  health endpoint reports `"UP"`, **or the boot window has passed**. A health
+  path answers "the port is open, but is it *ready*", which is a question about
+  a boot: past `wait` × `PITCREW_SLOW_START_MULT` the port is the verdict, and
+  an endpoint that still disagrees becomes an `unhealthy` finding naming the
+  status it answered with (`503`, or `404` for a path that points at nothing).
+  Letting it gate "up" indefinitely meant a service that had been serving
+  traffic for an hour still read "starting", with a spinner. Anything else is
+  "starting" while the pidfile's process is alive, or "crashed" if it died on
+  its own (a leftover pidfile pointing at a dead pid). A component with no
+  start command configured for that role is "n/a", not "down".
 - `pitcrew stop` stops both tool-managed processes (via the systemd scope, or
   by killing the whole process tree) *and* anything else already listening
   on that port — so it also cleans up a service you started by hand outside

@@ -24,6 +24,13 @@
 PITCREW_PAGESIZE=$(getconf PAGESIZE 2>/dev/null || echo 4096)
 PITCREW_CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 PITCREW_HEALTH_INTERVAL="${PITCREW_HEALTH_INTERVAL:-5}"
+# How long a health probe may take before it counts as unanswered. The old
+# figure was 2s, chosen when the probe ran inline and every second of it was a
+# frozen frame. It runs in the background now, and 2s is under what a real
+# Spring Boot actuator costs once it aggregates a Mongo ping and a disk check
+# — an endpoint answering in 3.9s was reported DOWN forever, which is a
+# service that reads "starting" all afternoon while it serves traffic.
+PITCREW_HEALTH_TIMEOUT="${PITCREW_HEALTH_TIMEOUT:-5}"
 PITCREW_DEP_INTERVAL="${PITCREW_DEP_INTERVAL:-10}"
 PITCREW_SWAP_INTERVAL="${PITCREW_SWAP_INTERVAL:-5}"
 # A component whose whole process tree stays at or under this much CPU counts
@@ -41,6 +48,8 @@ declare -gA SNAP_PROC_RSS=()           # pid           -> bytes
 declare -gA SNAP_PROC_CPU=()           # pid           -> integer %
 declare -gA SNAP_PROC_CMD=()           # pid           -> comm
 declare -gA SNAP_HEALTH=()             # component     -> UP|DOWN
+declare -gA SNAP_HEALTH_CODE=()        # component     -> HTTP status of the last probe
+                                       #                  ("000" = nothing answered)
 declare -gA SNAP_HEALTH_AT=()          # component     -> epoch secs of last probe
 declare -gA SNAP_DEP=()                # dep container -> up|down
 declare -gA SNAP_SINCE=()              # comp -> epoch seconds its root process started
@@ -48,6 +57,7 @@ declare -gA SNAP_EXIT=()               # comp -> exit status of the last run
 declare -gA SNAP_EXIT_AT=()            # comp -> epoch seconds it ended
 declare -gA SNAP_IDLE_SINCE=()         # comp -> epoch secs it last did real work
 declare -gA SNAP_IDLE=()               # comp -> seconds idle, "" when unmeasurable
+SNAP_BOOT_LIMIT=0                      # seconds a boot may take before it is not one
 declare -gA _JIFF_PREV=()              # pid           -> CPU-time counter at previous sample
 declare -gA _JIFF_TREE_PREV=()         # comp          -> summed tree CPU time, previous sample
 declare -gA _JIFF_TREE_NOW=()          # comp          -> summed tree CPU time, this sample
@@ -464,30 +474,69 @@ _walk_ps_tree() {
 # because there were only two roles and one of them was "the backend". A
 # worker with an actuator, or a second API in the same group, has exactly the
 # same question to answer.
+
+# Pure, so the answer can be tested without a service to probe: $1 = the HTTP
+# status curl reported ("000" when nothing answered), $2 = the body → R.
+#
+# Two things it deliberately does NOT do. It does not look for "UP" anywhere in
+# the body: `{"status":"DOWN","components":{"db":{"status":"UP"}}}` contains
+# it, and reading a failed aggregate as healthy because one indicator inside it
+# is fine is the wrong direction to be wrong in. And it does not require the
+# body to be Spring-shaped at all — a health endpoint that answers 200 with
+# `ok`, or with nothing, has answered the question; demanding a quoted "UP"
+# from it meant a perfectly healthy service that was not Spring Boot could
+# never leave "starting".
+_health_verdict() { # $1 code, $2 body → R = "UP" | "DOWN <code>"
+  local first
+  case "$1" in 2??) ;; *) R="DOWN ${1:-000}"; return 0 ;; esac
+  # The overall status is the first one in the document; details, when they are
+  # switched on, come after it. Spaces stripped because a pretty-printer is
+  # allowed to put one after the colon.
+  first=${2%%,*}; first=${first// /}
+  case "$first" in
+    *'"status":"UP"'*)  R=UP ;;
+    *'"status":"'*)     R="DOWN $1" ;;      # it said what it is, and it is not UP
+    *)                  R=UP ;;             # not a status document: 2xx is the answer
+  esac
+  return 0
+}
+
 _health_poll() {
-  local c path port f r iv
+  local c path port f r code iv
   for c in "${PITCREW_COMPS[@]}"; do
     path=${PITCREW_HEALTH[$c]:-}
     port=${PITCREW_PORT[$c]:-}
     if [ -z "$path" ] || [ -z "$port" ]; then
       SNAP_HEALTH[$c]=UP                        # nothing configured → open port is enough
+      SNAP_HEALTH_CODE[$c]=""
       continue
     fi
     f="$LOG_DIR/.health-$c"
-    if [ -r "$f" ]; then
-      r=""; read -r r < "$f" 2>/dev/null
-      SNAP_HEALTH[$c]=${r:-DOWN}
-    else
-      SNAP_HEALTH[$c]=DOWN
-    fi
+    r=""; code=""
+    [ -r "$f" ] && read -r r code < "$f" 2>/dev/null
+    SNAP_HEALTH[$c]=${r:-DOWN}
+    SNAP_HEALTH_CODE[$c]=${code:-}
     # No point probing a port nothing is listening on.
     [ -n "${SNAP_PORT_OPEN[$port]:-}" ] || continue
     iv=$PITCREW_HEALTH_INTERVAL
     [ "${SNAP_HEALTH[$c]}" = UP ] && iv=$(( iv * 3 ))   # only interesting while booting
+    # Never start a probe while the previous one could still be running: they
+    # write the same file, and the slower of two overlapping answers is the one
+    # that lands last.
+    [ "$iv" -gt "$PITCREW_HEALTH_TIMEOUT" ] || iv=$(( PITCREW_HEALTH_TIMEOUT + 1 ))
     if [ $(( SNAP_NOW_S - ${SNAP_HEALTH_AT[$c]:-0} )) -ge "$iv" ]; then
       SNAP_HEALTH_AT[$c]=$SNAP_NOW_S
-      { curl -sf -m 2 "http://127.0.0.1:${port}${path}" 2>/dev/null | grep -q '"UP"' \
-          && echo UP > "$f" || echo DOWN > "$f"; } >/dev/null 2>&1 &
+      # -w appends the status to the body, so one curl answers both halves of
+      # the question and a 404 can be told apart from an endpoint that says it
+      # is unwell. No -f: the body of a 503 is exactly what we want to read.
+      # Assignments in a background subshell cannot leak back, so these need no
+      # `local` — and %??? rather than arithmetic so a curl that printed
+      # nothing at all (no curl on the machine) is short, not a fatal negative
+      # substring under `set -u`.
+      { _H_OUT=$(curl -s -m "$PITCREW_HEALTH_TIMEOUT" -w '%{http_code}' \
+                   "http://127.0.0.1:${port}${path}" 2>/dev/null)
+        _health_verdict "${_H_OUT: -3}" "${_H_OUT%???}"
+        printf '%s\n' "$R" > "$f"; } >/dev/null 2>&1 &
       disown 2>/dev/null || true
     fi
   done
@@ -610,15 +659,46 @@ _swap_poll() {
 }
 
 # ── component states, derived from the arrays above ─────────────────────────
+#
+# The boot window: how long a component may hold its port open while its health
+# endpoint still refuses to say UP before "starting" stops being a true
+# description of it. Same figure the `stuck` diagnostic uses, and it is one
+# variable so the two can never drift apart.
+#
+# A health path answers "the port is open, but is it READY" — which is a
+# question about a BOOT. Letting it gate "up" forever answered a different one,
+# and answered it with the wrong word: a service serving traffic for an hour
+# read `starting`, with a spinner, because one indicator inside its actuator
+# was unhappy (or, just as often, because the configured path 404s). Past the
+# window the port is the verdict and the disagreement becomes a finding —
+# diag_check_unhealthy in lib/19-diag.sh, which can say what the endpoint
+# actually answered instead of spinning at you.
+
+# Sets a global rather than printing it: this is read from the frame loop, and
+# both readers want the same number rather than their own copy of the sum.
+boot_limit() { # → SNAP_BOOT_LIMIT
+  SNAP_BOOT_LIMIT=$(( ${PITCREW_WAIT_SECS:-240} * ${PITCREW_SLOW_START_MULT:-1} ))
+  return 0
+}
+
 _snapshot_states() {
-  local c app role port pid st
+  local c app role port pid st since
+  boot_limit
   for c in "${PITCREW_COMPS[@]}"; do
     app=${c#*-}; role=${c%%-*}
     port=${PITCREW_PORT[$c]:-}
     pid=${SNAP_PID[$c]:-}
     if [ -n "$port" ] && [ -n "${SNAP_PORT_OPEN[$port]:-}" ]; then
       if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        if [ "${SNAP_HEALTH[$c]:-UP}" != UP ]; then st=starting; else st=up; fi
+        st=up
+        if [ "${SNAP_HEALTH[$c]:-UP}" != UP ]; then
+          since=${SNAP_SINCE[$c]:-}
+          # No start time (the collector could not read one) means no window to
+          # be past, so the old answer stands.
+          if [ -z "$since" ] || [ $(( SNAP_NOW_S - since )) -le "$SNAP_BOOT_LIMIT" ]; then
+            st=starting
+          fi
+        fi
       else
         # Something is listening, but it is not ours. Reporting that as "up"
         # is how a project can appear to be running when it is not: two

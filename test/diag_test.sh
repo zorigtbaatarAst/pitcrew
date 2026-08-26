@@ -18,6 +18,7 @@ config_finalize "$PITCREW_CFG"
 _fake_snapshot() {
   SNAP_STATE=(); SNAP_RSS=(); SNAP_CPU=(); SNAP_PID=(); SNAP_SINCE=()
   SNAP_EXIT=(); SNAP_EXIT_AT=(); SNAP_IDLE=(); SNAP_DEP=(); ERR_COUNT=()
+  SNAP_HEALTH=(); SNAP_HEALTH_CODE=()
   SNAP_NOW_S=1000000
   SNAP_CPU_OK=1
   SYS_MEM_TOTAL_KB=$(( 16 * 1024 * 1024 ))
@@ -125,7 +126,35 @@ test_a_service_stuck_starting_is_distinguished_from_one_still_booting() {
   SNAP_SINCE[be-both]=$(( SNAP_NOW_S - 600 ))
   diag_run
   assert_match "$(_ids)" 'stuck' "ten minutes in, it is not booting any more"
-  assert_match "$(_details)" 'health endpoint' "and says which signal is missing"
+  assert_match "$(_details)" 'nothing is listening' "and says which signal is missing"
+}
+
+# The other half of that split, and the reason `starting` is bounded at all: a
+# service can serve its port for an hour and still have an actuator that says
+# DOWN. Calling that a boot was a spinner that never stopped; it is a warning
+# about a service that is running, and the status it answered with is the
+# difference between a wrong line in the config and a dependency to go and look
+# at.
+test_a_service_that_serves_its_port_but_reports_unhealthy_is_not_called_starting() {
+  _fake_snapshot
+  SNAP_STATE[be-both]=up                 # the port is open and the pid is ours
+  SNAP_HEALTH[be-both]=DOWN
+  SNAP_HEALTH_CODE[be-both]=503
+  diag_run
+  assert_match "$(_ids)" 'unhealthy' "the disagreement is a finding, not a state"
+  assert_not_match "$(_ids)" 'stuck'  "and not a boot that never ended"
+  assert_match "$(_details)" '503'    "the evidence is what the endpoint answered"
+
+  SNAP_HEALTH_CODE[be-both]=404
+  diag_run
+  assert_match "$(_details)" 'path is probably wrong' \
+    "404 is a config line to fix, not a sick service"
+
+  # A component with no health path configured has nothing to disagree with.
+  _fake_snapshot
+  SNAP_STATE[fe-both]=up; SNAP_HEALTH[fe-both]=DOWN
+  diag_run
+  assert_not_match "$(_ids)" 'unhealthy' "no health path, no claim"
 }
 
 test_memory_pressure_names_who_is_holding_the_memory() {

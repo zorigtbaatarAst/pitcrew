@@ -150,9 +150,14 @@ diag_check_crashed() {
 # A service that has been "starting" for longer than the configured boot
 # timeout is not booting, it is stuck — and the dashboard's amber dot looks
 # identical at ten seconds and at ten minutes.
+#
+# Past that window a component whose PORT is open is called up rather than
+# starting (see _snapshot_states), so what reaches here is the other kind of
+# stuck: alive, and still not listening. The message says exactly that instead
+# of guessing between two causes from whether a health path is configured.
 diag_check_stuck() {
   local c age limit
-  limit=$(( ${PITCREW_WAIT_SECS:-240} * PITCREW_SLOW_START_MULT ))
+  boot_limit; limit=$SNAP_BOOT_LIMIT        # the same figure _snapshot_states used
   for c in "${PITCREW_COMPS[@]}"; do
     [ "${SNAP_STATE[$c]:-}" = starting ] || continue
     age=${SNAP_SINCE[$c]:-}
@@ -160,13 +165,38 @@ diag_check_stuck() {
     age=$(( SNAP_NOW_S - age ))
     [ "$age" -gt "$limit" ] || continue
     dur_human "$age"
-    if [ -n "${PITCREW_HEALTH[$c]:-}" ]; then
-      diag_add warn stuck "$c has been starting for $DUR" \
-        "its health endpoint has not reported UP yet" "pitcrew logs $c" "$c"
-    else
-      diag_add warn stuck "$c has been starting for $DUR" \
-        "the process is alive but nothing is listening on its port" "pitcrew logs $c" "$c"
-    fi
+    diag_add warn stuck "$c has been starting for $DUR" \
+      "the process is alive but nothing is listening on its port" "pitcrew logs $c" "$c"
+  done
+}
+
+# The other half of that split: it IS serving its port, and its own health
+# endpoint disagrees. Worth saying — something inside the service is unwell, or
+# the path in the config points at nothing — but not worth calling a boot, and
+# certainly not for the hour it used to spin for.
+#
+# The evidence is the status the endpoint answered with, because 404 and 503
+# are two completely different jobs: one is a line to fix in the config, the
+# other is a dependency to go and look at.
+diag_check_unhealthy() {
+  local c code detail
+  for c in "${PITCREW_COMPS[@]}"; do
+    [ "${SNAP_STATE[$c]:-}" = up ] || continue
+    [ -n "${PITCREW_HEALTH[$c]:-}" ] || continue
+    [ "${SNAP_HEALTH[$c]:-UP}" = UP ] && continue
+    code=${SNAP_HEALTH_CODE[$c]:-}
+    case "$code" in
+      404) printf -v detail '%s answers 404 — the path is probably wrong' \
+             "${PITCREW_HEALTH[$c]}" ;;
+      000) printf -v detail '%s did not answer within %ss' \
+             "${PITCREW_HEALTH[$c]}" "$PITCREW_HEALTH_TIMEOUT" ;;
+      # No status recorded at all: the probe result was written by a pitcrew
+      # from before they were kept. Say the part that is known.
+      '')  printf -v detail '%s reports DOWN' "${PITCREW_HEALTH[$c]}" ;;
+      *)   printf -v detail '%s answers %s' "${PITCREW_HEALTH[$c]}" "$code" ;;
+    esac
+    diag_add warn unhealthy "$c is serving its port but reports unhealthy" \
+      "$detail" "pitcrew logs $c" "$c"
   done
 }
 
@@ -369,6 +399,7 @@ diag_check_stale() {
 
 diag_register diag_check_crashed
 diag_register diag_check_stuck
+diag_register diag_check_unhealthy
 diag_register diag_check_external
 diag_register diag_check_memory
 diag_register diag_check_caps

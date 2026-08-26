@@ -426,7 +426,14 @@ test_the_process_tree_renders_in_both_layouts() {
 # for it is about what DISAPPEARS. Each of these plants a state and re-renders
 # rather than re-collecting, because collect_frame would overwrite it.
 
-_all_up() { local c; for c in "${PITCREW_COMPS[@]}"; do SNAP_STATE[$c]=up; done; }
+# Health goes with it: a component whose health path is still answering DOWN is
+# not "up" in any sense the fixture means — past the boot window that is a
+# finding of its own (diag_check_unhealthy), and leaving the real snapshot's
+# DOWN behind under a planted `up` was a warning in a test about a calm screen.
+_all_up() {
+  local c
+  for c in "${PITCREW_COMPS[@]}"; do SNAP_STATE[$c]=up; SNAP_HEALTH[$c]=UP; done
+}
 # Dependencies are rows in the zen list, not a rule above it, so a down one is
 # something that needs you and the screen is correctly not empty.
 _all_deps_up() { local d; for d in "${PITCREW_DEPS[@]:-}"; do [ -n "$d" ] && SNAP_DEP[$d]=up; done; }

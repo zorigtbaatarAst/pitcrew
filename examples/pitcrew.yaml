@@ -37,10 +37,15 @@ apps:
       dir: storefront
       cmd: bundle exec rails s -p 4000
       port: 4000        # used for health checks, URLs, and "is it up yet"
-      # When set, pitcrew curls http://127.0.0.1:<port><health> and requires
-      # the body to contain "UP" (Spring Boot Actuator convention) before
-      # calling the component up rather than starting. Omit it and an open
-      # port is enough. Works on any role, not just this one.
+      # When set, pitcrew curls http://127.0.0.1:<port><health> and wants a
+      # 2xx whose status, if it states one, is "UP" (the Spring Boot Actuator
+      # convention) before calling the component up rather than starting.
+      # Omit it and an open port is enough. Works on any role, not just this
+      # one. Note it is a BOOT question: once the boot window has passed an
+      # open port is the verdict either way, and an endpoint that still says
+      # otherwise is reported as a finding rather than an endless "starting".
+      # A Spring app behind a server.servlet.context-path serves the actuator
+      # under it — /<context-path>/actuator/health, not /actuator/health.
       health: /health
       max: 2G           # this component's RAM cap, overriding max.be below
       # `pitcrew diagnose` will never PROPOSE stopping this to free memory,
@@ -154,6 +159,11 @@ dashboard:
   # background so a booting JVM can never stall a repaint, and back off to 3x
   # this once a service reports UP.
   # health_interval: 5
+  #
+  # How long one probe may take before it counts as unanswered. An actuator
+  # that aggregates a database ping is slower than people expect — under this
+  # figure it reports DOWN forever, which reads as a boot that never ends.
+  # health_timeout: 5
   # dep_interval: 10          # how often `docker inspect` runs for deps
   #
   # Bring crashed components back automatically, with exponential backoff and a

@@ -359,7 +359,7 @@ _yaml_path() { # $1 path, $2 base (default $ROOT) → YV
 # rather than "anything under dashboard:" so that a typo is still an error.
 _YAML_DASHBOARD_KEYS=" theme color icons refresh graph graph_scale gauge ram_cell\
  history mouse narrow_at compact_at micro_at xl_at error_pattern error_scan_max\
- health_interval dep_interval log_keep restart restart_backoff restart_max\
+ health_interval health_timeout dep_interval log_keep restart restart_backoff restart_max\
  restart_reset start_concurrency start_slot_secs "
 
 # Ordered project doctor checks declared in YAML, consumed by lib/12-doctor.sh.
