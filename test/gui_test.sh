@@ -2878,4 +2878,105 @@ print(len(calls) > before)
   assert_eq "$out" "True" "a theme change refreshes the Projects list too"
 }
 
+# ── the Tools dialog ────────────────────────────────────────────────────────
+#
+# Ports and plugins used to arrive as the CLI's own text in a monospace box.
+# These pin the shaping that replaced it — pure functions, so they need no
+# display and no pitcrew.
+
+_TOOLS_STATE="
+PROJECTS = {'projects': [
+  {'name': 'autoland', 'current': True,
+   'ports': [{'port': 8083, 'component': 'be-finance'},
+             {'port': 8082, 'component': 'be-frontoffice'},
+             {'port': 5173, 'component': 'fe-sales'}],
+   'clashes': [{'port': 8082, 'component': 'be-frontoffice',
+                'project': 'property-v2', 'theirs': 'fe-frontoffice'}]},
+  {'name': 'property-v2', 'current': False,
+   'ports': [{'port': 8082, 'component': 'fe-frontoffice'}],
+   'clashes': [{'port': 8082, 'component': 'fe-frontoffice',
+                'project': 'autoland', 'theirs': 'be-frontoffice'}]},
+]}
+"
+
+test_a_port_clash_is_listed_once_rather_than_from_both_sides() {
+  gui_available || return 0
+  # `pitcrew projects --json` reports a clash from BOTH projects — A names B and
+  # B names A — so a straight read shows every conflict twice and tells you
+  # there are two problems when there is one.
+  local out; out=$(_settings_drive "
+from pitcrewgui.model import port_conflicts
+$_TOOLS_STATE
+found = port_conflicts(PROJECTS)
+print(len(found))
+print(found[0]['port'])
+print(sorted([found[0]['a'], found[0]['b']]))
+print(port_conflicts({}) == [] and port_conflicts(None) == [])
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1" "one clash, not two"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "8082" "on the contested port"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 3p)")" \
+    "['autoland/be-frontoffice', 'property-v2/fe-frontoffice']" "naming both claimants"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "True" "and nothing at all is not a crash"
+}
+
+test_the_port_map_is_sorted_and_knows_which_ports_are_contested() {
+  gui_available || return 0
+  # The warning belongs on the port itself. Making someone cross-reference a
+  # clash list against a port list is how the text box worked.
+  local out; out=$(_settings_drive "
+from pitcrewgui.model import port_rows
+$_TOOLS_STATE
+rows = port_rows(PROJECTS)
+print([p['port'] for p in rows[0]['ports']])
+print(sorted(rows[0]['clashing']))
+print(rows[0]['current'], rows[1]['current'])
+")
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 1p)")" "[5173, 8082, 8083]" "ports ascending"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 2p)")" "[8082]" "only the contested one"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 3p)")" "True False" "and which project is current"
+}
+
+test_a_plugin_that_registered_nothing_says_so() {
+  gui_available || return 0
+  # The interesting case: it looks installed and does nothing. "0 checks" states
+  # that far more quietly than saying it.
+  local out; out=$(_settings_drive "
+from pitcrewgui.model import plugin_rows
+rows = plugin_rows({'plugins': [
+  {'file': 'jvm.sh', 'checks': [{'name': 'jvm_check', 'slow': True}]},
+  {'file': 'quick.sh', 'checks': [{'name': 'a', 'slow': False}, {'name': 'b', 'slow': False}]},
+  {'file': 'broken.sh', 'checks': []},
+]})
+print(rows[0]['summary'])
+print(rows[1]['summary'])
+print(rows[2]['summary'], rows[2]['empty'])
+print(rows[0]['empty'], rows[1]['empty'])
+")
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 1p)")" "jvm_check (on demand)" \
+    "a slow check says when it runs"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 2p)")" "a, b" "cheap checks just list"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 3p)")" "registered no checks True" \
+    "and a file that registered nothing is called out"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 4p)")" "False False" "the others are not"
+}
+
+test_a_row_that_does_not_parse_markup_is_not_escaped() {
+  # `use_markup=False` means the string is taken LITERALLY, so escaping it puts
+  # `&apos;` on screen. Verified against this libadwaita for AdwActionRow,
+  # AdwExpanderRow and GtkLabel alike, after the Tools dialog shipped a subtitle
+  # reading "JVM&apos;s memory".
+  #
+  # Grepped rather than rendered, the same way the argv rule is: this is a
+  # property of the SOURCE, and a screenshot test would only catch the strings
+  # that happen to contain a quote.
+  local body
+  body=$(sed -n '/^class ToolsDialog/,/^class ProfilesDialog/p' "$PITCREW_DIR/gui/pitcrewgui/dialogs.py")
+  local bad
+  bad=$(printf '%s\n' "$body" | grep -n 'title=plain(\|subtitle=plain(\|label=plain(' || true)
+  assert_empty "$bad" "no escaped text on rows built with use_markup=False"
+  # And the group descriptions, which ARE always parsed, still exist to escape.
+  assert_match "$body" 'description=' "group descriptions are still set"
+}
+
 run_tests

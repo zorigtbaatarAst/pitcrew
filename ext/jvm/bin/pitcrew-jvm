@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# pitcrew-jvm — where a JVM's memory went, and what is going to kill it.
+#
+# Standalone: needs bash and a JDK, nothing else. It does not know pitcrew
+# exists. pitcrew consumes it through ext/jvm/plugin/jvm.sh, which feeds it
+# targets and reads findings back — see that file.
+#
+# ── why this file avoids bash 4 syntax ──────────────────────────────────────
+#
+# macOS ships bash 3.2, and bash parses a WHOLE script before running a line of
+# it. One `declare -A`, `mapfile` or `${x^^}` here and the version check below
+# never gets to print — the user sees a syntax error instead of a sentence
+# telling them what to install. Everything in lib/ is sourced after the guard
+# and is unrestricted. This is pitcrew's own constraint 1, for the same reason.
+
+set -u
+
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "pitcrew-jvm needs bash 4 or newer (this is ${BASH_VERSION:-not bash})." >&2
+  echo "On macOS: brew install bash" >&2
+  exit 2
+fi
+
+# Resolve through symlinks by hand: `readlink -f` is GNU-only and absent on a
+# stock macOS, and this tool is meant to be installed BY symlink onto a PATH.
+_self=$0
+while [ -L "$_self" ]; do
+  _link=$(readlink "$_self")
+  case "$_link" in
+    /*) _self=$_link ;;
+    *)  _self=$(dirname "$_self")/$_link ;;
+  esac
+done
+JVM_DIR=$(cd "$(dirname "$_self")/.." && pwd)
+JVM_LIB="${PITCREW_JVM_LIB:-$JVM_DIR/lib}"
+
+for _f in util parse rules probe render; do
+  if [ ! -r "$JVM_LIB/$_f.sh" ]; then
+    echo "pitcrew-jvm: cannot read $JVM_LIB/$_f.sh" >&2
+    exit 2
+  fi
+  # shellcheck source=/dev/null
+  . "$JVM_LIB/$_f.sh"
+done
+
+usage() {
+  cat <<'USAGE'
+pitcrew-jvm — where a JVM's memory went, and what is going to kill it
+
+usage:
+  pitcrew-jvm                    every JVM this user is running, one line each
+  pitcrew-jvm <pid|name>         the full memory breakdown for one
+  pitcrew-jvm --check            findings only; exits 1 if any are critical
+  pitcrew-jvm --json             the same numbers as one JSON object
+  pitcrew-jvm --watch [-i N]     one JSON object every N seconds (default 30)
+
+options:
+  -i, --interval N   seconds between --watch samples
+      --format tsv   with --check: severity/id/title/detail/fix/scope, tab separated
+      --targets -    read "label<TAB>pid<TAB>cap_bytes" targets from stdin
+                     instead of discovering them; this is how a supervisor
+                     passes in the cap it launched the process under
+      --timeout N    seconds to wait for a JVM to answer (default 5)
+  -h, --help
+
+exit status:
+  0  no critical findings      1  at least one critical      2  usage error
+
+environment:
+  PITCREW_JVM_HEAP_WARN_PCT     90   heap used, as % of -Xmx
+  PITCREW_JVM_META_WARN_PCT     90   metaspace used, as % of MaxMetaspaceSize
+  PITCREW_JVM_CC_WARN_PCT       90   code cache used, as % of its size
+  PITCREW_JVM_NATIVE_FLOOR_MB  128   assumed non-heap floor when NMT is off
+  PITCREW_JVM_COLOR                  always | never
+USAGE
+}
+
+MODE=list
+FORMAT=text
+INTERVAL=30
+TARGETS=""
+WANT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)    usage; exit 0 ;;
+    --check)      MODE=check; shift ;;
+    --json)       MODE=json; shift ;;
+    --watch)      MODE=watch; shift ;;
+    --format)     [ $# -ge 2 ] || { echo "--format needs a value" >&2; exit 2; }
+                  FORMAT=$2; shift 2 ;;
+    --format=*)   FORMAT=${1#*=}; shift ;;
+    -i|--interval)[ $# -ge 2 ] || { echo "--interval needs a value" >&2; exit 2; }
+                  INTERVAL=$2; shift 2 ;;
+    --interval=*) INTERVAL=${1#*=}; shift ;;
+    --targets)    [ $# -ge 2 ] || { echo "--targets needs a value" >&2; exit 2; }
+                  TARGETS=$2; shift 2 ;;
+    --targets=*)  TARGETS=${1#*=}; shift ;;
+    --timeout)    [ $# -ge 2 ] || { echo "--timeout needs a value" >&2; exit 2; }
+                  PITCREW_JVM_TIMEOUT=$2; shift 2 ;;
+    --timeout=*)  PITCREW_JVM_TIMEOUT=${1#*=}; shift ;;
+    -*)           echo "pitcrew-jvm: unknown option '$1'" >&2; usage >&2; exit 2 ;;
+    *)            WANT=$1; MODE=detail; shift ;;
+  esac
+done
+
+case "$FORMAT" in text|tsv) ;; *) echo "pitcrew-jvm: --format takes text or tsv" >&2; exit 2 ;; esac
+case "$INTERVAL" in ''|*[!0-9]*) echo "pitcrew-jvm: --interval needs whole seconds" >&2; exit 2 ;; esac
+[ "$INTERVAL" -ge 1 ] || { echo "pitcrew-jvm: --interval must be at least 1" >&2; exit 2; }
+case "${PITCREW_JVM_TIMEOUT}" in ''|*[!0-9]*) echo "pitcrew-jvm: --timeout needs whole seconds" >&2; exit 2 ;; esac
+
+jvm_colors_init
+
+TOTAL_CRIT=0; TOTAL_WARN=0; TOTAL_INFO=0; TOTAL_JVMS=0
+
+# The work list: "label<TAB>pid<TAB>cap_bytes<TAB>cap_source" per line.
+#
+# Discovery is the default. --targets exists because a supervisor knows two
+# things this tool cannot work out for itself — which process is which service,
+# and the cap it was launched under — and that cap is the whole basis of the
+# jvm-cap check.
+targets() {
+  if [ -n "$TARGETS" ]; then
+    if [ "$TARGETS" = "-" ]; then cat; else cat "$TARGETS"; fi
+    return 0
+  fi
+  jvm_discover | while IFS="$(printf '\t')" read -r pid label; do
+    [ -n "$pid" ] || continue
+    printf '%s\t%s\t%s\t%s\n' "$label" "$pid" -1 ""
+  done
+}
+
+# Filter to what the user asked for: an exact pid, or a label containing the
+# word. Substring rather than exact, because nobody types
+# "com.example.sales.Application".
+wanted() { # $1 label, $2 pid
+  [ -n "$WANT" ] || return 0
+  [ "$2" = "$WANT" ] && return 0
+  case "$1" in *"$WANT"*) return 0 ;; esac
+  return 1
+}
+
+one_pass() { # renders according to MODE; accumulates TOTAL_*
+  local label pid cap capsrc first=1
+  TOTAL_CRIT=0; TOTAL_WARN=0; TOTAL_INFO=0; TOTAL_JVMS=0
+  # `a || b && c` groups left to right in shell, so the mixed chain this
+  # replaced meant something subtly different from how it read.
+  case "$MODE" in
+    list)       jvm_render_header ;;
+    json|watch) printf '{"schema":1,"jvms":[' ;;
+  esac
+  while IFS="$(printf '\t')" read -r label pid cap capsrc; do
+    [ -n "${pid:-}" ] || continue
+    case "$pid" in *[!0-9]*) continue ;; esac
+    wanted "${label:-}" "$pid" || continue
+    TOTAL_JVMS=$(( TOTAL_JVMS + 1 ))
+
+    jvm_probe "$pid" "${label:-}" "${cap:--1}" "${capsrc:-}"
+    jvm_finding_reset
+    jvm_rules
+
+    TOTAL_CRIT=$(( TOTAL_CRIT + JVMR_CRIT ))
+    TOTAL_WARN=$(( TOTAL_WARN + JVMR_WARN ))
+    TOTAL_INFO=$(( TOTAL_INFO + JVMR_INFO ))
+
+    case "$MODE" in
+      list)   jvm_render_row ;;
+      detail) jvm_render_detail; jvm_render_findings ;;
+      check)  if [ "$FORMAT" = tsv ]; then jvm_render_tsv; else jvm_render_findings; fi ;;
+      json|watch)
+        [ "$first" = 1 ] || printf ','
+        first=0
+        jvm_render_json_one ;;
+    esac
+  done < <(targets)
+
+  if [ "$MODE" = json ] || [ "$MODE" = watch ]; then
+    printf '],"counts":{"crit":%d,"warn":%d,"info":%d},"verdict":"%s"}\n' \
+      "$TOTAL_CRIT" "$TOTAL_WARN" "$TOTAL_INFO" \
+      "$( [ "$TOTAL_CRIT" -gt 0 ] && printf crit || { [ "$TOTAL_WARN" -gt 0 ] && printf warn || printf ok; } )"
+  fi
+  return 0
+}
+
+# TOTAL_* are assigned inside one_pass, which runs in THIS shell — the work
+# list is fed in by process substitution rather than a pipe precisely so the
+# loop is not a subshell and the counters survive it.
+case "$MODE" in
+  watch)
+    # SIGPIPE is the normal way this ends: the reader went away.
+    trap 'exit 0' PIPE
+    while :; do
+      one_pass
+      sleep "$INTERVAL"
+    done
+    ;;
+  *)
+    one_pass
+    ;;
+esac
+
+if [ "$TOTAL_JVMS" = 0 ]; then
+  if [ -n "$WANT" ]; then
+    echo "pitcrew-jvm: no JVM matching '$WANT'" >&2
+  elif [ "$MODE" = list ]; then
+    printf '  %sno JVMs running under this user%s\n' "${C_DIM}" "${C_RESET}"
+  fi
+fi
+
+[ "$TOTAL_CRIT" -gt 0 ] && exit 1
+exit 0

@@ -10,6 +10,89 @@ field is removed or changes meaning.
 
 ## [Unreleased]
 
+### Added
+- **`ext/jvm` — `pitcrew-jvm`, a standalone JVM memory accountant.** Heap
+  monitors are everywhere; the question they cannot answer is *"why is this
+  service's RSS 2.6G when `-Xmx` is 1G, and what will the kernel do about it?"*
+  So it reconciles resident size against everything the JVM will admit to —
+  heap, metaspace, code cache, GC structures, thread stacks — and puts the
+  total against the ceiling that will actually kill the process.
+
+  It needs bash and a JDK and **does not know pitcrew exists**: `pitcrew-jvm`
+  lists every JVM, `pitcrew-jvm <name>` breaks one down, `--check` exits
+  non-zero on a critical finding so it drops into cron or CI, `--json` and
+  `--watch` give you the numbers. A forty-line plugin connects it to pitcrew by
+  feeding it the one fact only a supervisor has: the cap each component was
+  launched under.
+
+  Eight checks. The one that justifies it is still `jvm-cap` — `-Xmx` plus
+  non-heap exceeding the cap means the kernel kills the process long before the
+  heap fills, with no stack trace. The one nothing else reports is
+  `jvm-codecache`: when the JIT code cache fills, **compilation stops
+  permanently** and new code paths run interpreted, tens of times slower, with
+  nothing in any log.
+
+### Changed
+- **The desktop app's Tools window shows rows instead of terminal output.**
+  Ports and Plugins arrived there as the CLI's own text, dropped into a 180px
+  monospace scroller. That is a terminal pane wearing a dialog, and it was
+  worse than the terminal in three specific ways: two short boxes nested inside
+  a scrolling page, so reaching the bottom of either meant scrolling a thing
+  inside a thing; lines wrapped at a character boundary, so
+  `property-registration-v2/be-notification-api` broke across two rows; and the
+  port CLASHES — the only actionable thing in the dialog and the reason to open
+  it — sat last, below the fold, in the smaller box. The Plugins box rendered
+  the CLI's onboarding paragraph, which teaches `diag_register my_check slow`:
+  something you type in a shell, shown in a window that has no shell.
+
+  Both are read as JSON now. Clashes lead, one row per contested port naming
+  both claimants on their own lines; the port map is one line per port with the
+  component beside it and a warning on the contested ones, collapsed per project
+  and opened for the current one. Plugins are one row per file saying which
+  checks it registered and which of them only run on demand — and a file that
+  loaded but registered nothing, which looks installed and does nothing, finally
+  says so.
+
+- **`pitcrew plugins --json`.** What the above reads. Same shape as the other
+  `--json` commands, and it reports each check's tier, so a UI can explain why a
+  check appears in `diagnose` and not on the dashboard.
+
+### Fixed
+- **Text in the desktop app was double-escaped wherever a row opted out of
+  markup.** `use_markup=False` means a string is taken literally, so escaping it
+  first puts `&apos;` on the screen — the Tools window rendered "where a
+  JVM&apos;s memory went". The rule was written down backwards in
+  `model.plain`'s docstring ("use-markup covers the TITLE only — subtitles are
+  parsed regardless"), which is what the code was following. Checked against
+  this libadwaita for `AdwActionRow`, `AdwExpanderRow` and `GtkLabel`, corrected
+  in the docstring, and pinned by a test. Group titles and descriptions are the
+  genuine exception — they have no `use-markup` property, are always parsed, and
+  do still need escaping.
+
+- **The bundled JVM plugin is now a tool, and its parsers are pinned to real
+  JDK output.** `examples/plugins/jvm.sh` is replaced by `ext/jvm`.
+
+  The old one read metaspace out of `jcmd GC.heap_info`. That line was **removed
+  from the command after JDK 11**, and G1's heap line changed shape in the same
+  window. Nothing errored: on any modern JDK metaspace simply read as `0`, which
+  flowed into the arithmetic predicting an OOM kill and made it *smaller* — in
+  the safe-looking direction, for two JDK releases. Verified against a JDK 26:
+  the shipped parser returned `0` for a metaspace that was really there.
+
+  Every parser now returns `-1` for "could not read" and never `0`, every rule
+  refuses to run on one, and every output shape is pinned by captured fixtures
+  across JDK 8/17/26 and G1/Parallel/Serial/ZGC/Shenandoah. Two other silent
+  traps are closed with it: `MaxMetaspaceSize`'s "unlimited" value
+  (`18446744073709551615`) is wider than a signed 64-bit integer and the shell
+  **truncates it rather than refusing**, so it is clamped inside awk before a
+  digit reaches bash arithmetic; and every `jcmd` call is bounded by hand,
+  because it waits for a safepoint and `timeout` is GNU-only, so one unresponsive
+  JVM used to be able to hang `pitcrew diagnose` indefinitely.
+
+  If you installed the old plugin, remove `~/.config/pitcrew/plugins/jvm.sh`
+  before running `ext/jvm/install.sh` — the installer detects it and says so
+  rather than overwriting a file you may have edited.
+
 ### Fixed
 - **A service that was up and serving read "starting" for as long as you left
   it running.** A health path exists to answer "the port is open, but is it

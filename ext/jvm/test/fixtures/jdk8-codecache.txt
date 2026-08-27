@@ -1,0 +1,4 @@
+CodeCache: size=245760Kb used=15000Kb max_used=16000Kb free=230760Kb
+ bounds [0x00007f6f9c000000, 0x00007f6f9cf90000, 0x00007f6fab000000]
+ total_blobs=5000 nmethods=4500 adapters=400
+ compilation: enabled

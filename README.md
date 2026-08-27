@@ -863,9 +863,9 @@ whole of it — there is no manifest, no lifecycle, no API version. It is
 deliberately the only extension point in the codebase.
 
 ```bash
-mkdir -p ~/.config/pitcrew/plugins
-cp examples/plugins/jvm.sh ~/.config/pitcrew/plugins/
+ext/jvm/install.sh     # the bundled one; see below
 pitcrew plugins        # what is loaded, and what each file registered
+pitcrew plugins --json # the same, as data
 ```
 
 ```bash
@@ -909,21 +909,38 @@ directory that got sourced automatically would silently undo that: `pitcrew
 status` in a freshly cloned repo would execute whatever the repo felt like.
 Nothing about "look at the dashboard" should mean "run this stranger's shell".
 
-### The bundled example
+### The bundled one: `ext/jvm`
 
-`examples/plugins/jvm.sh` is a worked plugin, and it earns its place by catching
-something neither half of the system can see alone:
+**[`pitcrew-jvm`](ext/jvm/README.md)** is a standalone JVM memory accountant
+that ships in this checkout, plus a forty-line plugin that connects it. It earns
+its place by catching something neither half of the system can see alone:
 
 > pitcrew knows the RAM cap it launched a JVM under. The JVM knows the `-Xmx` it
-> settled on. When `-Xmx` plus native exceeds the cap, the kernel kills the
+> settled on. When `-Xmx` plus non-heap exceeds the cap, the kernel kills the
 > process long before the heap ever fills — which presents as *"my service just
 > disappears under load, with nothing in the log"*, because there was no
 > exception, the process was shot.
 
-It also warns when a heap is above 90% of its own ceiling. It is registered
-`slow` (it forks a `jcmd` per JVM), and its parsers are pure functions taking
-captured `jcmd` output on stdin, so `test/plugin_test.sh` verifies them on a
-machine with no JVM on it.
+```bash
+ext/jvm/install.sh      # onto your PATH, and into ~/.config/pitcrew/plugins
+pitcrew-jvm             # every JVM this user is running
+pitcrew-jvm be-sales    # where its memory actually went
+pitcrew diagnose        # the same findings, on your stack
+```
+
+It also reports the one that nothing else does: when the **JIT code cache
+fills, compilation stops permanently** and new code paths run interpreted, tens
+of times slower, with nothing in any log.
+
+**The tool does not know pitcrew exists.** It runs over ssh on a box that has
+never heard of it, `--check` exits non-zero on a critical finding so it drops
+into cron or CI, and `--json` gives you the numbers. What the plugin adds is the
+one fact only a supervisor has: the cap. That split is deliberate — the plugin
+this replaced carried its own `jcmd` parsers, and when `GC.heap_info` stopped
+printing a `Metaspace` line after JDK 11 they went on reporting metaspace as
+zero, quietly *understating* the risk they existed to catch. The parsers are now
+pinned by captured output from five JDK generations and five collectors, which
+is more than belongs in a plugin.
 
 ## Dashboard
 

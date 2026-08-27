@@ -1,0 +1,10 @@
+   size_t CompressedClassSpaceSize                 = 1073741824                                {product} {default}
+   size_t InitialHeapSize                          = 8388608                                   {product} {ergonomic}
+ uint64_t MaxDirectMemorySize                      = 0                                         {product} {default}
+   size_t MaxHeapSize                              = 536870912                                 {product} {command line}
+   size_t MaxMetaspaceSize                         = 18446744073709551615                      {product} {default}
+   double MaxRAMPercentage                         = 25.000000                                 {product} {default}
+   size_t ReservedCodeCacheSize                    = 251662336                              {pd product} {ergonomic}
+     intx ThreadStackSize                          = 1024                                   {pd product} {default}
+     bool UseContainerSupport                      = true                                      {product} {default}
+     bool UseG1GC                                  = true                                      {product} {ergonomic}

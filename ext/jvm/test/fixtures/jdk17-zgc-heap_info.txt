@@ -1,0 +1,1 @@
+ ZHeap           used 100M, capacity 1000M, max capacity 2048M

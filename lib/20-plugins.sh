@@ -39,7 +39,46 @@ plugin_files() { # → the plugins to load, in name order
   done
 }
 
+# The same list as data, so the desktop app can render rows instead of scraping
+# the text above. Without this it was showing `pitcrew plugins` output verbatim
+# in a monospace box — including the onboarding paragraph that teaches
+# `diag_register`, which is a thing you type in a shell, inside a window that
+# has no shell.
+plugins_json() {
+  local files f name c first=1 cfirst
+  mapfile -t files < <(plugin_files)
+  printf '{"schema":%s,' "$PITCREW_JSON_SCHEMA"
+  _json_str "$PITCREW_PLUGIN_DIR"; printf '"dir":%s,"plugins":[' "$JSTR"
+  for f in "${files[@]}"; do
+    [ -n "$f" ] || continue
+    name=${f##*/}
+    [ $first = 1 ] || printf ','
+    first=0
+    local j_name j_path
+    _json_str "$name"; j_name=$JSTR
+    _json_str "$f";    j_path=$JSTR
+    printf '{"file":%s,"path":%s,"checks":[' "$j_name" "$j_path"
+    cfirst=1
+    for c in "${DIAG_CHECKS[@]}"; do
+      case "${PLUGIN_OF[$c]:-}" in "$name") ;; *) continue ;; esac
+      [ $cfirst = 1 ] || printf ','
+      cfirst=0
+      local j_check
+      _json_str "$c"; j_check=$JSTR
+      # `slow` is the whole reason the tier exists, and a UI that cannot show
+      # which checks only run on demand cannot explain why one of them is
+      # missing from the dashboard.
+      printf '{"name":%s,"slow":%s}' "$j_check" \
+        "$([ -n "${DIAG_CHECK_SLOW[$c]:-}" ] && printf true || printf false)"
+    done
+    printf ']}'
+  done
+  printf ']}\n'
+  return 0
+}
+
 cmd_plugins() {
+  [ "${1:-}" = --json ] && { plugins_json; return 0; }
   local files n f name
   mapfile -t files < <(plugin_files)
   n=${#files[@]}
@@ -53,7 +92,8 @@ cmd_plugins() {
     say "    ${C_SUBTLE}diag_register my_check${RESET}          ${C_FAINT}# runs every dashboard frame${RESET}"
     say "    ${C_SUBTLE}diag_register my_check slow${RESET}     ${C_FAINT}# may fork; only on \`pitcrew diagnose\`${RESET}"
     say ""
-    say "  ${C_MUTED}there is a worked example in${RESET} ${BOLD}examples/plugins/jvm.sh${RESET}"
+    say "  ${C_MUTED}a worked one ships with this checkout:${RESET} ${BOLD}ext/jvm${RESET}"
+    say "    ${C_SUBTLE}ext/jvm/install.sh${RESET}          ${C_FAINT}# JVM memory, and what is going to kill it${RESET}"
     say ""
     return 0
   fi

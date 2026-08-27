@@ -6,7 +6,7 @@ from pathlib import Path
 
 from gi.repository import Adw, GLib, Gtk
 
-from .model import human_bytes, plain
+from .model import human_bytes, plain, plugin_rows, port_conflicts, port_rows
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error, yaml_config_error
 from .widgets import OutputView, ProcessTree, code_view, human_age
@@ -986,30 +986,71 @@ class ToolsDialog(Adw.Dialog):
     the shells the project configured. None of them is worth a tab; all of them
     were unreachable without dropping to a terminal, which for a desktop app is
     the same as not existing.
+
+    ── why this stopped being two text boxes ──
+
+    Ports and plugins used to arrive as the CLI's own output, dropped verbatim
+    into a 180px monospace scroller. That is a terminal pane wearing a dialog,
+    and it was worse than the terminal in three specific ways:
+
+      - Nested scrolling. Two short boxes inside a scrolling page, so reaching
+        the bottom of either meant scrolling a thing inside a thing.
+      - It wrapped mid-token. `property-registration-v2/be-notification-api`
+        broke across lines at a character boundary, which is the one place a
+        name must not break.
+      - The port CLASHES — the only actionable thing in the whole dialog, and
+        the reason to open it — were last, below the fold, in the smaller of
+        the two boxes.
+
+    And the plugins box rendered the CLI's onboarding paragraph, which teaches
+    `diag_register my_check slow`: a thing you type in a shell, shown in a
+    window that has no shell.
+
+    Both are now read as JSON and rendered as rows. The shaping is in
+    model.port_conflicts / port_rows / plugin_rows, which are pure and tested.
     """
 
+    # ── escaping, which is the opposite of what it looks like ──
+    #
+    # `use_markup=False` means the string is NOT parsed, so it must NOT be
+    # escaped: an apostrophe put through model.plain renders as the literal
+    # `&apos;`. Verified on this libadwaita for AdwActionRow, AdwExpanderRow
+    # and GtkLabel alike. Group titles and DESCRIPTIONS are a different matter
+    # — they have no use-markup property, are always parsed, and do need
+    # escaping when they carry a value rather than a literal.
+
     def __init__(self, runner: Runner, project: str, shells: list[str], on_toast):
-        super().__init__(title="Tools", content_width=560, content_height=560)
+        super().__init__(title="Tools", content_width=560, content_height=620)
         self._runner = runner
         self._on_toast = on_toast
 
         page = Adw.PreferencesPage()
 
+        # Clashes lead. They are the finding, not a footnote to the port map,
+        # and this group hides itself entirely when there are none rather than
+        # standing there empty saying everything is fine.
+        self._clashes = Adw.PreferencesGroup(
+            title="Claimed twice",
+            description=("pitcrew reads a component as up from its port, so running "
+                         "both at once makes each report the other's services as its own."))
+        self._clashes.set_visible(False)
+        page.add(self._clashes)
+
         self._ports = Adw.PreferencesGroup(
             title="Ports",
-            description="Every port every registered project claims — and any claimed twice")
-        self._ports_view = OutputView(height=180)
-        self._ports_view.show_text("reading…")
-        self._ports.add(self._ports_view)
+            description="Every port every registered project claims")
         page.add(self._ports)
 
         self._plugins = Adw.PreferencesGroup(
             title="Plugins",
             description="Diagnostic checks loaded from ~/.config/pitcrew/plugins")
-        self._plugins_view = OutputView(height=140)
-        self._plugins_view.show_text("reading…")
-        self._plugins.add(self._plugins_view)
         page.add(self._plugins)
+
+        self._clash_rows: list[Gtk.Widget] = []
+        self._port_rows: list[Gtk.Widget] = []
+        self._plugin_rows: list[Gtk.Widget] = []
+        self._busy(self._ports, self._port_rows, "Reading the port map…")
+        self._busy(self._plugins, self._plugin_rows, "Reading plugins…")
 
         # A GTK app cannot host an interactive psql, and pretending otherwise
         # would be worse than not offering it. Handing over the exact command
@@ -1019,7 +1060,7 @@ class ToolsDialog(Adw.Dialog):
                 title="Shells",
                 description="Configured in this project. Copy one and run it in a terminal.")
             for name in shells:
-                row = Adw.ActionRow(title=plain(name), use_markup=False,
+                row = Adw.ActionRow(title=name, use_markup=False,
                                     subtitle=f"pitcrew -p {project} shell {name}",
                                     subtitle_selectable=True)
                 button = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER,
@@ -1036,10 +1077,160 @@ class ToolsDialog(Adw.Dialog):
         view.set_content(page)
         self.set_child(view)
 
-        runner.run(["ports"], lambda ok, out: self._ports_view.show_text(
-            out or ("no projects registered" if ok else "could not read the port map")))
-        runner.run(["-p", project, "plugins"], lambda ok, out: self._plugins_view.show_text(
-            out or ("no plugins" if ok else "could not list plugins")))
+        # The port map is the registry's answer, not this project's — the same
+        # payload the Projects page reads, so the two cannot disagree.
+        runner.run_json(["projects", "--json"], self._render_ports)
+        runner.run_json(["-p", project, "plugins", "--json"], self._render_plugins)
+
+    # ── rows ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _clear(group, rows: list) -> None:
+        for row in rows:
+            group.remove(row)
+        rows.clear()
+
+    @staticmethod
+    def _busy(group, rows: list, text: str) -> None:
+        row = Adw.ActionRow(title=text, use_markup=False)
+        row.add_css_class("dim-label")
+        group.add(row)
+        rows.append(row)
+
+    def _render_ports(self, state: dict | None, problem: str) -> None:
+        self._clear(self._ports, self._port_rows)
+        self._clear(self._clashes, self._clash_rows)
+
+        if problem:
+            self._message(self._ports, self._port_rows, "Could not read the port map",
+                          problem)
+            return
+
+        for clash in port_conflicts(state):
+            # One claimant per line. Side by side with a "vs" between them the
+            # pair runs to about eighty characters, which at this width wraps —
+            # and it wraps INSIDE a name, splitting `fe-frontoffice` across two
+            # lines at the hyphen. That was the original complaint about the
+            # text box; reproducing it in a row would be no improvement at all.
+            row = Adw.ActionRow(
+                title=f"port {clash['port']}", use_markup=False,
+                subtitle=f"{clash['a']}\n{clash['b']}")
+            row.set_subtitle_lines(2)
+            icon = Gtk.Image(icon_name="dialog-warning-symbolic", valign=Gtk.Align.CENTER)
+            icon.add_css_class("warning")
+            row.add_prefix(icon)
+            self._clashes.add(row)
+            self._clash_rows.append(row)
+        self._clashes.set_visible(bool(self._clash_rows))
+
+        projects = port_rows(state)
+        if not projects:
+            self._message(self._ports, self._port_rows, "No projects registered",
+                          "Add one and its ports appear here")
+            return
+
+        for entry in projects:
+            self._ports.add(self._project_ports_row(entry))
+
+    def _project_ports_row(self, entry: dict) -> Adw.ExpanderRow:
+        """One project, collapsed, with its ports inside.
+
+        Collapsed by default because a monorepo claims a dozen ports and three
+        registered projects would otherwise be forty rows before the Plugins
+        heading. The current project opens itself — it is the one being asked
+        about — and any project with a clash opens too, since a warning behind
+        a closed expander is a warning nobody sees.
+        """
+        ports = entry["ports"]
+        clashing = entry["clashing"]
+        count = len(ports)
+        row = Adw.ExpanderRow(
+            title=entry["name"], use_markup=False,
+            subtitle=(f"{count} port{'s' if count != 1 else ''}"
+                      if count else "no ports configured"))
+        row.set_expanded(bool(entry["current"] or clashing))
+
+        # One box, or the badge and the icon sit flush against each other and
+        # against the expander arrow.
+        marks = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
+        if clashing:
+            icon = Gtk.Image(icon_name="dialog-warning-symbolic", valign=Gtk.Align.CENTER)
+            icon.add_css_class("warning")
+            icon.set_tooltip_text("shares a port with another project")
+            marks.append(icon)
+        if entry["current"]:
+            badge = Gtk.Label(label="current", valign=Gtk.Align.CENTER)
+            badge.add_css_class("caption")
+            badge.add_css_class("accent")
+            marks.append(badge)
+        row.add_suffix(marks)
+
+        for port in ports:
+            number = port.get("port")
+            # Port as the title, component as a suffix, so a port is ONE row.
+            # As title-over-subtitle each port cost two lines, and six ports
+            # then filled the dialog on their own — the port map is a thing you
+            # scan down, not read.
+            child = Adw.ActionRow(title=str(number), use_markup=False)
+            name = Gtk.Label(label=port.get("component") or "",
+                             valign=Gtk.Align.CENTER, use_markup=False)
+            name.add_css_class("dim-label")
+            suffix = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
+            suffix.append(name)
+            if number in clashing:
+                warn = Gtk.Image(icon_name="dialog-warning-symbolic",
+                                 valign=Gtk.Align.CENTER)
+                warn.add_css_class("warning")
+                warn.set_tooltip_text("another project claims this port too")
+                suffix.append(warn)
+            child.add_suffix(suffix)
+            row.add_row(child)
+        self._port_rows.append(row)
+        return row
+
+    def _render_plugins(self, state: dict | None, problem: str) -> None:
+        self._clear(self._plugins, self._plugin_rows)
+
+        if problem:
+            self._message(self._plugins, self._plugin_rows, "Could not list plugins", problem)
+            return
+
+        rows = plugin_rows(state)
+        if not rows:
+            # Deliberately not the CLI's onboarding text, which is a shell
+            # lesson. What a person can act on from a window is that something
+            # ships with pitcrew and what it would tell them.
+            self._message(
+                self._plugins, self._plugin_rows, "No plugins loaded",
+                "A plugin adds checks to Diagnostics. One ships with pitcrew: "
+                "ext/jvm reports where a JVM's memory went and what is going to kill it.")
+            return
+
+        for plugin in rows:
+            row = Adw.ActionRow(title=plugin["file"], use_markup=False,
+                                subtitle=plugin["summary"])
+            row.set_subtitle_lines(2)
+            # A file that loaded and registered nothing looks installed and does
+            # nothing. That is the one state worth an icon.
+            if plugin["empty"]:
+                icon = Gtk.Image(icon_name="dialog-warning-symbolic",
+                                 valign=Gtk.Align.CENTER)
+                icon.add_css_class("warning")
+                icon.set_tooltip_text("loaded, but registered no checks")
+            else:
+                icon = Gtk.Image(icon_name="object-select-symbolic",
+                                 valign=Gtk.Align.CENTER)
+                icon.add_css_class("success")
+            row.add_prefix(icon)
+            self._plugins.add(row)
+            self._plugin_rows.append(row)
+
+    @staticmethod
+    def _message(group, rows: list, title: str, subtitle: str) -> None:
+        row = Adw.ActionRow(title=title, use_markup=False, subtitle=subtitle)
+        row.set_subtitle_lines(0)
+        group.add(row)
+        rows.append(row)
 
     def _copy(self, text: str) -> None:
         self.get_clipboard().set(text)

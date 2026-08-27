@@ -1,0 +1,3 @@
+Metaspace        used 87K, committed 320K, reserved 1114112K
+ class space     used 5K, committed 128K, reserved 1048576K
+

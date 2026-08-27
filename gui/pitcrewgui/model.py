@@ -71,10 +71,24 @@ def nice_max(observed: float, floor: float) -> float:
 def plain(text: str) -> str:
     """Escape text destined for a widget that parses Pango markup.
 
-    AdwPreferencesRow:use-markup covers the TITLE only — subtitles, and group
-    titles and descriptions, are parsed regardless. Paths and app names come out
-    of a config file, so a checkout at /srv/a&b renders as nothing at all
-    (with a warning on stderr nobody is reading) unless it is escaped.
+    For anything that IS parsed. Paths and app names come out of a config file,
+    so a checkout at /srv/a&b renders as nothing at all — with a warning on
+    stderr nobody is reading — unless it is escaped.
+
+    What is parsed, verified on this libadwaita rather than assumed:
+
+      - AdwPreferencesGroup titles and descriptions: ALWAYS. No use-markup
+        property exists to turn it off, so a value interpolated into one has to
+        come through here.
+      - AdwActionRow / AdwExpanderRow title AND subtitle: only when use-markup
+        is true, which is the default.
+
+    So a row built with `use_markup=False` must NOT be escaped: both its title
+    and its subtitle are taken literally, and an apostrophe put through here
+    shows up on screen as `&apos;`. An earlier version of this docstring said
+    use-markup covered the title only and that subtitles were parsed
+    regardless; it was wrong, and the Tools dialog rendered `JVM&apos;s` in a
+    subtitle until it was checked.
     """
     return GLib.markup_escape_text(text)
 
@@ -385,3 +399,94 @@ def share_slices(triples, min_share: float = SHARE_MIN,
         head.append(ShareSlice(OTHER_NAME, sum(row.value for row in tail), 0.0,
                                tuple(row.name for row in tail)))
     return head, total
+
+
+# ── the Tools dialog ────────────────────────────────────────────────────────
+#
+# Ports and plugins used to reach the window as the CLI's own TEXT, dropped into
+# a monospace box. That is a terminal pane wearing a dialog: lines wrapped mid
+# token, the port clashes — the only actionable thing in it — buried at the
+# bottom of a 180px scroller inside a scrolling page, and the plugins box
+# teaching `diag_register`, which is something you type in a shell, in a window
+# that has no shell.
+#
+# These turn the two JSON payloads into rows. Pure, so they are tested here
+# rather than by looking at a screenshot.
+
+def port_conflicts(state: dict | None) -> list[dict]:
+    """Ports that two registered projects both claim, listed once each.
+
+    A clash is symmetric and `pitcrew projects --json` reports it from BOTH
+    sides — project A names B, and B names A — so a straight read shows every
+    conflict twice and the count is double what it is. Deduped on the unordered
+    pair, because "A vs B" and "B vs A" are one fact.
+
+    This matters more than it looks: pitcrew decides a component is up from its
+    port, so two projects sharing one means each reports the other's services as
+    its own. It is the reason this dialog exists, and it used to be the last
+    thing in a box nobody scrolled.
+    """
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for project in (state or {}).get("projects") or []:
+        name = project.get("name") or "?"
+        for clash in project.get("clashes") or []:
+            mine = f"{name}/{clash.get('component') or '?'}"
+            theirs = f"{clash.get('project') or '?'}/{clash.get('theirs') or '?'}"
+            port = clash.get("port")
+            key = (port, *sorted((mine, theirs)))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"port": port, "a": mine, "b": theirs})
+    return sorted(out, key=lambda c: c["port"] or 0)
+
+
+def port_rows(state: dict | None) -> list[dict]:
+    """Every registered project and the ports it claims, ports ascending.
+
+    `clashing` is the set of this project's ports that are contested, so a row
+    can carry the warning next to the port itself instead of making someone
+    cross-reference two lists.
+    """
+    out: list[dict] = []
+    for project in (state or {}).get("projects") or []:
+        ports = sorted((project.get("ports") or []), key=lambda p: p.get("port") or 0)
+        out.append({
+            "name": project.get("name") or "?",
+            "current": bool(project.get("current")),
+            "ports": ports,
+            "clashing": {c.get("port") for c in (project.get("clashes") or [])},
+        })
+    return out
+
+
+def plugin_rows(state: dict | None) -> list[dict]:
+    """Loaded plugin files, and what each one actually registered.
+
+    `summary` is deliberately the CLI's own judgement rather than a count: a
+    plugin that loaded but registered NOTHING is the interesting case — it looks
+    installed and does nothing — and "0 checks" states that far more quietly
+    than saying it.
+    """
+    out: list[dict] = []
+    for plugin in (state or {}).get("plugins") or []:
+        checks = plugin.get("checks") or []
+        names = [c.get("name") or "?" for c in checks]
+        slow = [c.get("name") or "?" for c in checks if c.get("slow")]
+        if not names:
+            summary = "registered no checks"
+        else:
+            # The tier is why a check can be absent from the dashboard and
+            # present in `diagnose`, so it is said on the row rather than
+            # left for someone to wonder about.
+            summary = ", ".join(
+                f"{n} (on demand)" if n in slow else n for n in names)
+        out.append({
+            "file": plugin.get("file") or "?",
+            "checks": names,
+            "slow": slow,
+            "empty": not names,
+            "summary": summary,
+        })
+    return out

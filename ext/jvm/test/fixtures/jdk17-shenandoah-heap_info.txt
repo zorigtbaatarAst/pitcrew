@@ -1,0 +1,3 @@
+Shenandoah Heap
+ 2048M total, 1024M committed, 512M used
+ 256 x 8192K regions

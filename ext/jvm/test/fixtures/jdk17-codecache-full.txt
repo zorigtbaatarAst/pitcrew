@@ -1,0 +1,4 @@
+CodeHeap 'non-profiled nmethods': size=119168Kb used=118900Kb max_used=119000Kb free=268Kb
+CodeCache: size=245764Kb, used=244900Kb, max_used=245000Kb, free=864Kb
+ total_blobs=98000, nmethods=94000, adapters=3600, full_count=3
+Compilation: disabled (not enough contiguous free space left), stopped_count=3, restarted_count=0

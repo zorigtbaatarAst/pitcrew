@@ -212,7 +212,10 @@ lib/16-output.sh   `status --json`, `json --watch`, `wait`, `ps`, `urls`
 lib/17-limits.sh   per-component RAM caps (machine-local overrides)
 lib/19-diag.sh     diagnostics: the check registry, the core checks, `diagnose`
 lib/20-plugins.sh  finding and attributing plugins (they are SOURCED by bin/)
-examples/plugins/  worked plugins; jvm.sh is the reference one
+ext/jvm/           pitcrew-jvm — a standalone JVM memory tool, and the ~40-line
+                   plugin that feeds it the caps pitcrew launched things under.
+                   parse.sh/rules.sh pure and fixture-tested; probe.sh the only
+                   file that forks or knows the OS
 gui/pitcrewgui/    GTK4 + libadwaita desktop app, consumes `json --watch`
                    model.py pure logic · ansi.py log colour · style.py the CSS
 themes/            colour palettes
@@ -345,6 +348,36 @@ Rules if you work here:
   snapshot is the smallest honest version of the boundary; anything more is
   speculative architecture.
 
+### The bundled plugin, and the trap it fell into
+
+`ext/jvm` is the worked example. Read `ext/jvm/README.md` before touching it;
+two things there are expensive to rediscover.
+
+**jcmd output is not stable across JDKs, and it changes SILENTLY.** `GC.heap_info`
+printed a `Metaspace` line up to JDK 11 and does not from 17. G1 changed its
+heap line from `total 2097152K, used ...` to `total reserved 524288K, committed
+..., used ...` in the same window. The plugin that used to live in
+`examples/plugins/` read the old shapes, so on any modern JDK it reported
+metaspace as **0** — no error, just a smaller number flowing into the arithmetic
+that predicts an OOM kill, in the safe-looking direction, for two releases.
+Hence: every parser returns `-1` for "could not read" and never `0`, every rule
+guards with `jvm_known`, and every shape is pinned by a real captured fixture in
+`ext/jvm/test/fixtures` (JDK 8/17/26 × G1/Parallel/Serial/ZGC/Shenandoah).
+
+**Some JVM numbers do not fit in a shell.** `MaxMetaspaceSize` defaults to
+`18446744073709551615`. Bash does not reject it — it truncates it and carries
+on, so an unlimited metaspace reads as a ceiling nothing ever reaches and the
+check silently never fires. It is clamped to `-1` inside awk, before a digit
+reaches shell arithmetic. `memory.max` gets the same treatment for `max` and for
+cgroup v1's huge sentinel.
+
+Two smaller ones worth knowing: NMT reports **committed** address space while
+`/proc` reports **resident** pages, so "accounted minus RSS" is routinely
+negative on a healthy JVM and only the positive direction is ever a finding;
+and `jcmd` waits for a safepoint, so every call is bounded by hand
+(`_jvm_run`) because `timeout` is GNU-only and one sick JVM would otherwise
+hang `pitcrew diagnose`.
+
 Feature-specific intelligence belongs in a check, not spread through core. If
 you find yourself adding an "is this bad" judgement to the renderer, the JSON
 writer or the Python, it belongs here instead.
@@ -428,9 +461,11 @@ bash-3.2 guard against real `/bin/bash` on macOS.
 
 - `human()` renders 0 bytes as `0M`, so a machine with no swap in use reads
   `SWP 0M / 7.9G`. Harmless, but it is not what anyone would write by hand.
-- The desktop app's process view is still a flat expandable tree. The JVM
-  plugin can see a heap/metaspace/native breakdown but has nowhere to render
-  it — findings are the only channel a plugin has today.
+- The desktop app's process view is still a flat expandable tree. `ext/jvm`
+  produces a full heap/metaspace/code-cache/native breakdown and has nowhere to
+  render it — findings are the only channel a plugin has today. The data is
+  already there in `pitcrew-jvm --json`; what is missing is a way for a plugin
+  to put a panel on the process view.
 - `diag_check_errors` fires on any log line matching `PITCREW_ERROR_PATTERN`,
   which for a chatty framework is noisy. There is no per-component pattern.
 - `components[].processes` ships on every frame, capped at 12 per component.

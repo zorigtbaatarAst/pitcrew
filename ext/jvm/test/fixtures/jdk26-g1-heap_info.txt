@@ -1,0 +1,2 @@
+garbage-first heap   total reserved 524288K, committed 10240K, used 1430K [0x00000000e0000000, 0x0000000100000000)
+ region size 1M, 1 eden (1M), 0 survivor (0M), 2 old (2M), 0 humongous (0M), 7 free (7M)
