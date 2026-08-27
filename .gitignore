@@ -2,3 +2,9 @@
 *.swp
 .DS_Store
 __pycache__/
+
+# Rust build output (belongs to the rust-rewrite branch, never to git)
+/target/
+
+# Tool caches
+.ruff_cache/
