@@ -58,6 +58,19 @@ field is removed or changes meaning.
   check appears in `diagnose` and not on the dashboard.
 
 ### Fixed
+- **The welcome page showed "Nothing to show" and no reason.** When a project's
+  config cannot be read the page prints the CLI's own sentence — and the one it
+  actually emits is `no config here — write a pitcrew.yaml, or: pitcrew init
+  <dir>`. `AdwStatusPage:description` parses Pango markup and has no
+  `use-markup` property to stop it, so that `<dir>` failed to parse and the
+  description rendered **empty**. The only screen whose job is explaining why
+  nothing is visible was explaining nothing. It is escaped now as well as
+  ANSI-stripped, which are two different jobs.
+
+  The test that covered this asserted the raw `<dir>` came back out of
+  `get_description()`, and passed the whole time: the stored property is
+  identical whether the widget rendered the line or gave up on it.
+
 - **Text in the desktop app was double-escaped wherever a row opted out of
   markup.** `use_markup=False` means a string is taken literally, so escaping it
   first puts `&apos;` on the screen — the Tools window rendered "where a
@@ -65,9 +78,13 @@ field is removed or changes meaning.
   `model.plain`'s docstring ("use-markup covers the TITLE only — subtitles are
   parsed regardless"), which is what the code was following. Checked against
   this libadwaita for `AdwActionRow`, `AdwExpanderRow` and `GtkLabel`, corrected
-  in the docstring, and pinned by a test. Group titles and descriptions are the
-  genuine exception — they have no `use-markup` property, are always parsed, and
-  do still need escaping.
+  in the docstring, and pinned by a test. 23 call sites across `dialogs.py` and
+  `window.py` were escaping literal text, two of them interpolating a filesystem
+  path — the `/srv/a&b` case the docstring itself cites, with the rule backwards.
+
+  Which widgets parse markup is now a table in `model.plain` and in AGENTS.md,
+  established by probing libadwaita rather than from the docs, because it is not
+  the intuitive answer and neither direction of getting it wrong raises.
 
 - **The bundled JVM plugin is now a tool, and its parsers are pinned to real
   JDK output.** `examples/plugins/jvm.sh` is replaced by `ext/jvm`.

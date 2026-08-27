@@ -69,26 +69,35 @@ def nice_max(observed: float, floor: float) -> float:
     return max(floor, (int(target / step) + 1) * step)
 
 def plain(text: str) -> str:
-    """Escape text destined for a widget that parses Pango markup.
+    """Escape text for a widget that PARSES Pango markup — and only those.
 
-    For anything that IS parsed. Paths and app names come out of a config file,
-    so a checkout at /srv/a&b renders as nothing at all — with a warning on
-    stderr nobody is reading — unless it is escaped.
+    Which widgets those are was established by probing this libadwaita, not by
+    reading the docs, because getting it backwards breaks in both directions
+    and neither one raises:
 
-    What is parsed, verified on this libadwaita rather than assumed:
+      parses markup, so escape                 literal, so do NOT escape
+      ────────────────────────────             ─────────────────────────
+      AdwStatusPage:description                AdwStatusPage:title
+      AdwPreferencesGroup:title                AdwBanner:title
+      AdwPreferencesGroup:description          AdwToast:title
+      row title/subtitle at the default        GtkLabel:label
+        use-markup (true)                      any row with use_markup=False
+                                                 — title AND subtitle
 
-      - AdwPreferencesGroup titles and descriptions: ALWAYS. No use-markup
-        property exists to turn it off, so a value interpolated into one has to
-        come through here.
-      - AdwActionRow / AdwExpanderRow title AND subtitle: only when use-markup
-        is true, which is the default.
+    Escaping something literal shows the entity: a subtitle put through here
+    reads "JVM&apos;s memory" on screen. NOT escaping something parsed is
+    worse, because invalid markup makes Pango give up and the widget renders
+    EMPTY — a config error containing "<dir>" left the welcome page saying
+    "Nothing to show" with no reason under it.
 
-    So a row built with `use_markup=False` must NOT be escaped: both its title
-    and its subtitle are taken literally, and an apostrophe put through here
-    shows up on screen as `&apos;`. An earlier version of this docstring said
-    use-markup covered the title only and that subtitles were parsed
-    regardless; it was wrong, and the Tools dialog rendered `JVM&apos;s` in a
-    subtitle until it was checked.
+    So the rule is per widget, and `use_markup=False` is the one that decides
+    it for rows. Paths and app names come out of a config file and a checkout
+    at /srv/a&b is the case that finds every mistake here.
+
+    Note: constructing a row with use_markup=False AND a subtitle containing
+    "<" still logs a Pango warning, because GObject applies `subtitle` before
+    `use-markup`. The row renders literally and correctly; only the warning is
+    spurious.
     """
     return GLib.markup_escape_text(text)
 

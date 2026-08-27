@@ -6,7 +6,7 @@ from pathlib import Path
 
 from gi.repository import Adw, GLib, Gtk
 
-from .model import human_bytes, plain, plugin_rows, port_conflicts, port_rows
+from .model import human_bytes, plugin_rows, port_conflicts, port_rows
 from .registry import project_config_path
 from .runner import Runner, bash_syntax_error, yaml_config_error
 from .widgets import OutputView, ProcessTree, code_view, human_age
@@ -78,7 +78,7 @@ class InitDialog(Adw.Dialog):
         if folder is None or folder.get_path() is None:
             return
         self._folder = Path(folder.get_path())
-        self._folder_row.set_subtitle(plain(str(self._folder)))
+        self._folder_row.set_subtitle(str(self._folder))
         if not self._name_row.get_text():
             self._name_row.set_text(self._folder.name)
         self._run_button.set_sensitive(True)
@@ -878,12 +878,12 @@ class DetailDialog(Adw.Dialog):
 
     @staticmethod
     def _row(title: str, value: str) -> Adw.ActionRow:
-        return Adw.ActionRow(title=title, subtitle=plain(value), use_markup=False,
+        return Adw.ActionRow(title=title, subtitle=value, use_markup=False,
                              subtitle_selectable=True)
 
     @staticmethod
     def _link(title: str, url: str) -> Adw.ActionRow:
-        row = Adw.ActionRow(title=title, subtitle=plain(url), use_markup=False,
+        row = Adw.ActionRow(title=title, subtitle=url, use_markup=False,
                             activatable=True, subtitle_selectable=True)
         row.add_suffix(Gtk.Image.new_from_icon_name("web-browser-symbolic"))
         row.connect("activated", lambda _r: Gtk.UriLauncher.new(url).launch(None, None, None, None))
@@ -916,7 +916,7 @@ class DoctorDialog(Adw.Dialog):
         self._page.remove(self._group)
         if state is None:
             self._group = Adw.PreferencesGroup(title="Could not run doctor")
-            self._group.add(Adw.ActionRow(title=plain(problem), use_markup=False))
+            self._group.add(Adw.ActionRow(title=problem, use_markup=False))
             self._page.add(self._group)
             return
 
@@ -962,16 +962,16 @@ class DoctorDialog(Adw.Dialog):
 
     @staticmethod
     def _fact(title: str, value, subtitle: str = "") -> Adw.ActionRow:
-        row = Adw.ActionRow(title=title, subtitle=plain(subtitle), use_markup=False)
-        label = Gtk.Label(label=plain(str(value)), valign=Gtk.Align.CENTER)
+        row = Adw.ActionRow(title=title, subtitle=subtitle, use_markup=False)
+        label = Gtk.Label(label=str(value), valign=Gtk.Align.CENTER)
         label.add_css_class("dim-label")
         row.add_suffix(label)
         return row
 
     @staticmethod
     def _verdict(title: str, ok, why: str) -> Adw.ActionRow:
-        row = Adw.ActionRow(title=plain(title), use_markup=False,
-                            subtitle=plain("" if ok else why))
+        row = Adw.ActionRow(title=title, use_markup=False,
+                            subtitle="" if ok else why)
         icon = Gtk.Image(icon_name="object-select-symbolic" if ok else "dialog-warning-symbolic",
                          valign=Gtk.Align.CENTER)
         icon.add_css_class("success" if ok else "warning")
@@ -1315,8 +1315,8 @@ class ProfilesDialog(Adw.Dialog):
         if profile.get("limit"):
             bits.append(f"commits {human_bytes(profile['limit'])}")
 
-        row = Adw.ExpanderRow(title=plain(f"@{name}"), use_markup=False,
-                              subtitle=plain(" · ".join(bits)))
+        row = Adw.ExpanderRow(title=f"@{name}", use_markup=False,
+                              subtitle=" · ".join(bits))
         box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         start = Gtk.Button(icon_name="media-playback-start-symbolic",
                            tooltip_text=f"Start @{name}")
@@ -1331,17 +1331,17 @@ class ProfilesDialog(Adw.Dialog):
         row.add_suffix(box)
 
         saved = " ".join(profile.get("targets") or [])
-        row.add_row(Adw.ActionRow(title="Saved as", subtitle=plain(saved) or "—",
+        row.add_row(Adw.ActionRow(title="Saved as", subtitle=saved or "—",
                                   use_markup=False, css_classes=["dim-label"]))
         for component in components:
-            row.add_row(Adw.ActionRow(title=plain(component), use_markup=False,
+            row.add_row(Adw.ActionRow(title=component, use_markup=False,
                                       css_classes=["dim-label"]))
         for word in missing:
             # `pitcrew start @name` dies on a target that no longer exists, so
             # this is not a cosmetic note — the profile is unusable until it is
             # saved again.
             gone = Adw.ActionRow(
-                title=plain(f"{word} no longer exists"), use_markup=False,
+                title=f"{word} no longer exists", use_markup=False,
                 subtitle="This profile cannot start until it is saved again")
             gone.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic",
                                       valign=Gtk.Align.CENTER))

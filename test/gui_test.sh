@@ -907,8 +907,19 @@ print(w._welcome_button.get_visible())
 test_a_failure_before_the_first_frame_uses_the_clis_own_words() {
   gui_available || return 0
   # pitcrew knows why better than the GUI does, and it is the same sentence the
-  # terminal would have printed. The `<dir>` in it is why the status page must
-  # not parse markup either.
+  # terminal would have printed.
+  #
+  # This test used to assert the RAW `<dir>` came back out, on the belief that
+  # "the status page is text, not markup". It is not: AdwStatusPage:description
+  # parses markup and has no use-markup property to stop it, so the raw
+  # sentence failed to parse and the description rendered EMPTY — the page said
+  # "Nothing to show" and gave no reason under it, which is the only thing it
+  # exists to do. The old assertion passed anyway because get_description()
+  # hands back whatever was stored, which cannot tell a rendered line from a
+  # blank one.
+  #
+  # So what is pinned now is that the sentence is ESCAPED on the way in, which
+  # is what makes `<dir>` appear on screen.
   # With a project registered: "no projects at all" takes precedence over any
   # message, because "Add a project" is more actionable than a raw error, and
   # this test is about the OTHER branch.
@@ -925,8 +936,10 @@ print(w._welcome_page.get_description())
 ")
   assert_eq "$(printf '%s' "$out" | sed -n 1p)" "welcome" "the whole window, not a strip"
   assert_eq "$(printf '%s' "$out" | sed -n 2p)" "Nothing to show" ""
-  assert_match "$(printf '%s' "$out" | sed -n 3p)" "pitcrew init <dir>" \
-    "the angle brackets survive — the status page is text, not markup"
+  assert_match "$(printf '%s' "$out" | sed -n 3p)" "pitcrew init &lt;dir&gt;" \
+    "escaped, so the angle brackets survive to the screen instead of blanking it"
+  assert_not_match "$(printf '%s' "$out" | sed -n 3p)" "pitcrew init <dir>" \
+    "raw would fail to parse and render nothing at all"
 }
 
 test_a_stream_that_drops_later_keeps_the_last_known_state() {
@@ -2961,22 +2974,61 @@ print(rows[0]['empty'], rows[1]['empty'])
   assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 4p)")" "False False" "the others are not"
 }
 
-test_a_row_that_does_not_parse_markup_is_not_escaped() {
-  # `use_markup=False` means the string is taken LITERALLY, so escaping it puts
-  # `&apos;` on screen. Verified against this libadwaita for AdwActionRow,
-  # AdwExpanderRow and GtkLabel alike, after the Tools dialog shipped a subtitle
-  # reading "JVM&apos;s memory".
+test_only_the_widgets_that_parse_markup_are_escaped() {
+  # Escaping is per WIDGET, and getting it wrong is silent in both directions:
+  # escaping something literal shows `&apos;` on screen, and NOT escaping
+  # something parsed makes Pango give up and render the widget EMPTY.
+  #
+  # Which is which was probed against this libadwaita — see model.plain. The
+  # short version: a row built with use_markup=False is literal, title AND
+  # subtitle; AdwPreferencesGroup titles/descriptions and
+  # AdwStatusPage:description are always parsed and have no way to opt out.
   #
   # Grepped rather than rendered, the same way the argv rule is: this is a
-  # property of the SOURCE, and a screenshot test would only catch the strings
-  # that happen to contain a quote.
-  local body
-  body=$(sed -n '/^class ToolsDialog/,/^class ProfilesDialog/p' "$PITCREW_DIR/gui/pitcrewgui/dialogs.py")
-  local bad
-  bad=$(printf '%s\n' "$body" | grep -n 'title=plain(\|subtitle=plain(\|label=plain(' || true)
-  assert_empty "$bad" "no escaped text on rows built with use_markup=False"
-  # And the group descriptions, which ARE always parsed, still exist to escape.
-  assert_match "$body" 'description=' "group descriptions are still set"
+  # property of the source, and a render test would only catch the strings that
+  # happen to contain a special character today.
+  local sites bad
+  sites=$(grep -rn 'plain(' "$PITCREW_DIR"/gui/pitcrewgui/*.py \
+          | grep -v 'ansi\.plain' | grep -v 'def plain' | grep -v '/model\.py:' || true)
+  bad=$(printf '%s\n' "$sites" | grep -v 'PreferencesGroup\|set_description' || true)
+  assert_empty "$bad" "model.plain is only used on widgets that parse markup"
+}
+
+test_the_welcome_page_escapes_the_cli_sentence_it_shows() {
+  # AdwStatusPage:description parses markup and cannot be told not to. The one
+  # sentence the CLI actually emits here is
+  #   no config here — write a pitcrew.yaml, or: pitcrew init <dir>
+  # and that `<dir>` made Pango fail, so the description rendered EMPTY: the
+  # page said "Nothing to show" and gave no reason, which is the only thing it
+  # is there to do.
+  #
+  # ansi.plain strips ESCAPES; it does not escape markup. Both are needed, and
+  # they are two different jobs.
+  local line
+  line=$(grep -n 'welcome_page.set_description' "$PITCREW_DIR/gui/pitcrewgui/window.py" \
+         | grep 'ansi.plain' || true)
+  assert_match "$line" 'plain\(ansi\.plain\(' "the CLI sentence is escaped as well as stripped"
+}
+
+test_markup_escaping_behaves_the_way_model_plain_documents_it() {
+  gui_available || return 0
+  # The table in model.plain, checked rather than trusted. A row that opts out
+  # of markup must STORE what it was given: if it stored an escaped string it
+  # would display the entities.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw, GLib
+from pitcrewgui.model import plain
+raw = \"a & b\"
+r = Adw.ActionRow(); r.set_use_markup(False); r.set_subtitle(raw)
+print(r.get_subtitle() == raw)
+r2 = Adw.ActionRow(); r2.set_use_markup(False); r2.set_subtitle(plain(raw))
+print(r2.get_subtitle() == raw)
+print(plain(raw))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "True" "a literal row keeps what it is given"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "False" \
+    "and an escaped string stays escaped, which is what showed on screen"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 3p)")" "a &amp; b" "plain still escapes"
 }
 
 run_tests

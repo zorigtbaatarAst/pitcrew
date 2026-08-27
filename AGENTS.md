@@ -140,6 +140,29 @@ attribute, and most are pinned by a test.
    about — everything else should be an Adwaita style class so the app follows
    the user's theme and accent.
 
+   **Escaping is per widget, and wrong in either direction is silent.** Which
+   widgets parse Pango markup was established by probing libadwaita, not from
+   the docs, and the answer is not the intuitive one:
+
+   | parses markup — escape with `model.plain` | literal — do NOT escape |
+   |---|---|
+   | `AdwStatusPage:description` | `AdwStatusPage:title` |
+   | `AdwPreferencesGroup:title` / `:description` | `AdwBanner:title`, `AdwToast:title` |
+   | a row's title/subtitle at the default use-markup | `GtkLabel:label` |
+   | | any row with `use_markup=False` — title AND subtitle |
+
+   Escaping something literal puts the entity on screen: the Tools dialog read
+   `JVM&apos;s memory`. Not escaping something parsed is worse — Pango gives up
+   and the widget renders **empty**, which is how the welcome page came to show
+   "Nothing to show" with no reason under it for a config error containing
+   `<dir>`. Both failures were invisible to `get_description()`/`get_subtitle()`,
+   so the test that covered it asserted the stored string and passed throughout.
+   `test_only_the_widgets_that_parse_markup_are_escaped` greps for it now.
+
+   (Constructing a row with `use_markup=False` and a subtitle containing `<`
+   still logs a Pango warning, because GObject applies `subtitle` before
+   `use-markup`. The row renders correctly; only the warning is spurious.)
+
    Colour means **one** thing: `model.RAMP` plus `meter_level()` for resources,
    and `STATE_STYLE` / `VERDICT_STYLE` draw from the same ramp. Do not
    introduce a second palette; the last one (stock LevelBar orange) made a
@@ -154,8 +177,8 @@ attribute, and most are pinned by a test.
    pages.** Three situations arrive there and want different words: nothing
    registered at all (the only case with a button — `pitcrew init` is the only
    thing that helps), a project whose config cannot be read (the CLI's own
-   sentence, which is why that page must not parse markup either — it contains
-   `<dir>`), and the fraction of a second before the first frame. It is swapped
+   sentence, which contains `<dir>` — see the escaping rule below), and the
+   fraction of a second before the first frame. It is swapped
    out on that frame and **never swapped back**: a stream that drops later has
    a banner AND a window full of the last known state, which is more use than a
    status page that throws it away.

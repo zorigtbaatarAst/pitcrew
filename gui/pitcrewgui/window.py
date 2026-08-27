@@ -670,7 +670,15 @@ class Window(Adw.ApplicationWindow):
             self._welcome_page.set_title("Nothing to show")
             # The CLI's own words: it knows why better than this does, and it
             # is the same sentence the terminal would have printed.
-            self._welcome_page.set_description(ansi.plain(message))
+            #
+            # Escaped as well as ANSI-stripped, and the two are different jobs.
+            # AdwStatusPage:description PARSES markup and has no use-markup
+            # property to turn that off, so the one sentence the CLI actually
+            # emits here — "no config here — write a pitcrew.yaml, or:
+            # pitcrew init <dir>" — failed to parse and the description
+            # rendered EMPTY. The page then said "Nothing to show" and gave no
+            # reason, which is the one thing this screen exists to do.
+            self._welcome_page.set_description(plain(ansi.plain(message)))
             self._welcome_button.set_visible(True)
 
     def _build_verdict_banner(self) -> None:
@@ -899,7 +907,7 @@ class Window(Adw.ApplicationWindow):
                 bits.append(f"quiet {human_age(idle)}")
             if comp.get("since") and self._last_at:
                 bits.append(f"up {human_age(self._last_at - comp['since'])}")
-            row = Adw.ActionRow(title=plain(name), subtitle="   ·   ".join(bits),
+            row = Adw.ActionRow(title=name, subtitle="   ·   ".join(bits),
                                 use_markup=False)
             row.add_prefix(Dot(STATE_STYLE["up"][1]))
             self._recover_group.add(row)
@@ -939,7 +947,7 @@ class Window(Adw.ApplicationWindow):
         by_name = {c["name"]: c for c in components}
         for name in names:
             comp = by_name.get(name, {})
-            row = Adw.ActionRow(title=plain(name), use_markup=False,
+            row = Adw.ActionRow(title=name, use_markup=False,
                                 subtitle=f"{human_bytes(comp.get('rss'))}   ·   "
                                          "protected in this project's config")
             row.add_prefix(Gtk.Image(icon_name="changes-prevent-symbolic",
@@ -999,7 +1007,7 @@ class Window(Adw.ApplicationWindow):
         # thing instantly, and an outlier is visible without reading.
         biggest = rows[0][1] if rows else 1.0
         for name, value, share in rows:
-            row = Adw.ActionRow(title=plain(name), use_markup=False)
+            row = Adw.ActionRow(title=name, use_markup=False)
             bar = Bar()
             bar.set_size_request(140, -1)
             bar.set(value / biggest if biggest else 0, RAMP["calm"])
@@ -1202,7 +1210,7 @@ class Window(Adw.ApplicationWindow):
         projects = (state or {}).get("projects") or []
         if not projects:
             row = Adw.ActionRow(
-                title=plain(problem) if problem else "No projects yet",
+                title=problem or "No projects yet",
                 use_markup=False,
                 subtitle="Add one to have pitcrew look at a checkout and write its config")
             self._projects_group.add(row)
@@ -1214,7 +1222,7 @@ class Window(Adw.ApplicationWindow):
 
     def _project_row(self, project: dict) -> Adw.ActionRow:
         name = project.get("name", "?")
-        row = Adw.ActionRow(title=plain(name), use_markup=False,
+        row = Adw.ActionRow(title=name, use_markup=False,
                             subtitle=self._project_subtitle(project))
         row.set_subtitle_lines(2)
 
@@ -1260,7 +1268,7 @@ class Window(Adw.ApplicationWindow):
     @staticmethod
     def _project_subtitle(project: dict) -> str:
         if not project.get("exists", True):
-            return plain(f"{project.get('root', '?')}   ·   that directory is gone")
+            return f"{project.get('root', '?')}   ·   that directory is gone"
         bits = []
         running = project.get("running") or 0
         bits.append(f"{running} running" if running else "idle")
@@ -1274,7 +1282,7 @@ class Window(Adw.ApplicationWindow):
         if clashes:
             others = sorted({c["project"] for c in clashes})
             bits.append(f"shares a port with {', '.join(others)}")
-        return plain(f"{project.get('root', '?')}\n" + "   ·   ".join(bits))
+        return f"{project.get('root', '?')}\n" + "   ·   ".join(bits)
 
     @staticmethod
     def _project_button_for(icon: str, tooltip: str, action) -> Gtk.Button:
@@ -1393,8 +1401,8 @@ class Window(Adw.ApplicationWindow):
         if comps:
             bits.append(", ".join(comps[:4]) + ("…" if len(comps) > 4 else ""))
 
-        row = Adw.ActionRow(title=plain(f"@{name}"), use_markup=False,
-                            subtitle=plain(" · ".join(bits)))
+        row = Adw.ActionRow(title=f"@{name}", use_markup=False,
+                            subtitle=" · ".join(bits))
         if index < 9:
             row.set_tooltip_text(f"Alt+{index + 1}")
 
@@ -1407,7 +1415,7 @@ class Window(Adw.ApplicationWindow):
             warn.set_tooltip_text(f"{', '.join(missing)} no longer exists — "
                                   "this profile will not start")
             row.add_prefix(warn)
-            row.set_subtitle(plain(" · ".join([*bits, f"⚠ {', '.join(missing)} missing"])))
+            row.set_subtitle(" · ".join([*bits, f"⚠ {', '.join(missing)} missing"]))
 
         box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         start = Gtk.Button(icon_name="media-playback-start-symbolic",
