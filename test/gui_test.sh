@@ -769,6 +769,60 @@ print(w._stack.get_hhomogeneous(), w._body.get_hhomogeneous())
   assert_eq "$out" "False False" "each page is measured on its own"
 }
 
+test_every_row_ends_its_columns_in_the_same_place() {
+  gui_display || return 0
+  # Every column on a row is a fixed width so the table can be scanned rather
+  # than read — and then the strip of icon buttons at the END of the row was
+  # not, and the columns are packed from that end. So a row with an error to
+  # report carried one more button than the row under it and wore all eight of
+  # its figures a button's width out of line; a stopped row (start, and no
+  # stop or restart) was two buttons out from a running one.
+  #
+  # Measured, not eyeballed: the strips have to come back the same width, in
+  # every mix of states, with the header among them.
+  local out; out=$(_settings_drive "
+from gi.repository import Adw, Gtk
+Adw.init()
+w = pgui.Window('/bin/true', 'demo', Settings(pathlib.Path('$(mktemp -d)/gui')))
+w.present()
+
+def comp(name, state, errors=0, url=''):
+    return {'name': name, 'app': name[3:], 'role': name[:2], 'state': state,
+            'rss': 1, 'limit': 2, 'cpu': 0, 'port': 8082, 'since': 900,
+            'errors': errors, 'url': url, 'processes': [], 'restarts': 0}
+
+def frame(comps):
+    w._on_state({'components': comps, 'at': 1000, 'logDir': '', 'errorPattern': '',
+      'machine': {'memTotal': 1, 'memUsed': 0, 'cpuPercent': 0, 'swapTotal': 0, 'swapUsed': 0},
+      'health': {'verdict': 'ok', 'headline': '', 'deep': False,
+                 'counts': {'crit': 0, 'warn': 0, 'info': 0}, 'findings': [],
+                 'recoverable': {'components': [], 'protected': [], 'bytes': 0}},
+      'summary': {'up': 0, 'starting': 0, 'crashed': 0, 'external': 0, 'down': 0},
+      'deps': [], 'profiles': []})
+    widths = {r.action_slot.measure(Gtk.Orientation.HORIZONTAL, -1)[1]
+              for r in w._rows.values()}
+    widths.add(w._comp_header.action_slot.measure(Gtk.Orientation.HORIZONTAL, -1)[1])
+    return len(widths)
+
+# up-with-errors beside plain up: the pair from the bug report.
+print(frame([comp('be-a', 'up', 3, 'http://a'), comp('fe-a', 'up', 0, 'http://a')]))
+# a booting row (spinner) beside a stopped one (start, no stop or restart)
+# and a crashed one — every button that comes and goes, at once.
+print(frame([comp('be-b', 'starting', 3), comp('fe-b', 'down'), comp('be-c', 'crashed')]))
+# Rebuilt lists must not accumulate: a size group HOLDS its widgets, so rows
+# left in it are rows that never go away and never stop being sized against.
+for _ in range(5):
+    frame([comp('be-a', 'up', 3, 'http://a')])
+    frame([comp('be-a', 'up', 3, 'http://a'), comp('fe-a', 'down')])
+print(frame([comp('be-a', 'up', 3, 'http://a'), comp('fe-a', 'down')]))
+print(len(w._rows))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1" "one width for an error row, a plain row and the header"
+  assert_eq "$(printf '%s' "$out" | sed -n 2p)" "1" "and for booting, stopped and crashed together"
+  assert_eq "$(printf '%s' "$out" | sed -n 3p)" "1" "still one width after ten rebuilds"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "2" "and the list is the rows it was given, not every row ever built"
+}
+
 test_the_header_loses_the_same_columns_its_rows_do() {
   gui_available || return 0
   # A header that keeps a column its rows have dropped is worse than no header:

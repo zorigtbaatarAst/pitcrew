@@ -991,7 +991,7 @@ class ComponentRow(Adw.ActionRow):
         set_row_compact(self, compact)
 
     @classmethod
-    def header(cls) -> Adw.ActionRow:
+    def header(cls, sizes: Gtk.SizeGroup | None = None) -> Adw.ActionRow:
         """A row of column names built from the same geometry as a real row.
 
         An AdwActionRow, not a Box, for the same reason: its internal padding
@@ -1015,10 +1015,18 @@ class ComponentRow(Adw.ActionRow):
             if chars in (cls.W_CPU, cls.W_AGE, cls.W_NOTE) and text != "port":
                 optional.append(label)
         row._optional = tuple(optional)
+        # The action column is the one width this class cannot state in
+        # characters — it is a strip of theme-sized icon buttons — so the
+        # header joins the rows' size group and is told how wide it is instead
+        # of guessing. W_ACTIONS stays as its FLOOR, for a list with no rows in
+        # it yet.
+        row.action_slot = label
+        if sizes is not None:
+            sizes.add_widget(label)
         return row
 
     def __init__(self, name: str, color: str, on_action, on_show_logs=None,
-                 on_detach_logs=None) -> None:
+                 on_detach_logs=None, sizes: Gtk.SizeGroup | None = None) -> None:
         # Component names and ports come from a config file, not from us.
         super().__init__(title=name, use_markup=False)
         self._name = name
@@ -1064,13 +1072,24 @@ class ComponentRow(Adw.ActionRow):
         # stays until there is nothing left to give.
         self._optional = (self._age, self._cpu, self._note)
 
+        # halign END, not FILL: the strip is as wide as the widest row's, so a
+        # row with fewer buttons has room to spare inside it, and the buttons
+        # have to keep the right-hand edge everything else in the table is
+        # measured from.
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER, halign=Gtk.Align.END)
+
         # A gradle backend sits in `starting` for a minute. Something has to
         # move, or you cannot tell waiting from stuck.
+        #
+        # Inside the strip rather than beside it: it comes and goes with the
+        # state, and anything that comes and goes outside the strip takes its
+        # width out of the columns to its left when it does. In here the size
+        # group absorbs it — every row widens by the same twenty pixels while
+        # one of them is booting, and the columns stay level with each other,
+        # which is the property that matters.
         self._spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
         self._spinner.set_visible(False)
-        self.add_suffix(self._spinner)
-
-        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        box.append(self._spinner)
         # The port has always been printed and never been usable. pitcrew knows
         # the real URL — including the --url-path every backend sits behind — so
         # this opens the right thing rather than a guess at localhost:PORT.
@@ -1107,6 +1126,17 @@ class ComponentRow(Adw.ActionRow):
         self._restart = self._button(box, "view-refresh-symbolic", "restart", "Restart")
         self._stop = self._button(box, "media-playback-stop-symbolic", "stop", "Stop")
         self.add_suffix(box)
+
+        # Every column on this row is a fixed width so the table lines up —
+        # and then the strip of buttons at the end of it was not, so a row that
+        # had an error to report, or a URL to open, or was stopped rather than
+        # running, pushed its own figures a button's width out of step with the
+        # row above. Which buttons a row shows is not something it can know in
+        # characters, so one size group settles it for the whole list (the
+        # header included) at the width of the busiest row in it.
+        self.action_slot = box
+        if sizes is not None:
+            sizes.add_widget(box)
 
     @staticmethod
     def _column(chars: int) -> Gtk.Label:

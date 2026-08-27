@@ -108,6 +108,20 @@ attribute, and most are pinned by a test.
    minimum width of every other page. Projects needs 127px and was being given
    854, so a narrow window clipped rows that had room to shrink.
 
+   **The action buttons at the end of a row are a column too.** Every other
+   column on a ComponentRow is a fixed width so the table lines up, and the
+   columns are packed from the right — so the strip of icon buttons at that
+   end sets where all of them start. Which buttons a row shows depends on its
+   state (an error to report, a URL to open, start versus stop-and-restart, a
+   spinner while it boots), and a strip that measured itself put every figure
+   on that row a button's width out of step with the row above. One
+   `Gtk.SizeGroup` per rebuilt list settles it at the width of the busiest row
+   and the header joins it, which is the only way the header can know a width
+   it cannot state in characters. Anything that appears and disappears with
+   state belongs INSIDE that strip; outside it, it takes its width out of the
+   columns to its left. Rows are removed from the group when the list is
+   rebuilt — a size group holds its widgets, so rows left in one never go away.
+
    **The component table cannot shrink, so it drops columns instead.** Its
    widths are fixed precisely so the columns line up, which means the only way
    down is to lose one — `set_row_compact` drops `up`, `cpu` and the note

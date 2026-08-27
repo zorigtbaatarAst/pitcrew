@@ -1054,7 +1054,12 @@ class Window(Adw.ApplicationWindow):
         # without it you infer that `:19871` is a port and `8s` is uptime from
         # every row, every time. Built by ComponentRow itself, from the widths
         # the rows actually use.
-        self._comp_header = ComponentRow.header()
+        # One width for the action column, agreed between the header and every
+        # row under it. The header cannot state it in characters — it is a
+        # strip of theme-sized icon buttons — and a header column that is not
+        # the width of the column it names is worse than no header.
+        self._action_sizes = Gtk.SizeGroup(mode=Gtk.SizeGroupMode.HORIZONTAL)
+        self._comp_header = ComponentRow.header(self._action_sizes)
         self._comp_page.prepend(self._comp_header)
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER,
                                       child=clamp, vexpand=True)
@@ -1915,6 +1920,12 @@ class Window(Adw.ApplicationWindow):
         for group in self._groups:
             self._comp_page.remove(group)
         self._groups.clear()
+        # Out of the size group as well as out of the page: a size group holds
+        # its widgets, so rows left in it are rows that never go away, and a
+        # list rebuilt every time the shape of the stack changes would keep
+        # every row it has ever drawn — sized against each other forever.
+        for row in self._rows.values():
+            self._action_sizes.remove_widget(row.action_slot)
         self._rows.clear()
         self._group_widgets.clear()
         self._group_toggles = {}
@@ -1935,7 +1946,7 @@ class Window(Adw.ApplicationWindow):
                 for comp in comps:
                     row = ComponentRow(comp["name"], colors[comp["name"]],
                                        self._run_action, self._show_logs_for,
-                                       self._open_log_window)
+                                       self._open_log_window, self._action_sizes)
                     row.set_activatable(True)
                     row.set_compact(self._compact)
                     row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))
@@ -1958,7 +1969,8 @@ class Window(Adw.ApplicationWindow):
                 self._group_actions(heading, (whole or {}).get(heading, comps)))
             for comp in comps:
                 row = ComponentRow(comp["name"], colors[comp["name"]], self._run_action,
-                                   self._show_logs_for, self._open_log_window)
+                                   self._show_logs_for, self._open_log_window,
+                                   self._action_sizes)
                 row.set_activatable(True)
                 row.set_compact(self._compact)
                 row.connect("activated", lambda _r, n=comp["name"]: self._show_detail(n))

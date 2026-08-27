@@ -55,6 +55,20 @@ field is removed or changes meaning.
   outlives the window and a terminal in the same session agrees with it. Not
   written from Python: the registry belongs to the CLI, and a second writer to
   that file is a second answer to which project is current.
+- **A row with something to report knocked its own figures out of line.** Every
+  column on a component row is a fixed width so the table can be scanned
+  rather than read, and the columns are packed from the right-hand end — where
+  a strip of icon buttons sits that was never given a width. Which buttons a
+  row shows depends on what it is doing: an error to show, a URL to open, a
+  spinner while it boots, `start` versus `stop` and `restart`. So a backend
+  with three error lines in its log carried one button more than the frontend
+  under it and wore its memory, cpu, port and uptime a button's width to the
+  left of them; a stopped row sat two buttons out from a running one. The
+  strip is one size group now — the header included, which is how it learns a
+  width it cannot state in characters — so every row ends its columns in the
+  same place whatever it is doing, and the header names the column it is
+  actually over. Costs nothing in a narrow window: the group is as wide as the
+  busiest row in the list, not as wide as every button that could ever appear.
 - **On Windows every component measured the wrapper and nothing under it.**
   Cygwin — and so MSYS2, and so Git Bash — has no `exec`: it implements one by
   creating a *new* Windows process for the program being run. The Windows
