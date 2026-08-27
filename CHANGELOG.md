@@ -80,6 +80,23 @@ field is removed or changes meaning.
   check appears in `diagnose` and not on the dashboard.
 
 ### Fixed
+- **`ext/jvm` reported a memory table for processes it could not measure.** The
+  cap is handed in by the caller rather than read from the JVM, so it is always
+  available — which meant a dead pid, or a JVM that refused to attach, still
+  produced a report headed "JVM memory" whose only row was that cap. In the
+  desktop app that renders as a panel claiming a measurement nobody took. A
+  report is now withheld unless at least one figure was actually measured.
+
+- **`pitcrew-jvm --targets <file>` reported success on a run that examined
+  nothing.** An unreadable file printed `cat`'s own error and exited 0 — for a
+  command whose exit status is the entire point of `--check`, that is the worst
+  of both. It is checked during argument parsing now, because the read happens
+  inside a process substitution where an exit would only end that subshell.
+
+- **"a floor" described a figure that was never arrived at.** Where nothing
+  could be read at all, the breakdown still annotated `accounted` as a floor
+  rather than saying the process gave up nothing.
+
 - **A finding with no fix command lost its component.** The `ext/jvm` adapter
   read the tool's tab-separated output with `IFS=$'\t' read -r ...`, which looks
   like it splits on tabs and does not: bash treats TAB as IFS *whitespace*, so a

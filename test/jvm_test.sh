@@ -22,6 +22,7 @@ FIX="$EXT/test/fixtures"
 source "$EXT/lib/util.sh"
 source "$EXT/lib/parse.sh"
 source "$EXT/lib/rules.sh"
+source "$EXT/lib/render.sh"
 
 # ── parsers: the heap, across every spelling of it ──────────────────────────
 
@@ -387,6 +388,70 @@ test_two_compared_sizes_are_forced_apart_only_when_they_collide() {
   assert_eq "$JVM_H1" "1.0G" "left alone when they already differ"
   jvm_human2 1048576 1048576
   assert_eq "$JVM_H1" "$JVM_H2" "genuinely equal values stay equal"
+}
+
+# ── the report ──────────────────────────────────────────────────────────────
+
+test_a_report_is_not_emitted_when_nothing_was_measured() {
+  # A dead pid, or a JVM that refused to attach, measures nothing — but the cap
+  # was HANDED IN rather than read, so it is always available. The first
+  # version emitted a report headed "JVM memory" whose only row was that cap,
+  # which renders in the desktop app as a panel claiming a measurement that was
+  # never taken.
+  _facts
+  JVMF_ATTACHED=0
+  JVMF_HEAP_COMMIT_K=-1; JVMF_HEAP_USED_K=-1; JVMF_HEAP_MAX_K=-1
+  JVMF_META_COMMIT_K=-1; JVMF_META_USED_K=-1
+  JVMF_CC_SIZE_K=-1; JVMF_CC_USED_K=-1
+  JVMF_RSS_K=-1; JVMF_THREADS=-1; JVMF_STACK_K=-1
+  jvm_account
+  assert_empty "$(jvm_render_report_tsv)" "no report, not a report of the cap alone"
+}
+
+test_a_report_is_emitted_once_anything_was_measured() {
+  _facts
+  jvm_account
+  local out; out=$(jvm_render_report_tsv)
+  assert_match "$out" '^report	jvm	be-test	JVM memory' "the header"
+  assert_match "$out" 'row	heap	' "and the rows"
+  assert_match "$out" 'row	cap	' "including the cap once there is something to put it against"
+}
+
+test_an_unmeasured_row_is_omitted_rather_than_dashed() {
+  # A table of dashes is not a report. The row is left out and the panel is
+  # shorter, which says "not read" more honestly than a column of placeholders.
+  _facts
+  JVMF_CC_SIZE_K=-1; JVMF_CC_USED_K=-1
+  jvm_account
+  local out; out=$(jvm_render_report_tsv)
+  assert_not_match "$out" 'code cache' "the unreadable row is absent"
+  assert_match "$out" 'heap' "the readable ones are not"
+}
+
+test_the_cap_alone_never_counts_as_a_measurement() {
+  # Same rule from the other side: RSS readable but nothing else, plus a cap.
+  _facts
+  JVMF_ATTACHED=0
+  JVMF_HEAP_COMMIT_K=-1; JVMF_HEAP_USED_K=-1; JVMF_HEAP_MAX_K=-1
+  JVMF_META_COMMIT_K=-1; JVMF_META_USED_K=-1
+  JVMF_CC_SIZE_K=-1; JVMF_CC_USED_K=-1
+  JVMF_STACK_K=-1; JVMF_THREADS=-1
+  jvm_account
+  local out; out=$(jvm_render_report_tsv)
+  assert_match "$out" 'row	resident' "RSS is a measurement, so there is a report"
+  assert_match "$out" 'row	cap' "and the cap rides along"
+}
+
+# ── the CLI refuses rather than reporting success on nothing ─────────────────
+
+test_an_unreadable_targets_file_is_an_error_not_a_silent_success() {
+  # It used to print cat is own error and exit 0. For a command whose exit
+  # status is the whole point of --check, reporting success on a run that
+  # examined nothing is the worst of both.
+  local bin="$EXT/bin/pitcrew-jvm"
+  assert_fails "$bin" --check --targets /no/such/targets/file
+  local err; err=$("$bin" --check --targets /no/such/targets/file 2>&1 >/dev/null)
+  assert_match "$err" 'cannot read targets file' "and says which file"
 }
 
 run_tests

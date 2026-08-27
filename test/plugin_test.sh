@@ -299,4 +299,39 @@ assert d['plugins'][0]['checks'][0]['slow'] is True, d
   rm -f "$PLUGIN_HOME/plugins"/*
 }
 
+# ── the report channel itself ───────────────────────────────────────────────
+
+test_a_row_with_no_report_open_is_dropped_not_fatal() {
+  # A plugin half-way through an edit should cost one missing table, never a
+  # dashboard that stops repainting — diag_run is called once per frame.
+  local before=${#DIAG_REPORT_ID[@]}
+  diag_report_row orphan 1 2
+  assert_eq "${#DIAG_REPORT_ID[@]}" "$before" "no report invented to hang it on"
+}
+
+test_report_text_survives_the_json_encoder() {
+  # Titles and notes are prose written by a plugin. A quote or a backslash in
+  # one must not produce a payload the desktop app cannot parse — it reads this
+  # object for the whole health panel, not just the reports.
+  command -v python3 >/dev/null 2>&1 || return 0
+  local saved_n=${#DIAG_REPORT_ID[@]}
+  diag_report_open 'j"s' 'be-"x' 'Title with "quotes" and \back'
+  diag_report_row 'la"bel' 'va\lue' 'note with "q"'
+  # And one with no rows at all, which a consumer has to be able to skip.
+  diag_report_open empty "" "Nothing"
+  local out; out=$(diag_json_reports)
+  assert_ok python3 -c "
+import json, sys
+d = json.loads(sys.argv[1])
+by = {r['id']: r for r in d}
+assert by['j\"s']['rows'][0]['label'] == 'la\"bel', d
+assert by['empty']['rows'] == [], d
+" "$out"
+  # Leave the arrays as they were found: every test after this shares them.
+  while [ "${#DIAG_REPORT_ID[@]}" -gt "$saved_n" ]; do
+    unset "DIAG_REPORT_ID[-1]" "DIAG_REPORT_SCOPE[-1]" \
+          "DIAG_REPORT_TITLE[-1]" "DIAG_REPORT_ROWS[-1]"
+  done
+}
+
 run_tests

@@ -115,6 +115,14 @@ esac
 case "$INTERVAL" in ''|*[!0-9]*) echo "pitcrew-jvm: --interval needs whole seconds" >&2; exit 2 ;; esac
 [ "$INTERVAL" -ge 1 ] || { echo "pitcrew-jvm: --interval must be at least 1" >&2; exit 2; }
 case "${PITCREW_JVM_TIMEOUT}" in ''|*[!0-9]*) echo "pitcrew-jvm: --timeout needs whole seconds" >&2; exit 2 ;; esac
+# Checked HERE and not where the file is read: `targets` runs inside a process
+# substitution, so an exit there ends that subshell and the tool carries on to
+# report success on a run that examined nothing. It used to print `cat`'s own
+# error and exit 0, which for a monitoring command is the worst of both.
+if [ -n "$TARGETS" ] && [ "$TARGETS" != "-" ] && [ ! -r "$TARGETS" ]; then
+  echo "pitcrew-jvm: cannot read targets file '$TARGETS'" >&2
+  exit 2
+fi
 
 jvm_colors_init
 

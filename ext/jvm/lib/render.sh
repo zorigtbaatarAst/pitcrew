@@ -100,7 +100,10 @@ jvm_render_detail() {
   local a r u
   jvm_human "${JVMA_ACCOUNTED_K}"; a=$JVM_H
   jvm_human "${JVMF_RSS_K}";       r=$JVM_H
-  if [ "${JVMA_MEASURED}" = 1 ]; then note="measured by NMT"
+  if ! jvm_known "${JVMA_ACCOUNTED_K}"; then
+    # Calling nothing "a floor" describes a figure that was never arrived at.
+    note="nothing could be read from this process"
+  elif [ "${JVMA_MEASURED}" = 1 ]; then note="measured by NMT"
   else note="a floor: GC structures and direct buffers cannot be read"; fi
   printf '  %-16s %10s   %s%s%s\n' "accounted" "$a" "$C_DIM" "$note" "$C_RESET"
   printf '  %-16s %10s   %sresident pages; committed is normally higher%s\n' \
@@ -259,13 +262,21 @@ jvm_render_json_one() {
 # Every row is a value that was MEASURED. Nothing here is derived twice: a "?"
 # means the parsers could not read it, and the row is omitted rather than
 # printed as a dash, because a table of dashes is not a report.
+# Rows are ACCUMULATED rather than printed, so the header can be withheld when
+# nothing turned out to be measurable — see the end of jvm_render_report_tsv.
+_JVM_REPORT_ROWS=""
+_JVM_REPORT_N=0
 _jvm_report_row() { # $1 label, $2 value, [$3 note] — skips an unmeasured value
   [ "${2:-?}" = "?" ] && return 0
-  printf 'row\t%s\t%s\t%s\n' "$1" "$2" "${3:-}"
+  local line
+  printf -v line 'row\t%s\t%s\t%s' "$1" "$2" "${3:-}"
+  _JVM_REPORT_ROWS+="$line"$'\n'
+  _JVM_REPORT_N=$(( _JVM_REPORT_N + 1 ))
 }
 
 jvm_render_report_tsv() {
-  printf 'report\tjvm\t%s\tJVM memory\n' "${JVMF_LABEL}"
+  _JVM_REPORT_ROWS=""
+  _JVM_REPORT_N=0
 
   local v n
   if jvm_known "${JVMF_HEAP_COMMIT_K}" && jvm_known "${JVMF_HEAP_MAX_K}"; then
@@ -333,9 +344,20 @@ jvm_render_report_tsv() {
     _jvm_report_row unaccounted "$JVM_H" "native memory the JVM did not allocate itself"
   fi
 
+  # Everything above is a MEASUREMENT. The cap is not — it was handed in by
+  # whoever called, so on its own it is not a memory breakdown of anything.
+  local measured=$_JVM_REPORT_N
   if jvm_known "${JVMF_CAP_B}" && [ "${JVMF_CAP_B}" -gt 0 ]; then
     jvm_human_b "${JVMF_CAP_B}"
     _jvm_report_row cap "$JVM_H" "from ${JVMF_CAP_SOURCE}"
   fi
+
+  # A dead pid, or a JVM that refused to answer, measures nothing — and a
+  # report headed "JVM memory" listing only the cap it was told about reads as
+  # a measurement that was never taken. Say nothing instead.
+  [ "$measured" -gt 0 ] || return 0
+
+  printf 'report\tjvm\t%s\tJVM memory\n' "${JVMF_LABEL}"
+  printf '%s' "$_JVM_REPORT_ROWS"
   return 0
 }
