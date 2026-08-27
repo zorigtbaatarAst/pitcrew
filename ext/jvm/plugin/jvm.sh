@@ -76,16 +76,54 @@ _jvm_targets() {
   done
 }
 
+# Split one line on TABS, keeping empty fields -> _JVM_F.
+#
+# `IFS=$'\t' read -r a b c` looks like it does this and does not: bash treats
+# TAB as IFS *whitespace*, so a run of them collapses and leading ones are
+# stripped. One empty field therefore shifts every column after it — a finding
+# with no fix command arrived with its SCOPE in the fix slot and no scope at
+# all, which silently detached it from the component row it belongs to.
+#
+# Splitting by hand is the fix; the format is fine, the reader was wrong.
+_JVM_F=()
+_jvm_split() { # $1 line
+  _JVM_F=()
+  local rest=$1
+  while :; do
+    case "$rest" in
+      *$'\t'*) _JVM_F+=("${rest%%$'\t'*}"); rest=${rest#*$'\t'} ;;
+      *)        _JVM_F+=("$rest"); break ;;
+    esac
+  done
+}
+
 jvm_check() {
-  local bin sev id title detail fix scope
+  local bin line
   bin=$(_jvm_bin) || return 0
 
+  # report-tsv rather than tsv: one invocation yields the findings AND the
+  # memory table. Asking twice would cost ten jcmd forks per JVM instead of
+  # five, and this runs once per component.
+  #
   # The tool exits 1 when it found something critical. That is its verdict, not
-  # a failure, so the status is ignored and the findings are read either way.
-  while IFS=$'\t' read -r sev id title detail fix scope; do
-    case "$sev" in crit|warn|info) ;; *) continue ;; esac
-    diag_add "$sev" "$id" "$title" "$detail" "$fix" "$scope"
-  done < <(_jvm_targets | "$bin" --check --format tsv --targets - 2>/dev/null)
+  # a failure, so the status is ignored and the output is read either way.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    _jvm_split "$line"
+    case "${_JVM_F[0]:-}" in
+      finding)
+        case "${_JVM_F[1]:-}" in crit|warn|info) ;; *) continue ;; esac
+        diag_add "${_JVM_F[1]}" "${_JVM_F[2]:-}" "${_JVM_F[3]:-}" \
+                 "${_JVM_F[4]:-}" "${_JVM_F[5]:-}" "${_JVM_F[6]:-}"
+        ;;
+      report)
+        diag_report_open "${_JVM_F[1]:-jvm}" "${_JVM_F[2]:-}" "${_JVM_F[3]:-}"
+        ;;
+      row)
+        diag_report_row "${_JVM_F[1]:-}" "${_JVM_F[2]:-}" "${_JVM_F[3]:-}"
+        ;;
+    esac
+  done < <(_jvm_targets | "$bin" --check --format report-tsv --targets - 2>/dev/null)
   return 0
 }
 

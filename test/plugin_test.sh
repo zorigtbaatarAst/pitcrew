@@ -138,17 +138,17 @@ test_two_jvms_in_one_component_are_told_apart() {
 
 test_findings_from_the_tool_become_pitcrew_findings() {
   # The seam end to end, with a stub standing in for the tool: whatever it
-  # prints as TSV has to arrive in the DIAG_* arrays unchanged, because those
-  # are what the dashboard, the JSON and the desktop app all read.
+  # prints has to arrive in the DIAG_* arrays unchanged, because those are what
+  # the dashboard, the JSON and the desktop app all read.
   local saved=("${DIAG_CHECKS[@]}")
   _jvm_adapter
   local stub="$PLUGIN_HOME/stub-pitcrew-jvm"
   {
     printf '#!/usr/bin/env bash\n'
     # It also exits 1 on a critical finding, exactly as the real tool does.
-    # The adapter must read the findings anyway rather than treating that as
-    # a failure.
-    printf 'printf "crit\\tjvm-cap\\ta title\\ta detail\\tpitcrew limit be-both 2G\\tbe-both\\n"\n'
+    # The adapter must read the output anyway rather than treating that as a
+    # failure.
+    printf 'printf "finding\\tcrit\\tjvm-cap\\ta title\\ta detail\\tpitcrew limit be-both 2G\\tbe-both\\n"\n'
     printf 'exit 1\n'
   } > "$stub"
   chmod +x "$stub"
@@ -168,12 +168,68 @@ test_findings_from_the_tool_become_pitcrew_findings() {
   DIAG_CHECKS=("${saved[@]}")
 }
 
+test_an_empty_column_does_not_shift_the_ones_after_it() {
+  # `IFS=$'\t' read -r a b c` looks like it splits on tabs and does not: bash
+  # treats TAB as IFS *whitespace*, so a run of them collapses. A finding with
+  # no fix command — which is most of them — therefore arrived with its SCOPE
+  # in the fix slot and no scope at all, silently detaching it from the
+  # component row it belongs to.
+  local saved=("${DIAG_CHECKS[@]}")
+  _jvm_adapter
+  local stub="$PLUGIN_HOME/stub-nofix"
+  {
+    printf '#!/usr/bin/env bash\n'
+    # Note the two adjacent tabs: an empty fix, then a scope.
+    printf 'printf "finding\\tinfo\\tjvm-nmt\\ttitle\\tdetail\\t\\tbe-both\\n"\n'
+  } > "$stub"
+  chmod +x "$stub"
+  SNAP_STATE=([be-both]=up); SNAP_PIDS=([be-both]="200")
+  SNAP_PROC_CMD=([200]=java); COMP_MAX_B=([be-both]=1024)
+  PITCREW_COMPS=(be-both)
+
+  PITCREW_JVM_BIN="$stub" jvm_check
+  assert_empty "${DIAG_FIX[-1]}" "the empty column stays empty"
+  assert_eq "${DIAG_SCOPE[-1]}" "be-both" "and the one after it is not swallowed"
+  DIAG_CHECKS=("${saved[@]}")
+}
+
+test_a_report_from_the_tool_becomes_a_pitcrew_report() {
+  # The table channel. A finding is one line; this is the arithmetic behind it,
+  # and before the channel existed a plugin could only emit it as eight more
+  # info findings competing with the line that mattered.
+  local saved=("${DIAG_CHECKS[@]}")
+  local saved_reports=${#DIAG_REPORT_ID[@]}
+  _jvm_adapter
+  local stub="$PLUGIN_HOME/stub-report"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "report\\tjvm\\tbe-both\\tJVM memory\\n"\n'
+    printf 'printf "row\\theap\\t1.1G / 2.0G\\tused 343M\\n"\n'
+    printf 'printf "row\\tcode cache\\t69M / 240M\\t\\n"\n'
+  } > "$stub"
+  chmod +x "$stub"
+  SNAP_STATE=([be-both]=up); SNAP_PIDS=([be-both]="200")
+  SNAP_PROC_CMD=([200]=java); COMP_MAX_B=([be-both]=1024)
+  PITCREW_COMPS=(be-both)
+
+  PITCREW_JVM_BIN="$stub" jvm_check
+  assert_eq "$(( ${#DIAG_REPORT_ID[@]} - saved_reports ))" "1" "one report opened"
+  assert_eq "${DIAG_REPORT_ID[-1]}"    "jvm"        "its id"
+  assert_eq "${DIAG_REPORT_SCOPE[-1]}" "be-both"    "scoped to the component"
+  assert_eq "${DIAG_REPORT_TITLE[-1]}" "JVM memory" "and its title"
+  # Two rows, tab-joined and newline-separated.
+  assert_eq "$(printf '%s' "${DIAG_REPORT_ROWS[-1]}" | grep -c .)" "2" "both rows"
+  assert_match "${DIAG_REPORT_ROWS[-1]}" 'heap' "the first one"
+  DIAG_CHECKS=("${saved[@]}")
+}
+
 test_a_malformed_line_from_the_tool_is_dropped_not_added() {
   # The adapter reads whatever is on the other end of a pipe. A line that is
   # not a finding must not become one with an empty severity.
   local saved=("${DIAG_CHECKS[@]}")
   _jvm_adapter
   local stub="$PLUGIN_HOME/stub-noise"
+  # No kind column at all, which is what stray output from the JVM looks like.
   printf '#!/usr/bin/env bash\nprintf "some warning from the jvm\\n\\n"\n' > "$stub"
   chmod +x "$stub"
   SNAP_STATE=([be-both]=up); SNAP_PIDS=([be-both]="200")

@@ -147,10 +147,11 @@ jvm_render_findings() {
 # Tabs and newlines are stripped from the fields rather than escaped, because a
 # finding is one line of prose by construction and a delimiter appearing inside
 # one is a bug in the rule, not something to encode around.
-jvm_render_tsv() {
-  local i
+jvm_render_tsv() { # [$1 kind prefix, for the mixed report-tsv stream]
+  local i pre=""
+  [ -n "${1:-}" ] && pre="$1\t"
   for i in "${!JVMR_SEV[@]}"; do
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf "${pre}"'%s\t%s\t%s\t%s\t%s\t%s\n' \
       "${JVMR_SEV[i]}" "${JVMR_ID[i]}" \
       "${JVMR_TITLE[i]//[$'\t\n']/ }" "${JVMR_DETAIL[i]//[$'\t\n']/ }" \
       "${JVMR_FIX[i]//[$'\t\n']/ }" "${JVMR_SCOPE[i]//[$'\t\n']/ }"
@@ -240,4 +241,101 @@ jvm_render_json_one() {
   printf '"findings":'
   _jvm_json_findings
   printf '}'
+}
+
+# ── the report ──────────────────────────────────────────────────────────────
+#
+# The memory breakdown as a table a supervisor can render, rather than as eight
+# info findings competing with the one line that actually matters.
+#
+# Emitted alongside the findings in `--format report-tsv`, distinguished by a
+# leading kind column, so one invocation answers both questions. Two
+# invocations would mean ten jcmd forks per JVM instead of five, and this runs
+# per component.
+#
+#   report<TAB>jvm<TAB><scope><TAB>JVM memory
+#   row<TAB>heap<TAB>1.1G / 2.0G<TAB>used 343M
+#
+# Every row is a value that was MEASURED. Nothing here is derived twice: a "?"
+# means the parsers could not read it, and the row is omitted rather than
+# printed as a dash, because a table of dashes is not a report.
+_jvm_report_row() { # $1 label, $2 value, [$3 note] — skips an unmeasured value
+  [ "${2:-?}" = "?" ] && return 0
+  printf 'row\t%s\t%s\t%s\n' "$1" "$2" "${3:-}"
+}
+
+jvm_render_report_tsv() {
+  printf 'report\tjvm\t%s\tJVM memory\n' "${JVMF_LABEL}"
+
+  local v n
+  if jvm_known "${JVMF_HEAP_COMMIT_K}" && jvm_known "${JVMF_HEAP_MAX_K}"; then
+    jvm_human "${JVMF_HEAP_COMMIT_K}"; v=$JVM_H
+    jvm_human "${JVMF_HEAP_MAX_K}";    v="$v / $JVM_H"
+    jvm_human "${JVMF_HEAP_USED_K}";   n="used $JVM_H"
+    _jvm_report_row heap "$v" "$n"
+  fi
+
+  if jvm_known "${JVMF_META_COMMIT_K}"; then
+    jvm_human "${JVMF_META_COMMIT_K}"; v=$JVM_H
+    if jvm_known "${JVMF_META_MAX_K}" && [ "${JVMF_META_MAX_K}" -gt 0 ]; then
+      jvm_human "${JVMF_META_MAX_K}"; n="$JVM_H max"
+    else
+      # The default, and worth saying: an unbounded metaspace is why a
+      # classloader leak shows up as RSS growth and never as an OOME.
+      n="no ceiling set"
+    fi
+    _jvm_report_row metaspace "$v" "$n"
+  fi
+
+  if jvm_known "${JVMF_CC_USED_K}" && jvm_known "${JVMF_CC_SIZE_K}"; then
+    jvm_human "${JVMF_CC_USED_K}"; v=$JVM_H
+    jvm_human "${JVMF_CC_SIZE_K}"; v="$v / $JVM_H"
+    n=""
+    [ "${JVMF_CC_FULL:--1}" -gt 0 ] 2>/dev/null && n="filled ${JVMF_CC_FULL}× — the JIT has stopped"
+    _jvm_report_row "code cache" "$v" "$n"
+  fi
+
+  # Only where NMT measured it. Estimating GC structures would be inventing a
+  # number for a table whose whole point is that these are readings.
+  if [ "${JVMF_NMT:-0}" = 1 ] && jvm_known "${JVMF_NMT_GC_K}"; then
+    jvm_human "${JVMF_NMT_GC_K}"
+    _jvm_report_row "GC structures" "$JVM_H" "measured"
+  fi
+
+  if jvm_known "${JVMA_STACKS_K}"; then
+    jvm_human "${JVMA_STACKS_K}"; v=$JVM_H
+    if [ "${JVMA_MEASURED}" = 1 ]; then
+      n="${JVMF_THREADS} threads, committed"
+    else
+      # Reserved address space, not resident pages. Said outright: the figure
+      # is several times what the process holds and reads as alarming.
+      n="${JVMF_THREADS} × ${JVMF_STACK_K}K reserved, not committed"
+    fi
+    _jvm_report_row "thread stacks" "$v" "$n"
+  fi
+
+  if jvm_known "${JVMA_ACCOUNTED_K}"; then
+    jvm_human "${JVMA_ACCOUNTED_K}"; v=$JVM_H
+    if [ "${JVMA_MEASURED}" = 1 ]; then n="measured by NMT"
+    else n="a floor — GC structures and direct buffers cannot be read"; fi
+    _jvm_report_row accounted "$v" "$n"
+  fi
+
+  if jvm_known "${JVMF_RSS_K}"; then
+    jvm_human "${JVMF_RSS_K}"
+    _jvm_report_row resident "$JVM_H" "what the OOM killer counts"
+  fi
+
+  # Only the positive direction. Committed above resident is the normal state
+  # of a healthy JVM and reporting it would make every row look wrong.
+  if [ "${JVMA_UNACCOUNTED_KNOWN:-0}" = 1 ] && [ "${JVMA_UNACCOUNTED_K}" -gt 0 ]; then
+    jvm_human "${JVMA_UNACCOUNTED_K}"
+    _jvm_report_row unaccounted "$JVM_H" "native memory the JVM did not allocate itself"
+  fi
+
+  if jvm_known "${JVMF_CAP_B}" && [ "${JVMF_CAP_B}" -gt 0 ]; then
+    jvm_human_b "${JVMF_CAP_B}"
+    _jvm_report_row cap "$JVM_H" "from ${JVMF_CAP_SOURCE}"
+  fi
+  return 0
 }

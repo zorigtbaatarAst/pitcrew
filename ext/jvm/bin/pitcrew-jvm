@@ -57,6 +57,11 @@ usage:
 options:
   -i, --interval N   seconds between --watch samples
       --format tsv   with --check: severity/id/title/detail/fix/scope, tab separated
+      --format report-tsv
+                     the same findings AND the memory breakdown as a table,
+                     each line carrying a leading kind column (finding | report
+                     | row). One invocation answers both, which matters because
+                     the alternative is ten jcmd forks per JVM instead of five.
       --targets -    read "label<TAB>pid<TAB>cap_bytes" targets from stdin
                      instead of discovering them; this is how a supervisor
                      passes in the cap it launched the process under
@@ -104,7 +109,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$FORMAT" in text|tsv) ;; *) echo "pitcrew-jvm: --format takes text or tsv" >&2; exit 2 ;; esac
+case "$FORMAT" in text|tsv|report-tsv) ;;
+  *) echo "pitcrew-jvm: --format takes text, tsv or report-tsv" >&2; exit 2 ;;
+esac
 case "$INTERVAL" in ''|*[!0-9]*) echo "pitcrew-jvm: --interval needs whole seconds" >&2; exit 2 ;; esac
 [ "$INTERVAL" -ge 1 ] || { echo "pitcrew-jvm: --interval must be at least 1" >&2; exit 2; }
 case "${PITCREW_JVM_TIMEOUT}" in ''|*[!0-9]*) echo "pitcrew-jvm: --timeout needs whole seconds" >&2; exit 2 ;; esac
@@ -166,7 +173,14 @@ one_pass() { # renders according to MODE; accumulates TOTAL_*
     case "$MODE" in
       list)   jvm_render_row ;;
       detail) jvm_render_detail; jvm_render_findings ;;
-      check)  if [ "$FORMAT" = tsv ]; then jvm_render_tsv; else jvm_render_findings; fi ;;
+      check)
+        case "$FORMAT" in
+          tsv)        jvm_render_tsv ;;
+          # Kind-prefixed, so findings and the table can share one stream — and
+          # so a consumer of the plain `tsv` contract is unaffected.
+          report-tsv) jvm_render_tsv finding; jvm_render_report_tsv ;;
+          *)          jvm_render_findings ;;
+        esac ;;
       json|watch)
         [ "$first" = 1 ] || printf ','
         first=0

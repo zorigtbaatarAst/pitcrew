@@ -890,6 +890,19 @@ diag_register my_check          # cheap: runs on every frame
 diag_register my_check slow     # may fork: only on `pitcrew diagnose`
 ```
 
+A check with a table to show as well — rather than one line and its evidence —
+opens a **report**:
+
+```bash
+diag_report_open jvm "$comp" "JVM memory"
+diag_report_row  heap "1.1G / 2.0G" "used 343M"
+diag_report_row  cap  "2.0G"        "from pitcrew"
+```
+
+It arrives in `health.reports[]` and renders as a panel on the desktop app's
+Overview, under the findings that reference it. Reports come from the slow tier,
+so they appear when you press **Full diagnostics**, not on every frame.
+
 `diag_run` is called once per dashboard frame, where the whole product promise
 is **zero forks**. A check that has to ask another program a question — `jcmd`,
 `docker`, `curl` — cannot run there. Marking it `slow` keeps it out

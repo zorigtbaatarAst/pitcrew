@@ -11,6 +11,28 @@ field is removed or changes meaning.
 ## [Unreleased]
 
 ### Added
+- **Plugin reports: `diag_report_open` / `diag_report_row`.** A finding is one
+  line and its evidence. Some checks have a table as well — where a JVM actually
+  put its memory — and the only way to surface one was to emit eight `info`
+  findings into a list where, by this codebase's own rule, every check competes
+  for the one line someone will read.
+
+  A check now opens a report and adds rows. They reach `health.reports[]` in the
+  JSON (a new key; the schema does not move, adding fields is free) and render
+  as a panel on the desktop app's Overview, directly under the findings that
+  reference them — a JVM finding says the heap plus non-heap will not fit the
+  cap, and the table is the arithmetic behind that sentence.
+
+  Reports come from the slow tier by nature, so the live stream never carries
+  any: **an empty list means "not asked for yet", not "nothing to say"**, and
+  `health.deep` is what tells them apart. In the desktop app they appear when
+  you press Full diagnostics. `ext/jvm` emits one per JVM through a new
+  `--format report-tsv`, which returns findings and the table from a single
+  invocation — asking twice would double the `jcmd` forks per component.
+
+  This closes the gap AGENTS.md had been carrying as a known wart: plugins had
+  no channel but findings.
+
 - **`ext/jvm` — `pitcrew-jvm`, a standalone JVM memory accountant.** Heap
   monitors are everywhere; the question they cannot answer is *"why is this
   service's RSS 2.6G when `-Xmx` is 1G, and what will the kernel do about it?"*
@@ -58,6 +80,14 @@ field is removed or changes meaning.
   check appears in `diagnose` and not on the dashboard.
 
 ### Fixed
+- **A finding with no fix command lost its component.** The `ext/jvm` adapter
+  read the tool's tab-separated output with `IFS=$'\t' read -r ...`, which looks
+  like it splits on tabs and does not: bash treats TAB as IFS *whitespace*, so a
+  run of them collapses. One empty column therefore shifted every column after
+  it — a finding with no fix arrived with its SCOPE in the fix slot and no scope
+  at all, silently detaching it from the row it belonged to. Most findings have
+  no fix. Split by hand now; the format was fine, the reader was wrong.
+
 - **The welcome page showed "Nothing to show" and no reason.** When a project's
   config cannot be read the page prints the CLI's own sentence — and the one it
   actually emits is `no config here — write a pitcrew.yaml, or: pitcrew init

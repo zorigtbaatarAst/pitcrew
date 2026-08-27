@@ -49,7 +49,7 @@ print(" ".join(sorted(d["health"]["recoverable"])))')
   # The verdict travels with the facts. A GUI that had to work out "is anything
   # wrong" from the component list would be reimplementing lib/19-diag.sh.
   assert_eq "$(printf '%s' "$keys" | sed -n 7p)" \
-    "counts deep findings headline recoverable verdict" "health object"
+    "counts deep findings headline recoverable reports verdict" "health object"
   assert_eq "$(printf '%s' "$keys" | sed -n 8p)" "crit info warn" "finding counts by severity"
   assert_eq "$(printf '%s' "$keys" | sed -n 9p)" "bytes components protected" \
     "what stopping the idle ones returns, and what will never be proposed"

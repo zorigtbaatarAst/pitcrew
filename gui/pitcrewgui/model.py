@@ -499,3 +499,37 @@ def plugin_rows(state: dict | None) -> list[dict]:
             "summary": summary,
         })
     return out
+
+
+def report_panels(state: dict) -> list[dict]:
+    """Plugin-contributed tables out of `health.reports[]`.
+
+    A finding is one line and its evidence. A report is the table behind it —
+    where a JVM actually put its memory — and before this channel existed the
+    only way to show one was to emit eight `info` findings into a list where,
+    by the shell's own rule, every check competes for the one line someone will
+    read.
+
+    These only ever arrive from the SLOW tier, so the live stream never carries
+    any: an empty list means "not asked for yet", not "nothing to say". That is
+    why the panel appears when Full diagnostics is pressed and not before, and
+    why this does not try to distinguish the two — `health.deep` already does.
+
+    Rows are passed through as given. The shell decided what is worth a row and
+    what a value means; re-deciding that here is the second opinion AGENTS.md
+    spends a constraint forbidding.
+    """
+    panels = []
+    for report in (state.get("health") or {}).get("reports") or []:
+        rows = [r for r in (report.get("rows") or []) if r.get("label")]
+        if not rows:
+            # A report with no rows is a plugin mid-edit, not a table. Showing
+            # an empty panel would read as "measured, and it is nothing".
+            continue
+        panels.append({
+            "id": report.get("id") or "",
+            "scope": report.get("scope") or "",
+            "title": report.get("title") or "Report",
+            "rows": rows,
+        })
+    return panels

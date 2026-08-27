@@ -96,6 +96,30 @@ which it is: *"needs 2.4G"* when measured, *"needs 2.4G or more"* when not.
 Start a JVM with `-XX:NativeMemoryTracking=summary` and everything becomes a
 measurement.
 
+## The report
+
+Alongside the findings, the tool emits the breakdown as a **table** that pitcrew
+renders as a panel — so the arithmetic behind a finding is visible, rather than
+being eight more `info` lines competing with the one that matters.
+
+```
+$ pitcrew-jvm --check --format report-tsv --targets -
+finding  crit  jvm-cap  be-orders can outgrow its memory cap ...
+report   jvm   be-orders  JVM memory
+row      heap           1.1G / 2.0G   used 343M
+row      code cache     69M / 240M
+row      accounted      1.2G          a floor — GC structures cannot be read
+row      resident       1.5G          what the OOM killer counts
+row      cap            2.0G          from pitcrew
+```
+
+One invocation answers both questions. Asking twice would cost ten `jcmd` forks
+per JVM instead of five, and this runs once per component. Plain `--format tsv`
+is unchanged — six bare columns, findings only.
+
+A row whose value could not be measured is **omitted**, not printed as a dash: a
+table of dashes is not a report.
+
 ## Layout
 
 ```

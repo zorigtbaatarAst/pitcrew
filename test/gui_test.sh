@@ -3031,4 +3031,54 @@ print(plain(raw))
   assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 3p)")" "a &amp; b" "plain still escapes"
 }
 
+# ── plugin reports ──────────────────────────────────────────────────────────
+
+test_a_plugin_report_becomes_a_panel() {
+  gui_available || return 0
+  # A finding is one line; a report is the table behind it. Before the channel
+  # existed the only way to show the table was eight more info findings, in a
+  # list where every check competes for the one line someone reads.
+  local out; out=$(_settings_drive "
+from pitcrewgui.model import report_panels
+STATE = {'health': {'deep': True, 'reports': [
+  {'id': 'jvm', 'scope': 'be-orders', 'title': 'JVM memory',
+   'rows': [{'label': 'heap', 'value': '1.1G / 2.0G', 'note': 'used 343M'},
+            {'label': 'cap',  'value': '2.0G',        'note': 'from pitcrew'}]},
+  {'id': 'broken', 'scope': '', 'title': 'Nothing', 'rows': []},
+]}}
+panels = report_panels(STATE)
+print(len(panels))
+print(panels[0]['scope'], panels[0]['title'])
+print(len(panels[0]['rows']), panels[0]['rows'][0]['value'])
+print(report_panels({}) == [])
+")
+  # A report with no rows is a plugin mid-edit, not a measurement of nothing.
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "1" "the empty report is dropped"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 2p)")" "be-orders JVM memory" "scope and title"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 3p)")" "2 1.1G / 2.0G" "rows pass through as given"
+  assert_eq "$(printf '%s' "$out" | sed -n 4p)" "True" "and a stream with no health object is not a crash"
+}
+
+test_the_reports_panel_is_hidden_until_a_deep_run_fills_it() {
+  gui_available || return 0
+  # Reports only ever come from the SLOW tier, so the live stream never carries
+  # any: an empty list means "not asked for yet", not "nothing to say". An
+  # empty panel sitting there would say the opposite.
+  local out; out=$(_settings_drive "
+import pitcrewgui.window as W
+from pitcrewgui.settings import Settings
+w = W.Window('/bin/true', 'demo', Settings(pathlib.Path('$(mktemp -d)/gui')))
+print(w._reports_box.get_visible())
+w._render_reports([{'id':'jvm','scope':'c','title':'T',
+                    'rows':[{'label':'heap','value':'1G','note':''}]}])
+print(w._reports_box.get_visible(), len(w._report_groups))
+w._render_reports([])
+print(w._reports_box.get_visible(), len(w._report_groups))
+")
+  assert_eq "$(printf '%s' "$out" | sed -n 1p)" "False" "hidden before any deep run"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 2p)")" "True 1" "shown once there is a table"
+  assert_eq "$(no_cr "$(printf '%s' "$out" | sed -n 3p)")" "False 0" \
+    "and hidden again rather than leaving a stale one"
+}
+
 run_tests

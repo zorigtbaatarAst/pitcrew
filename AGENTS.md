@@ -321,6 +321,25 @@ diag_add <crit|warn|info> <id> <title> <detail> [fix-command] [scope]
 diag_register my_check
 ```
 
+A check with a TABLE to show as well — where a JVM put its memory — opens a
+report rather than emitting eight more findings:
+
+```bash
+diag_report_open <id> <scope> <title>
+diag_report_row  <label> <value> [note]
+```
+
+Reports land in `DIAG_REPORT_*`, reach `health.reports[]` in the JSON, and
+render as a panel on the desktop app's Overview. They exist because a finding is
+one line and its evidence, and the alternative was eight `info` findings
+competing with the one line that mattered. In practice only a `slow` check
+produces one — reading that much costs forks — so **an empty list means "not
+asked for yet", not "nothing to say"**; `health.deep` distinguishes them.
+
+Rows are stored TAB-joined and newline-separated in one array element per
+report, because bash has no nested arrays. Consumers split them; the JSON
+writer does it in `diag_json_reports`.
+
 `diag_run` executes every registered check in order and leaves findings in the
 `DIAG_*` arrays, a verdict in `DIAG_VERDICT` and a headline in `DIAG_HEADLINE`.
 Four surfaces read those and nothing else — the dashboard's verdict line and `d`
@@ -484,11 +503,12 @@ bash-3.2 guard against real `/bin/bash` on macOS.
 
 - `human()` renders 0 bytes as `0M`, so a machine with no swap in use reads
   `SWP 0M / 7.9G`. Harmless, but it is not what anyone would write by hand.
-- The desktop app's process view is still a flat expandable tree. `ext/jvm`
-  produces a full heap/metaspace/code-cache/native breakdown and has nowhere to
-  render it — findings are the only channel a plugin has today. The data is
-  already there in `pitcrew-jvm --json`; what is missing is a way for a plugin
-  to put a panel on the process view.
+- The desktop app's process view is still a flat expandable tree. Plugin tables
+  now have a channel (`diag_report_*`, above) and render on Overview under the
+  findings, next to the button that produces them. Putting one INSIDE a
+  component row on the Components page is still not possible: the deep run is
+  triggered from Overview, and a button on one page filling a panel on another
+  is worse than the split that exists.
 - `diag_check_errors` fires on any log line matching `PITCREW_ERROR_PATTERN`,
   which for a chatty framework is noisy. There is no per-component pattern.
 - `components[].processes` ships on every frame, capped at 12 per component.

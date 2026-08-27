@@ -67,6 +67,56 @@ DIAG_DETAIL=()   # one line: the evidence for saying so
 DIAG_FIX=()      # the command that addresses it, or "" when there isn't one
 DIAG_SCOPE=()    # the component or dep it concerns, or "" for machine-wide
 
+# ── reports ─────────────────────────────────────────────────────────────────
+#
+# A finding is one line plus its evidence. Some checks have a TABLE to show as
+# well — where a JVM put its memory, what a container is holding — and until
+# now the only way to surface that was to emit eight info findings, in a list
+# where, by this file's own rule, every check competes for the one line someone
+# will actually read.
+#
+# So: the same registry idea, one level down. A check opens a report and adds
+# rows; every surface that renders findings can render these beside them,
+# without knowing what a JVM is. Same as diag_add, there is no privileged path.
+#
+#     diag_report_open jvm "$comp" "JVM memory"
+#     diag_report_row  heap "1.1G / 2.0G" "used 343M"
+#
+# Rows are stored TAB-joined, newline-separated, in one array element per
+# report — bash has no nested arrays, and the alternative is a second set of
+# parallel arrays plus an index, which every consumer would have to re-join.
+#
+# A report is only ever produced by a `slow` check in practice: reading this
+# much costs forks, and the frame loop cannot pay them. Consumers should treat
+# an empty list as "not asked for yet", not as "nothing to say" — `deep` says
+# which.
+DIAG_REPORT_ID=()
+DIAG_REPORT_SCOPE=()
+DIAG_REPORT_TITLE=()
+DIAG_REPORT_ROWS=()
+
+diag_report_open() { # $1 id, $2 scope (component, or "" for machine-wide), $3 title
+  DIAG_REPORT_ID+=("$1")
+  DIAG_REPORT_SCOPE+=("${2:-}")
+  DIAG_REPORT_TITLE+=("${3:-}")
+  DIAG_REPORT_ROWS+=("")
+}
+
+diag_report_row() { # $1 label, $2 value, [$3 note] — appends to the open report
+  local n=${#DIAG_REPORT_ID[@]}
+  # A row with no report open is dropped rather than being an error: a plugin
+  # half-way through an edit should cost one missing table, never a dashboard
+  # that stops repainting.
+  [ "$n" -gt 0 ] || return 0
+  local i=$((n - 1)) row
+  # Tabs and newlines are the delimiters, so they are stripped rather than
+  # escaped: a row is three short strings by construction.
+  printf -v row '%s\t%s\t%s' \
+    "${1//[$'\t\n']/ }" "${2//[$'\t\n']/ }" "${3//[$'\t\n']/ }"
+  DIAG_REPORT_ROWS[i]+="${DIAG_REPORT_ROWS[i]:+$'\n'}$row"
+  return 0
+}
+
 DIAG_VERDICT=ok
 DIAG_HEADLINE=""
 DIAG_N=0
@@ -420,6 +470,7 @@ diag_run() { # [--full]
   local full=0
   [ "${1:-}" = --full ] && full=1
   DIAG_SEV=(); DIAG_ID=(); DIAG_TITLE=(); DIAG_DETAIL=(); DIAG_FIX=(); DIAG_SCOPE=()
+  DIAG_REPORT_ID=(); DIAG_REPORT_SCOPE=(); DIAG_REPORT_TITLE=(); DIAG_REPORT_ROWS=()
   DIAG_N=0; DIAG_CRIT=0; DIAG_WARN=0; DIAG_INFO=0
   DIAG_VERDICT=ok; DIAG_HEADLINE=""
   DIAG_DEEP=$full
@@ -703,5 +754,43 @@ diag_json_health() {
     first=0
     _json_str "$c"; printf '%s' "$JSTR"
   done
-  printf '],"bytes":%d}}' "${DIAG_IDLE_BYTES:-0}"
+  printf '],"bytes":%d}' "${DIAG_IDLE_BYTES:-0}"
+  printf ',"reports":'
+  diag_json_reports
+  printf '}'
+}
+
+# The tables, as data. Adding a key is free under constraint 8, so the schema
+# does not move — a consumer that has never heard of reports keeps working, and
+# one that has renders a panel without knowing what produced it.
+#
+# An EMPTY list does not mean "nothing to report": these come from slow checks,
+# so the live stream never carries any. `deep` is what distinguishes the two,
+# which is the same signal the Full diagnostics button already reads.
+diag_json_reports() {
+  local i first=1
+  printf '['
+  for i in "${!DIAG_REPORT_ID[@]}"; do
+    [ $first = 1 ] || printf ','
+    first=0
+    local r_id r_scope r_title
+    _json_str "${DIAG_REPORT_ID[i]}";    r_id=$JSTR
+    _json_str "${DIAG_REPORT_SCOPE[i]}"; r_scope=$JSTR
+    _json_str "${DIAG_REPORT_TITLE[i]}"; r_title=$JSTR
+    printf '{"id":%s,"scope":%s,"title":%s,"rows":[' "$r_id" "$r_scope" "$r_title"
+    local rfirst=1 line label value note
+    while IFS=$'\t' read -r label value note; do
+      [ -n "$label$value$note" ] || continue
+      [ $rfirst = 1 ] || printf ','
+      rfirst=0
+      local j_l j_v j_n
+      _json_str "$label"; j_l=$JSTR
+      _json_str "$value"; j_v=$JSTR
+      _json_str "$note";  j_n=$JSTR
+      printf '{"label":%s,"value":%s,"note":%s}' "$j_l" "$j_v" "$j_n"
+    done <<< "${DIAG_REPORT_ROWS[i]}"
+    printf ']}'
+  done
+  printf ']'
+  return 0
 }

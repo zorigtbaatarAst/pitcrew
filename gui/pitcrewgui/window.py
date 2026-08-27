@@ -32,6 +32,7 @@ from .model import (
     machine_meters,
     merge_findings,
     plain,
+    report_panels,
     share_slices,
     state_rank,
     top_consumers,
@@ -823,6 +824,7 @@ class Window(Adw.ApplicationWindow):
         self._left.append(self._consumers_group)
         body.append(self._verdict_banner)
         body.append(self._columns)
+        body.append(self._build_reports_box())
         body.append(self._profiles_group)
         body.append(self._recover_group)
         body.append(self._protected_group)
@@ -970,6 +972,7 @@ class Window(Adw.ApplicationWindow):
             self._toast(f"full diagnostics failed: {problem}")
             return
         self._deep_findings = (state.get("health") or {}).get("findings") or []
+        self._render_reports(report_panels(state))
         extra = len(merge_findings(self._live_findings, self._deep_findings)) \
             - len(self._live_findings)
         # Re-render now rather than waiting for the next frame: a button whose
@@ -977,6 +980,58 @@ class Window(Adw.ApplicationWindow):
         self._render_findings(merge_findings(self._live_findings, self._deep_findings))
         self._toast(f"full diagnostics found {extra} more"
                     if extra else "full diagnostics found nothing the stream missed")
+
+    def _build_reports_box(self) -> Gtk.Box:
+        """Where plugin tables land, empty until a deep run fills it.
+
+        One group per report, built on demand: how many there are and what they
+        are called is the plugin's business, and this end knows only that a
+        report has a title and rows.
+
+        It sits directly under the findings that reference it. A JVM finding
+        says the heap plus non-heap will not fit the cap; the table is the
+        arithmetic behind that sentence. Two pages apart they are two unrelated
+        facts.
+        """
+        self._report_groups: list[Adw.PreferencesGroup] = []
+        self._reports_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                                    spacing=22, visible=False)
+        return self._reports_box
+
+    def _render_reports(self, panels: list[dict]) -> None:
+        """One group per plugin report, rebuilt from scratch each deep run.
+
+        Rebuilt rather than diffed: these arrive a few seconds apart at most,
+        by hand, and a stale row on a memory table is worse than a rebuild
+        nobody can perceive.
+        """
+        for group in self._report_groups:
+            self._reports_box.remove(group)
+        self._report_groups.clear()
+
+        for panel in panels:
+            title = panel["title"]
+            if panel["scope"]:
+                title = f"{panel['scope']} — {title}"
+            group = Adw.PreferencesGroup(title=plain(title))
+            for row in panel["rows"]:
+                # The label is the measurement and the value is the figure, so
+                # the value goes where the eye scans down a column. The note is
+                # the qualifier that keeps the figure honest — "a floor",
+                # "reserved, not committed" — and belongs beside it, not in a
+                # tooltip nobody opens.
+                action = Adw.ActionRow(title=row.get("label") or "",
+                                       use_markup=False,
+                                       subtitle=row.get("note") or "")
+                value = Gtk.Label(label=row.get("value") or "",
+                                  valign=Gtk.Align.CENTER)
+                value.add_css_class("numeric")
+                action.add_suffix(value)
+                group.add(action)
+            self._reports_box.append(group)
+            self._report_groups.append(group)
+
+        self._reports_box.set_visible(bool(self._report_groups))
 
     def _stop_recoverable(self) -> None:
         """Apply, after the review. The dialog names every component again:
