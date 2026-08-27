@@ -122,6 +122,19 @@ jvm_parse_heap() {
 # than added, or it would be counted twice.
 jvm_parse_metaspace() {
   awk "$_JVM_TOK2K"'
+    function unit2k(n, u) {
+      sub(/[,.:]$/, "", u)
+      if (u == "K" || u == "KB" || u == "Kb") return int(n)
+      if (u == "M" || u == "MB" || u == "Mb") return int(n * 1024)
+      if (u == "G" || u == "GB" || u == "Gb") return int(n * 1024 * 1024)
+      if (u == "B" || u == "byte" || u == "bytes") return int(n / 1024)
+      return -1
+    }
+    # Which block of the report we are in. Both blocks carry a row labelled
+    # "Both:", and the two mean different things.
+    /^ *Total Usage/   { sect = "usage"; next }
+    /^ *Virtual space/ { sect = "virtual"; next }
+
     /^ *class space/ {
       for (i = 1; i < NF; i++) {
         v = tok2k($(i+1)); if (v < 0) continue
@@ -136,8 +149,51 @@ jvm_parse_metaspace() {
         if ($i == "committed") { c = v; sawc = 1 }
         if ($i == "reserved")  { r = v; sawr = 1 }
       }
+      next
+    }
+
+    # ── the JDK 21 shape ──
+    #
+    # There is no "Metaspace used ... committed ..." summary line there at all.
+    # The figures exist only in these tables, written as a decimal and a unit
+    # BEFORE the keyword, with a bracketed percentage in between:
+    #
+    #   Both: 9793 chunks,  98.55 MB capacity,  97.67 MB (>99%) committed, ...
+    #   Class space:  416.00 MB reserved,  12.69 MB (  3%) committed,  1 nodes.
+    #
+    # So a value is remembered as it goes past and claimed by the next keyword.
+    # A bracketed percentage is not a number followed by a size unit, and
+    # neither is "9793 chunks" or "1 nodes", so unit2k rejects all three.
+    sect != "" {
+      pend = -1
+      label = $1; sub(/:$/, "", label)
+      for (i = 1; i <= NF; i++) {
+        if (i < NF && $i ~ /^[0-9]+(\.[0-9]+)?$/) {
+          v = unit2k($i + 0, $(i+1))
+          if (v >= 0) { pend = v; i++; continue }
+        }
+        if (pend < 0) continue
+        k = $i; sub(/[,.:]$/, "", k)
+        if (sect == "usage" && label == "Both") {
+          if (k == "committed") { tuc = pend; sawtuc = 1 }
+          if (k == "used")      { tuu = pend; sawtuu = 1 }
+        }
+        if (sect == "virtual" && label == "Both") {
+          if (k == "committed") { vc = pend; sawvc = 1 }
+          if (k == "reserved")  { vr = pend; sawvr = 1 }
+        }
+        if (sect == "virtual" && label == "Class") {
+          if (k == "committed") { vcc = pend; sawvcc = 1 }
+        }
+      }
     }
     END {
+      # An explicit summary line wins wherever a JDK still prints one; the
+      # tables are consulted only for the JDKs that do not.
+      if (!sawu && sawtuu) { u = tuu; sawu = 1 }
+      if (!sawc) { if (sawvc) { c = vc; sawc = 1 } else if (sawtuc) { c = tuc; sawc = 1 } }
+      if (!sawr && sawvr)   { r = vr; sawr = 1 }
+      if (!sawcc && sawvcc) { cc = vcc; sawcc = 1 }
       printf "%d %d %d %d\n",
         (sawu ? u : -1), (sawc ? c : -1), (sawr ? r : -1), (sawcc ? cc : -1)
     }'
@@ -171,6 +227,20 @@ jvm_parse_codecache() {
       }
       next
     }
+    # JDK 21 prints NO aggregate line, only the three segments, so summing them
+    # is the only route to a total there. It must not happen where the
+    # aggregate DOES exist (JDK 26 prints both) or the cache reads as twice its
+    # real size — hence collected here and used in END only as a fallback.
+    /^ *CodeHeap / {
+      n = split($0, f, /[ ,]+/)
+      for (i = 1; i <= n; i++) {
+        if (split(f[i], kv, "=") != 2) continue
+        v = tok2k(kv[2]); if (v < 0) continue
+        if (kv[1] == "size") { segsz += v; sawseg = 1 }
+        if (kv[1] == "used") { segus += v }
+      }
+      next
+    }
     /full_count=/ {
       n = split($0, f, /[ ,]+/)
       for (i = 1; i <= n; i++) {
@@ -179,6 +249,7 @@ jvm_parse_codecache() {
       }
     }
     END {
+      if (!sawsz && sawseg) { sz = segsz; us = segus; sawsz = 1; sawus = 1 }
       printf "%d %d %d\n",
         (sawsz ? sz : -1), (sawus ? us : -1), (sawfc ? fc : -1)
     }'

@@ -78,6 +78,29 @@ test_a_modern_heap_info_reports_metaspace_as_unknown_not_zero() {
   assert_not_match "$out" '(^| )0( |$)' "and specifically is NOT zero"
 }
 
+test_metaspace_is_read_from_the_jdk21_tables_when_there_is_no_summary_line() {
+  # Found by running the tool, not by reading a spec: a Gradle daemon on
+  # JDK 21 reported its non-heap as unknown. That JDK prints NO
+  # "Metaspace used ... committed ..." line at all — the figures live only in
+  # the Total Usage and Virtual space tables, as a decimal and a unit BEFORE
+  # the keyword with a bracketed percentage in between.
+  #
+  # It reported unknown rather than zero, which is the design holding. It
+  # should report the number.
+  assert_eq "$(jvm_parse_metaspace < "$FIX/jdk21-metaspace.txt")" \
+    "97259 100096 557056 12994" "used, committed, reserved, class committed"
+}
+
+test_a_bracketed_percentage_is_never_read_as_a_size() {
+  # "97.67 MB (>99%) committed" — the percentage sits between the value and the
+  # keyword, and counting it would make metaspace 99 KB.
+  local out; out=$(printf '%s\n' \
+    'Total Usage - 10 loaders, 20 classes (3 shared):' \
+    '       Both: 100 chunks,     50.00 MB capacity,   40.00 MB (>99%) committed,    30.00 MB ( 60%) used,' \
+    | jvm_parse_metaspace)
+  assert_match "$out" '^30720 40960 ' "the megabyte figures, not the percentages"
+}
+
 test_class_space_is_not_counted_as_metaspace() {
   # Class space reports its own `used`/`committed` and is a SUBSET of
   # metaspace, so adding it would count part of it twice.
@@ -99,6 +122,17 @@ test_the_aggregate_code_cache_line_wins_over_the_segments() {
   # aggregate would double the total.
   local out; out=$(jvm_parse_codecache < "$FIX/jdk26-codecache.txt")
   assert_eq "$out" "245764 1214 0" "the CodeCache: line only"
+}
+
+test_code_cache_segments_are_summed_only_when_there_is_no_aggregate() {
+  # JDK 21 prints the three CodeHeap segments and no aggregate line, so they
+  # have to be added up. JDK 26 prints BOTH, and adding the segments there as
+  # well would report a 240M cache as 480M — which, against a percentage
+  # threshold, is a warning that can never fire.
+  assert_eq "$(jvm_parse_codecache < "$FIX/jdk21-codecache.txt")" \
+    "245760 69385 0" "JDK 21: the segments, summed"
+  assert_eq "$(jvm_parse_codecache < "$FIX/jdk26-codecache.txt")" \
+    "245764 1214 0" "JDK 26: the aggregate wins, segments ignored"
 }
 
 test_a_jdk_without_full_count_says_unknown() {

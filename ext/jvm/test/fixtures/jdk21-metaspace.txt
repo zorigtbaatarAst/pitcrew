@@ -1,0 +1,12 @@
+
+Total Usage - 2266 loaders, 20122 classes (1405 shared):
+  Non-Class: 6703 chunks,     85.91 MB capacity,   85.03 MB ( 99%) committed,    83.58 MB ( 97%) used,     1.45 MB (  2%) free,     4.68 KB ( <1%) waste , deallocated: 638 blocks with 256.17 KB
+      Class: 3090 chunks,     12.64 MB capacity,   12.64 MB (100%) committed,    11.40 MB ( 90%) used,     1.24 MB ( 10%) free,   320 bytes ( <1%) waste , deallocated: 750 blocks with 216.75 KB
+       Both: 9793 chunks,     98.55 MB capacity,   97.67 MB (>99%) committed,    94.98 MB ( 96%) used,     2.69 MB (  3%) free,     4.99 KB ( <1%) waste , deallocated: 1388 blocks with 472.92 KB
+
+
+Virtual space:
+  Non-class space:      128.00 MB reserved,      85.06 MB ( 66%) committed,  2 nodes.
+      Class space:      416.00 MB reserved,      12.69 MB (  3%) committed,  1 nodes.
+             Both:      544.00 MB reserved,      97.75 MB ( 18%) committed. 
+
